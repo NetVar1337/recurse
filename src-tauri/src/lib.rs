@@ -1,16 +1,21 @@
-mod agent;
-mod commands;
-mod config;
-mod debugger;
-mod engine;
-mod memory;
-mod project;
-mod session;
-mod sessions;
-mod shell;
-mod tools;
+pub mod agent;
+pub mod commands;
+pub mod config;
+pub mod debugger;
+pub mod engine;
+pub mod memory;
+pub mod project;
+pub mod sandbox;
+pub mod session;
+pub mod sessions;
+/// Test-only helpers (HOME isolation). Hidden from docs but compiled so the
+/// integration tests can share it.
+#[doc(hidden)]
+pub mod testhome;
+pub mod shell;
+pub mod tools;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::AtomicBool, atomic::AtomicU32, Arc, Mutex};
 
 use agent::{Agent, LlmConfig, ModelInfo};
 
@@ -48,6 +53,18 @@ pub struct AppState {
     pub session: Arc<Mutex<Option<session::R2Session>>>,
     pub debug: Arc<Mutex<Option<session::R2Session>>>,
     pub debug_stdin: Arc<Mutex<Option<std::fs::File>>>,
+    /// True while a `dc` (continue) is in flight. Gates inspection commands
+    /// (fail fast) and guarantees a single concurrent continue.
+    pub debug_busy: Arc<AtomicBool>,
+    /// PID of the r2 process backing the debug session, published by
+    /// `debug_start` before the session becomes visible and cleared on
+    /// teardown. Lets stop/interrupt reach a blocked continue without needing
+    /// the debug mutex it holds.
+    pub debug_pid: Arc<AtomicU32>,
+    /// Stop flag for the live debuggee-stdout pump thread.
+    pub debug_output_done: Arc<AtomicBool>,
+    /// Rolling console buffer of raw debuggee output (capped).
+    pub debug_output: Arc<Mutex<Vec<u8>>>,
     pub agent: Arc<Mutex<Agent>>,
     pub llm: Mutex<LlmConfig>,
     pub models: Mutex<Option<Vec<ModelInfo>>>,
@@ -58,7 +75,14 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Startup failure is unrecoverable by design: without an event loop
+    // there is no app. This is the one sanctioned expect().
+    #[allow(clippy::expect_used)]
+    fn die_on_failure(result: tauri::Result<()>) {
+        result.expect("error while running tauri application");
+    }
+
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -70,6 +94,10 @@ pub fn run() {
             session: Arc::new(Mutex::new(None)),
             debug: Arc::new(Mutex::new(None)),
             debug_stdin: Arc::new(Mutex::new(None)),
+            debug_busy: Arc::new(AtomicBool::new(false)),
+            debug_pid: Arc::new(AtomicU32::new(0)),
+            debug_output_done: Arc::new(AtomicBool::new(false)),
+            debug_output: Arc::new(Mutex::new(Vec::new())),
             agent: Arc::new(Mutex::new(Agent::new())),
             llm: Mutex::new(LlmConfig::default()),
             models: Mutex::new(None),
@@ -77,8 +105,7 @@ pub fn run() {
             current_session: Mutex::new(None),
             shell: shell::ShellManager::new(),
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::open_binary,
+        .invoke_handler(tauri::generate_handler![            commands::open_binary,
             commands::analyze,
             commands::close_binary,
             commands::binary_info,
@@ -94,6 +121,7 @@ pub fn run() {
             commands::raw,
             commands::set_zoom,
             commands::agent_chat,
+            commands::agent_cancel_run,
             commands::agent_reset,
             commands::agent_history,
             commands::sessions_list,
@@ -103,9 +131,12 @@ pub fn run() {
             commands::sessions_rename,
             commands::debug_start,
             commands::debug_command,
+            commands::debug_interrupt,
             commands::debug_stop,
             commands::debug_stdin,
             commands::debug_registers,
+            commands::debug_output_get,
+            commands::sandbox_status,
             commands::debug_disassemble,
             commands::debug_breakpoints,
             commands::llm_status,
@@ -124,7 +155,7 @@ pub fn run() {
             commands::shell_resize,
             commands::shell_kill,
             commands::shell_list,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        ]);
+
+    die_on_failure(builder.run(tauri::generate_context!()));
 }

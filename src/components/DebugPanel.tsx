@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
 	FastForward,
 	Loader2,
@@ -11,14 +12,24 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
+import { useDebugStore } from "@/store/debugStore";
 import type { DebugBreakpoint, DebugInsn, Registers } from "@/types";
 
+const LOG = "[debug-ui]";
+function log(msg: string, ...rest: unknown[]) {
+	console.info(`${LOG} ${msg}`, ...rest);
+}
+function warn(msg: string, ...rest: unknown[]) {
+	console.warn(`${LOG} ${msg}`, ...rest);
+}
+
 function fmtAddr(a?: number | null) {
-	return typeof a === "number" ? `0x${a.toString(16)}` : "";
+	return typeof a === "number" && Number.isFinite(a)
+		? `0x${a.toString(16)}`
+		: "";
 }
 
 function findPc(regs: Registers): number | null {
@@ -38,113 +49,220 @@ function commandText(value: unknown): string {
 	}
 }
 
+/** Coerce an unknown backend payload into a clean array of objects. */
+function asArray<T>(value: unknown, what: string): T[] {
+	if (Array.isArray(value)) {
+		const bad = value.filter((x) => x == null || typeof x !== "object");
+		if (bad.length > 0) {
+			warn(
+				`${what}: dropped ${bad.length} malformed entr${bad.length === 1 ? "y" : "ies"}`,
+				bad,
+			);
+		}
+		return value.filter((x): x is T => x != null && typeof x === "object");
+	}
+	if (value == null) return [];
+	warn(
+		`${what}: expected array, got ${typeof value} — treating as empty`,
+		value,
+	);
+	return [];
+}
+
+/** Coerce registers payload into a plain string->number map. */
+function asRegs(value: unknown): Registers {
+	if (value == null) return {};
+	if (typeof value !== "object" || Array.isArray(value)) {
+		warn(
+			`registers: expected object, got ${typeof value} — ignoring`,
+			value,
+		);
+		return {};
+	}
+	const out: Record<string, number> = {};
+	for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+		out[k] = typeof v === "number" ? v : Number(v);
+	}
+	return out;
+}
+
 export function DebugPanel() {
-	const [started, setStarted] = useState(false);
+	// Session/run state lives in the shared debug store: the Shell tab hosts
+	// the program's I/O terminal and auto-navigation reads the same truth.
+	const started = useDebugStore((s) => s.started);
+	const busy = useDebugStore((s) => s.busy);
+	const awaitingIo = useDebugStore((s) => s.awaitingIo);
+	const setStarted = useDebugStore((s) => s.setStarted);
+	const beginRun = useDebugStore((s) => s.beginRun);
+	const endRun = useDebugStore((s) => s.endRun);
+	const focusProgram = useDebugStore((s) => s.focusProgram);
+
 	const [regs, setRegs] = useState<Registers>({});
 	const [bps, setBps] = useState<DebugBreakpoint[]>([]);
 	const [insns, setInsns] = useState<DebugInsn[]>([]);
 	const [pc, setPc] = useState<number | null>(null);
 	const [err, setErr] = useState<string | null>(null);
-	const [busy, setBusy] = useState(false);
 	const [flavor, setFlavor] = useState<"intel" | "att">("intel");
-	const [output, setOutput] = useState<string[]>([]);
-	const [outputOpen, setOutputOpen] = useState(true);
-	const [stdinInput, setStdinInput] = useState("");
 
+	// Atomic selectors: returning a fresh array from one selector breaks
+	// zustand's getSnapshot caching and loops React into "maximum update
+	// depth exceeded".
 	const selected = useAnalysisStore((s) => s.selected);
+	const selectFn = useAnalysisStore((s) => s.selectFn);
 	const pcRef = useRef<HTMLSpanElement>(null);
 
+	// Lifecycle breadcrumbs.
+	useEffect(() => {
+		log("panel mounted");
+		return () => log("panel unmounted");
+	}, []);
+	useEffect(() => {
+		log("panel mounted");
+		// Program output streams to the console in the Shell tab; here we
+		// only react to it: output while a continue is in flight means the
+		// program is talking (usually prompting for input) — jump over.
+		const un = listen<{ data: string }>("debug-output", () => {
+			useDebugStore.getState().noteIoPrompt();
+		});
+		return () => {
+			un.then((f) => f());
+			log("panel listeners detached");
+		};
+	}, []);
+
+	useEffect(() => {
+		log("state", { started, busy, flavor, pc });
+	}, [started, busy, flavor, pc]);
+
 	const refresh = useCallback(async () => {
-		console.info("[debug-ui] refresh started");
+		log("refresh started");
 		try {
 			const [r, b, d] = await Promise.all([
 				api.debugRegisters(),
 				api.debugBreakpoints(),
 				api.debugDisassemble(24),
 			]);
-			setRegs(r ?? {});
-			setBps(b ?? []);
-			setInsns(d ?? []);
-			setPc(findPc(r ?? {}));
+			log("refresh payloads", {
+				registersType: r === null ? "null" : typeof r,
+				breakpointsType:
+					b === null ? "null" : Array.isArray(b) ? "array" : typeof b,
+				disasmType:
+					d === null ? "null" : Array.isArray(d) ? "array" : typeof d,
+			});
+			const nextRegs = asRegs(r);
+			const nextBps = asArray<DebugBreakpoint>(b, "breakpoints");
+			const nextInsns = asArray<DebugInsn>(d, "disassembly");
+			setRegs(nextRegs);
+			setBps(nextBps);
+			setInsns(nextInsns);
+			const nextPc = findPc(nextRegs);
+			setPc(nextPc);
 			setErr(null);
-			console.info("[debug-ui] refresh completed", {
-				registers: Object.keys(r ?? {}).length,
-				breakpoints: (b ?? []).length,
-				instructions: (d ?? []).length,
+			log("refresh completed", {
+				registers: Object.keys(nextRegs).length,
+				breakpoints: nextBps.length,
+				instructions: nextInsns.length,
+				pc: fmtAddr(nextPc) || "(unknown)",
 			});
 		} catch (e) {
-			console.error("[debug-ui] refresh failed", e);
+			console.error(`${LOG} refresh failed`, e);
 			setErr(String(e));
 		}
 	}, []);
 
 	useEffect(() => {
 		if (pc != null) {
+			log("scrolling to pc", fmtAddr(pc));
 			pcRef.current?.scrollIntoView({ block: "center" });
 		}
 	}, [pc, insns]);
 
 	const guard = useCallback(
 		async (label: string, fn: () => Promise<unknown>): Promise<boolean> => {
-			setBusy(true);
-			console.info(`[debug-ui] ${String(label)} started`);
+			beginRun();
+			log(`${label} started`);
 			try {
 				const result = await fn();
 				if (label === "continue" || label.startsWith("step")) {
-					const text = commandText(result);
-					if (text) {
-						setOutput((prev) => [...prev, text].slice(-8));
-						setOutputOpen(true);
-					}
+					log(
+						`${label} returned (${commandText(result).length} chars of r2 status)`,
+					);
 				}
 				await refresh();
-				console.info(`[debug-ui] ${String(label)} completed`);
+				log(`${label} completed`);
 				return true;
 			} catch (e) {
-				console.error(`[debug-ui] ${String(label)} failed`, e);
+				console.error(`${LOG} ${label} failed`, e);
 				setErr(String(e));
 				return false;
 			} finally {
-				setBusy(false);
+				// Releases busy; when a run had jumped to an I/O prompt this
+				// also returns to the tab we came from.
+				endRun();
+				log(`${label} busy cleared`);
 			}
 		},
-		[refresh],
+		[refresh, beginRun, endRun],
 	);
 
 	const start = () =>
 		guard("start", async () => {
+			log("start: spawning debug session…");
 			await api.debugStart();
-			await api.debugCommand(`e asm.syntax=${flavor}`);
+			log("start: session live — marking started");
+			// Mark started immediately: the debugger is live server-side even
+			// if the (cosmetic) syntax-flavor command below fails, and the UI
+			// must not offer a second Start against a running session.
 			setStarted(true);
+			await api.debugCommand(`e asm.syntax=${flavor}`);
+			log("start: syntax flavor applied:", flavor);
 		});
 
 	const cont = () => guard("continue", () => api.debugCommand("dc"));
 	const stepIn = () => guard("step-into", () => api.debugCommand("ds"));
 	const stepOver = () => guard("step-over", () => api.debugCommand("dso"));
 
+	// Escape hatch for a continue that never returns (debuggee waiting on
+	// input, infinite loop): interrupt it like Ctrl-C in an interactive r2.
+	const interrupt = async () => {
+		log("interrupt requested (SIGINT)");
+		try {
+			await api.debugInterrupt();
+			log("interrupt delivered");
+		} catch (e) {
+			console.error(`${LOG} interrupt failed`, e);
+			setErr(String(e));
+		}
+	};
+
 	const stop = async () => {
-		console.info("[debug-ui] stop started");
+		log("stop started");
 		try {
 			await api.debugStop();
 		} catch (e) {
-			console.error("[debug-ui] stop failed", e);
+			console.error(`${LOG} stop failed`, e);
 			setErr(String(e));
 			return;
 		}
 		setStarted(false);
+		endRun();
 		setRegs({});
 		setBps([]);
 		setInsns([]);
 		setPc(null);
-		setOutput([]);
-		setStdinInput("");
 		setErr(null);
-		console.info("[debug-ui] stop completed");
+		log("stop completed — state reset");
 	};
 
 	const addBp = async () => {
-		if (!selected) return;
+		if (!selected) {
+			warn("toggle-breakpoint ignored: no function selected");
+			return;
+		}
 		const exists = bps.some((b) => b.addr === selected.addr);
+		log(
+			`toggle-breakpoint at ${fmtAddr(selected.addr)} → ${exists ? "remove" : "add"}`,
+		);
 		await guard("toggle-breakpoint", () =>
 			api.debugCommand(
 				exists ? `db -${selected.addr}` : `db ${selected.addr}`,
@@ -152,27 +270,25 @@ export function DebugPanel() {
 		);
 	};
 
-	const removeBp = (addr: number) =>
-		guard("remove-breakpoint", () => api.debugCommand(`db -${addr}`));
+	const removeBp = (addr: number) => {
+		log(`remove-breakpoint at ${fmtAddr(addr)}`);
+		return guard("remove-breakpoint", () =>
+			api.debugCommand(`db -${addr}`),
+		);
+	};
 
 	const changeFlavor = (next: "intel" | "att") => {
-		if (next === flavor || !started || busy) return;
+		if (next === flavor || !started || busy) {
+			log(`flavor change to ${next} skipped`, {
+				same: next === flavor,
+				started,
+				busy,
+			});
+			return;
+		}
 		void guard(`flavor-${next}`, () =>
 			api.debugCommand(`e asm.syntax=${next}`),
 		).then((ok) => ok && setFlavor(next));
-	};
-
-	const sendStdin = async () => {
-		if (!stdinInput || !started) return;
-		try {
-			console.info("[debug-ui] stdin write started");
-			await api.debugStdin(`${stdinInput}\n`);
-			setStdinInput("");
-			console.info("[debug-ui] stdin write completed");
-		} catch (e) {
-			console.error("[debug-ui] stdin write failed", e);
-			setErr(String(e));
-		}
 	};
 
 	const regEntries = Object.entries(regs);
@@ -293,23 +409,35 @@ export function DebugPanel() {
 					</button>
 				</div>
 				<Button
-					variant={outputOpen ? "secondary" : "ghost"}
+					variant="ghost"
 					size="sm"
 					className="shrink-0"
-					onClick={() => setOutputOpen((open) => !open)}
-					title="Toggle program output"
+					onClick={focusProgram}
+					disabled={!started}
+					title="Open the program's I/O console in the Shell tab"
 				>
-					<TerminalSquare /> Output
-					{output.length > 0 ? ` (${output.length})` : ""}
+					<TerminalSquare /> I/O
 				</Button>
-				<div className="ml-auto shrink-0">
+				<div className="ml-auto flex shrink-0 items-center gap-1.5">
+					{busy && started && (
+						<Button
+							variant="secondary"
+							size="sm"
+							className="shrink-0"
+							onClick={interrupt}
+							title="Interrupt the running program (SIGINT, like Ctrl-C)"
+						>
+							<Pause />
+							Interrupt
+						</Button>
+					)}
 					<Button
 						variant="destructive"
 						size="sm"
 						className="shrink-0"
 						onClick={stop}
 						disabled={!started && !busy}
-						title="Stop the debugger"
+						title="Stop the debugger (interrupts a blocked continue first)"
 					>
 						Stop
 					</Button>
@@ -322,51 +450,27 @@ export function DebugPanel() {
 				</div>
 			)}
 
-			{outputOpen && output.length > 0 && (
-				<div className="border-border bg-card mx-2 my-2 max-h-36 overflow-auto rounded-md border">
-					<div className="text-muted-foreground flex items-center justify-between border-b px-2.5 py-1.5 text-[11px] font-semibold tracking-wider uppercase">
-						<span>Program output</span>
-						<Button
-							variant="ghost"
-							size="icon"
-							className="h-6 w-6"
-							onClick={() => setOutput([])}
-							title="Clear program output"
-						>
-							<Trash2 className="h-3 w-3" />
-						</Button>
-					</div>
-					<pre className="text-foreground px-2.5 py-2 font-mono text-xs whitespace-pre-wrap">
-						{output.join("\n\n")}
-					</pre>
-				</div>
+			{/* Program I/O lives in the Shell tab's `program` terminal; this
+			    strip keeps the loop discoverable from the debugger view. */}
+			{started && busy && (
+				<button
+					type="button"
+					onClick={focusProgram}
+					className={cn(
+						"border-border bg-card hover:bg-accent mx-2 mt-2 flex shrink-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs",
+						awaitingIo && "text-primary border-primary/50",
+					)}
+				>
+					<TerminalSquare className="h-3.5 w-3.5 shrink-0" />
+					<span>
+						{awaitingIo
+							? "Program is waiting for input — Shell ▸ program"
+							: "Running — program I/O in the Shell tab"}
+					</span>
+				</button>
 			)}
 
-			{started && (
-				<div className="border-border bg-card flex items-center gap-2 border-b px-2 py-2">
-					<Input
-						value={stdinInput}
-						onChange={(event) => setStdinInput(event.target.value)}
-						onKeyDown={(event) => {
-							if (event.key === "Enter") {
-								event.preventDefault();
-								void sendStdin();
-							}
-						}}
-						placeholder="Program stdin"
-						className="h-8 min-w-0 flex-1 font-mono text-xs"
-					/>
-					<Button
-						size="sm"
-						onClick={() => void sendStdin()}
-						disabled={!stdinInput}
-					>
-						Send input
-					</Button>
-				</div>
-			)}
-
-			<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_240px] overflow-hidden">
+			<div className="grid min-h-0 flex-1 grid-cols-[1fr_240px] overflow-hidden">
 				<div className="scroll-host min-h-0 overflow-auto font-mono text-xs">
 					{insns.length === 0 && !started && (
 						<div className="text-muted-foreground flex h-full min-h-40 flex-col items-center justify-center gap-2 px-6 text-center text-xs">
@@ -385,9 +489,11 @@ export function DebugPanel() {
 					{insns.map((op) => (
 						<div
 							key={op.addr}
+							onClick={() => selectFn({ addr: op.addr } as any)}
 							className={cn(
-								"flex gap-3 px-3 py-px whitespace-nowrap",
+								"hover:bg-accent/50 flex cursor-pointer gap-3 px-3 py-px whitespace-nowrap",
 								op.addr === pc && "bg-primary/20 text-primary",
+								selected?.addr === op.addr && "bg-accent",
 							)}
 						>
 							<span className="w-[18ch] shrink-0 overflow-hidden text-ellipsis">

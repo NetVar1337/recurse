@@ -16,7 +16,6 @@ use crate::project;
 ///     session.json               # id, name, model, timestamps
 ///     chat.json                  # that session's conversation history
 /// ```
-
 const DEFAULT_PROJECT: &str = "default";
 const DEFAULT_NAME: &str = "New session";
 
@@ -53,12 +52,17 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Monotonic counter mixed into ids so rapid creation can never collide on
+/// the nanosecond timestamp alone.
+static ID_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn new_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("s-{nanos:x}")
+    let seq = ID_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("s-{nanos:x}-{seq:x}")
 }
 
 pub fn create(project: Option<&str>, model: &str) -> Result<Session, String> {
@@ -106,7 +110,7 @@ pub fn list(project: Option<&str>) -> Result<Vec<Session>, String> {
             }
         }
     }
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(out)
 }
 
@@ -177,5 +181,46 @@ pub fn cleanup_legacy() {
                 let _ = fs::remove_dir_all(&path);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn ids_are_unique_under_rapid_creation() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..500 {
+            let id = new_id();
+            assert!(seen.insert(id), "id collision");
+        }
+    }
+
+    #[test]
+    fn session_crud_and_history() {
+        crate::testhome::with_test_home(|_| {
+            let s = create(Some("p"), "model-a").unwrap();
+            assert_eq!(s.model, "model-a");
+            set_name(Some("p"), &s.id, "  renamed  ").unwrap();
+            assert_eq!(get(Some("p"), &s.id).unwrap().name, "renamed");
+            // Empty/whitespace names are ignored.
+            set_name(Some("p"), &s.id, "   ").unwrap();
+            assert_eq!(get(Some("p"), &s.id).unwrap().name, "renamed");
+            set_model(Some("p"), &s.id, "model-b").unwrap();
+            assert_eq!(get(Some("p"), &s.id).unwrap().model, "model-b");
+            touch(Some("p"), &s.id).unwrap();
+
+            save_history(Some("p"), &s.id, "[{\"role\":\"user\"}]").unwrap();
+            assert!(load_history(Some("p"), &s.id).is_some());
+
+            let all = list(Some("p")).unwrap();
+            assert_eq!(all.len(), 1);
+
+            remove(Some("p"), &s.id).unwrap();
+            assert!(get(Some("p"), &s.id).is_err());
+            assert!(load_history(Some("p"), &s.id).is_none());
+        });
     }
 }

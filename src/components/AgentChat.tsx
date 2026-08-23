@@ -9,6 +9,7 @@ import {
 	Plus,
 	RotateCw,
 	Send,
+	Square,
 	Wrench,
 	X,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { api } from "@/api";
 import { Markdown } from "@/components/Markdown";
 import { useLlmStore } from "@/store/llmStore";
 import {
@@ -350,15 +352,26 @@ export function AgentChat({ inputRef }: Props) {
 								}
 							}}
 						/>
-						<Button
-							size="icon"
-							className="h-7 w-7 shrink-0"
-							onClick={doSend}
-							disabled={busy || !input.trim()}
-							title="Send"
-						>
-							<Send />
-						</Button>
+						{busy ? (
+							<Button
+								size="icon"
+								className="h-7 w-7 shrink-0"
+								onClick={() => void api.agentCancel()}
+								title="Stop the agent (lands between tool steps)"
+							>
+								<Square className="h-3.5 w-3.5 fill-current" />
+							</Button>
+						) : (
+							<Button
+								size="icon"
+								className="h-7 w-7 shrink-0"
+								onClick={doSend}
+								disabled={!input.trim()}
+								title="Send"
+							>
+								<Send />
+							</Button>
+						)}
 					</div>
 					<div className="border-border/50 mt-1 flex items-center border-t pt-1">
 						<ModelSelector />

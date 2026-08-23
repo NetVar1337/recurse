@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
+import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
@@ -25,6 +26,10 @@ const ShellPanel = lazy(() =>
 
 const DebugPanel = lazy(() =>
 	import("@/components/DebugPanel").then((m) => ({ default: m.DebugPanel })),
+);
+
+const R2Console = lazy(() =>
+	import("@/components/R2Console").then((m) => ({ default: m.R2Console })),
 );
 
 const GraphPanel = lazy(() =>
@@ -170,6 +175,7 @@ export function CenterPanel() {
 	const selectedAddr = selected?.addr;
 	const [shellMounted, setShellMounted] = useState(false);
 	const [debugMounted, setDebugMounted] = useState(false);
+	const [consoleMounted, setConsoleMounted] = useState(false);
 	const [viewMode, setViewMode] = useState<"linear" | "graph">("linear");
 	const [xrefs, setXrefs] = useState<Xref[]>([]);
 	const [xrefsAddress, setXrefsAddress] = useState<number | null>(null);
@@ -194,6 +200,9 @@ export function CenterPanel() {
 	}
 	if (tab === "debug" && !debugMounted) {
 		setDebugMounted(true);
+	}
+	if (tab === "console" && !consoleMounted) {
+		setConsoleMounted(true);
 	}
 
 	// Track text selection in the disassembly / decompiler views so the user
@@ -290,6 +299,7 @@ export function CenterPanel() {
 						<TabsTrigger value="strings">Strings</TabsTrigger>
 						<TabsTrigger value="imports">Imports</TabsTrigger>
 						<TabsTrigger value="debug">Debug</TabsTrigger>
+						<TabsTrigger value="console">r2</TabsTrigger>
 						<TabsTrigger value="shell">Shell</TabsTrigger>
 					</TabsList>
 				</Tabs>
@@ -626,6 +636,7 @@ export function CenterPanel() {
 						tab !== "debug" && "hidden",
 					)}
 				>
+					<PanelErrorBoundary label="Debug">
 					<Suspense
 						fallback={
 							<div className="text-muted-foreground px-3 py-3 text-xs">
@@ -635,6 +646,28 @@ export function CenterPanel() {
 					>
 						<DebugPanel />
 					</Suspense>
+					</PanelErrorBoundary>
+				</div>
+			)}
+
+			{consoleMounted && (
+				<div
+					className={cn(
+						"min-h-0 min-w-0 flex-1",
+						tab !== "console" && "hidden",
+					)}
+				>
+					<PanelErrorBoundary label="r2 Console">
+					<Suspense
+						fallback={
+							<div className="text-muted-foreground px-3 py-3 text-xs">
+								loading r2 console…
+							</div>
+						}
+					>
+						<R2Console />
+					</Suspense>
+					</PanelErrorBoundary>
 				</div>
 			)}
 
@@ -645,6 +678,7 @@ export function CenterPanel() {
 						tab !== "shell" && "hidden",
 					)}
 				>
+					<PanelErrorBoundary label="Shell">
 					<Suspense
 						fallback={
 							<div className="text-muted-foreground px-3 py-3 text-xs">
@@ -654,6 +688,7 @@ export function CenterPanel() {
 					>
 						<ShellPanel active={tab === "shell"} />
 					</Suspense>
+					</PanelErrorBoundary>
 				</div>
 			)}
 		</div>

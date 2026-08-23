@@ -18,6 +18,7 @@ import type {
 	R2String,
 	Registers,
 	Session,
+	SandboxStatus,
 	ShellInfo,
 	Xref,
 } from "./types";
@@ -53,6 +54,7 @@ export const api = {
 		sessionId: string,
 		onEvent: Channel<AgentEvent>,
 	) => invoke<void>("agent_chat", { message, sessionId, onEvent }),
+	agentCancel: () => invoke<void>("agent_cancel_run"),
 	agentReset: () => invoke<void>("agent_reset"),
 	agentHistory: () => invoke<ChatMessage[]>("agent_history"),
 	sessionsList: (project: string) =>
@@ -66,9 +68,12 @@ export const api = {
 		invoke<void>("sessions_rename", { project, sessionId, name }),
 	debugStart: () => invoke<void>("debug_start"),
 	debugCommand: (cmd: string) => invoke<unknown>("debug_command", { cmd }),
+	debugInterrupt: () => invoke<void>("debug_interrupt"),
 	debugStop: () => invoke<void>("debug_stop"),
 	debugStdin: (data: string) => invoke<void>("debug_stdin", { data }),
 	debugRegisters: () => invoke<Registers>("debug_registers"),
+	sandboxStatus: () => invoke<SandboxStatus>("sandbox_status"),
+	debugOutputGet: () => invoke<string>("debug_output_get"),
 	debugDisassemble: (count: number) =>
 		invoke<DebugInsn[]>("debug_disassemble", { count }),
 	debugBreakpoints: () => invoke<DebugBreakpoint[]>("debug_breakpoints"),

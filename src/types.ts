@@ -77,7 +77,13 @@ export interface DecompileResult {
 	[k: string]: unknown;
 }
 
-export type CenterTab = "disasm" | "strings" | "imports" | "debug" | "shell";
+export type CenterTab =
+	| "disasm"
+	| "strings"
+	| "imports"
+	| "debug"
+	| "console"
+	| "shell";
 
 export interface ModelInfo {
 	id: string;
@@ -201,4 +207,10 @@ export interface Session {
 	model: string;
 	created_at: number;
 	updated_at: number;
+}
+
+export interface SandboxStatus {
+	backend: string;
+	available: boolean;
+	detail: string;
 }

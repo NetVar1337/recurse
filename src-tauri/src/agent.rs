@@ -403,11 +403,25 @@ fn stream_http(
     }
 
     let key = config.api_key.as_deref().unwrap_or("");
-    let resp = ureq::post(&config.endpoint)
-        .set("Authorization", &format!("Bearer {key}"))
-        .set("X-Title", "Recurse")
-        .send_json(&body)
-        .map_err(|e| map_http_error(e))?;
+    // Transient network errors get exactly one retry; HTTP-status errors do
+    // not (a 401 will not fix itself), and we never retry mid-stream.
+    #[allow(clippy::result_large_err)] // ureq's error type; retried once
+    let resp = {
+        let send = || {
+            ureq::post(&config.endpoint)
+                .set("Authorization", &format!("Bearer {key}"))
+                .set("X-Title", "Recurse")
+                .send_json(&body)
+        };
+        match send() {
+            Ok(r) => r,
+            Err(ureq::Error::Transport(_)) => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                send().map_err(map_http_error)?
+            }
+            Err(e) => return Err(map_http_error(e)),
+        }
+    };
 
     let reader = resp.into_reader();
     let mut buf = std::io::BufReader::new(reader);
@@ -457,6 +471,32 @@ fn stream_http(
     })
 }
 
+/// Per-message wire budget for model context. Old tool results are the
+/// usual bloat; truncating them keeps long debugging sessions within token
+/// budgets without touching the recent turns that carry current state.
+const MODEL_MSG_BUDGET: usize = 6_000;
+
+fn compact_for_model(m: &ChatMessage) -> ChatMessage {
+    let Some(content) = m.content.as_ref() else {
+        return m.clone();
+    };
+    let char_len = content.chars().count();
+    if char_len <= MODEL_MSG_BUDGET {
+        return m.clone();
+    }
+    let head: String = content.chars().take(MODEL_MSG_BUDGET / 2).collect();
+    let tail: String = {
+        let skip = char_len - MODEL_MSG_BUDGET / 4;
+        content.chars().skip(skip).collect()
+    };
+    let mut c = m.clone();
+    c.content = Some(format!(
+        "{head}\n...[truncated {mid} chars]...\n{tail}",
+        mid = char_len - MODEL_MSG_BUDGET / 2 - MODEL_MSG_BUDGET / 4
+    ));
+    c
+}
+
 /// One-shot, non-streaming chat completion (used to generate session titles).
 pub fn complete_http(
     endpoint: &str,
@@ -477,7 +517,7 @@ pub fn complete_http(
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("X-Title", "Recurse")
         .send_json(&body)
-        .map_err(|e| map_http_error(e))?;
+        .map_err(map_http_error)?;
     let value: Value = resp.into_json().map_err(|e| e.to_string())?;
     value["choices"][0]["message"]["content"]
         .as_str()
@@ -537,13 +577,30 @@ fn map_http_error(e: ureq::Error) -> String {
 /// supplied per run so the caller controls session/project access.
 pub struct Agent {
     messages: Vec<ChatMessage>,
+    /// Cooperative cancel flag for the in-flight run. The Tauri command
+    /// layer flips it from the UI; `run` checks between iterations and tool
+    /// calls so a stop lands within one step, never mid-LLM-stream.
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Default for Agent {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Agent {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Request cancellation of the current run (no-op when idle).
+    pub fn request_cancel(&self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Replace history (used to restore a persisted conversation).
@@ -565,6 +622,7 @@ impl Agent {
     ///
     /// `exec` runs a tool call (name + JSON arguments) against the live r2 /
     /// debug / memory backends and returns its result text.
+    #[allow(clippy::too_many_arguments)] // one cohesive run context
     pub fn run(
         &mut self,
         run_id: &str,
@@ -602,8 +660,18 @@ impl Agent {
         }
 
         for _ in 0..MAX_TOOL_ITERATIONS {
+            if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                self.cancel
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                return Err("run cancelled".into());
+            }
             let mut full = vec![ChatMessage::system(&system)];
-            full.extend(self.messages.iter().map(ChatMessage::without_reasoning));
+            full.extend(
+                self.messages
+                    .iter()
+                    .map(compact_for_model)
+                    .map(|m| m.without_reasoning()),
+            );
 
             let outcome = stream_http(run_id, config, &full, tools, emit)?;
 
@@ -620,6 +688,20 @@ impl Agent {
                 );
 
                 for tc in &outcome.tool_calls {
+                    if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                        self.cancel
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
+                        // Keep the transcript valid: the assistant message
+                        // above already requested tools, so every id needs a
+                        // tool reply before the next request.
+                        let mut cancelled = false;
+                        for tc in &outcome.tool_calls {
+                            let content = if cancelled { "cancelled".into() } else { "cancelled before execution".into() };
+                            cancelled = true;
+                            self.messages.push(ChatMessage::tool(tc.id.clone(), content));
+                        }
+                        return Err("run cancelled".into());
+                    }
                     emit(AgentEvent::ToolCall {
                         run_id: run_id.to_string(),
                         id: tc.id.clone(),
@@ -842,6 +924,72 @@ mod tests {
             assistant.reasoning.as_deref(),
             Some("Let me think about this carefully.")
         );
+    }
+
+    #[test]
+    fn cancel_between_tool_calls_stops_run() {
+        let mock = MockSse::new(vec![
+            tool_body("debug_registers", "{}"),
+            tool_body("debug_registers", "{}"),
+            content_body("never reached"),
+        ]);
+        let config = LlmConfig {
+            endpoint: mock.addr,
+            api_key: Some("k".into()),
+            model: "m".into(),
+        };
+        let mut agent = Agent::new();
+        // Cancel after the first tool result comes back (shared flag so the
+        // closure does not borrow the agent).
+        let cancel_flag = agent.cancel.clone();
+        let mut exec = |_tc: &ToolCall| -> Result<String, String> {
+            cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok("ok".into())
+        };
+        let mut events = Vec::new();
+        let mut emit = |ev: AgentEvent| events.push(ev);
+        let res = agent.run(
+            "run-c",
+            &config,
+            "/tmp/b",
+            &serde_json::json!({"bin":{"arch":"x86","bits":64,"type":"elf"}}),
+            "",
+            "go",
+            &[],
+            &mut exec,
+            &mut emit,
+        );
+        assert_eq!(res.unwrap_err(), "run cancelled");
+        // Transcript stays protocol-valid: every requested tool id got a reply.
+        let tool_replies = agent
+            .messages()
+            .iter()
+            .filter(|m| m.role == "tool")
+            .count();
+        assert_eq!(tool_replies, 1);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Done { .. })),
+            "no Done after cancellation"
+        );
+        assert!(agent.messages().last().unwrap().role == "tool");
+    }
+
+    #[test]
+    fn compact_for_model_truncates_huge_tool_results() {
+        let big = "x".repeat(50_000);
+        let m = ChatMessage::tool("t1".into(), big);
+        let c = compact_for_model(&m);
+        let len = c.content.as_ref().unwrap().chars().count();
+        assert!(
+            len <= MODEL_MSG_BUDGET + 200,
+            "compacted length {len} within budget+marker"
+        );
+        assert!(c.content.as_ref().unwrap().contains("[truncated"));
+        // Small messages pass through untouched.
+        let small = ChatMessage::tool("t2".into(), "short".into());
+        assert_eq!(compact_for_model(&small).content, Some("short".into()));
     }
 
     #[test]

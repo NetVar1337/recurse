@@ -72,3 +72,44 @@ pub fn decompile(s: &R2Session, addr: u64) -> Result<Value, String> {
 pub fn raw(s: &R2Session, cmd: &str) -> Result<Value, String> {
     s.run(cmd)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use crate::session::R2Session;
+
+    fn r2() -> bool {
+        std::process::Command::new("r2")
+            .arg("-v")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn every_wrapper_talks_to_a_live_session() {
+        if !r2() {
+            eprintln!("skipping: radare2 not on PATH");
+            return;
+        }
+        let s = R2Session::open("/bin/true").expect("session");
+        assert!(info(&s).is_object());
+        // summary counts zero functions pre-analysis but must not error.
+        let sum = summary(&s);
+        assert!(sum.is_object());
+        assert!(functions(&s).is_ok());
+        assert!(function_at(&s, 0x401000).is_ok());
+        assert!(disassemble(&s, 0x401000, 4).is_ok());
+        assert!(strings(&s).is_ok());
+        assert!(imports(&s).is_ok());
+        assert!(xrefs_to(&s, 0x401000).is_ok());
+        // decompile needs r2ghidra; accept either outcome, never a hang.
+        let _ = decompile(&s, 0x401000);
+        assert!(raw(&s, "f").is_ok());
+        // function_disasm/graph need an analyzed function; run aaa first.
+        s.analyze().ok();
+        let _ = function_disasm(&s, 0x401000);
+        let _ = function_graph(&s, 0x401000);
+    }
+}

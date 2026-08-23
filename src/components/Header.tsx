@@ -15,6 +15,40 @@ import { useAnalysisStore } from "@/store/analysisStore";
 import { useProjectStore } from "@/store/projectStore";
 import { useUiStore } from "@/store/uiStore";
 import { useSettingsStore } from "@/store/settingsStore";
+import { useEffect, useState } from "react";
+import type { SandboxStatus } from "@/types";
+
+function SandboxBadge() {
+	const [status, setStatus] = useState<SandboxStatus | null>(null);
+	useEffect(() => {
+		let alive = true;
+		import("@/api").then(({ api }) =>
+			api
+				.sandboxStatus()
+				.then((st) => {
+					if (alive) setStatus(st);
+				})
+				.catch(() => {}),
+		);
+		return () => {
+			alive = false;
+		};
+	}, []);
+	if (!status) return null;
+	return (
+		<Badge
+			variant="outline"
+			title={status.detail}
+			className={
+				status.backend === "host"
+					? "text-warning border-warning/40"
+					: "text-emerald-500 border-emerald-500/40"
+			}
+		>
+			sbx:{status.backend}
+		</Badge>
+	);
+}
 
 export function Header() {
 	const binary = useBinaryStore((s) => s.binary);
@@ -42,6 +76,7 @@ export function Header() {
 				<span className="text-muted-foreground text-[11px]">
 					agentic reverse engineering
 				</span>
+				<SandboxBadge />
 			</div>
 
 			{binary && (

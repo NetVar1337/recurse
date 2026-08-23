@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -37,6 +37,12 @@ pub struct ShellManager {
     next_id: Mutex<u32>,
 }
 
+impl Default for ShellManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShellManager {
     pub fn new() -> Self {
         Self {
@@ -46,7 +52,9 @@ impl ShellManager {
     }
 
     fn alloc_id(&self) -> u32 {
-        let mut n = self.next_id.lock().unwrap();
+        // Poison-tolerant: id allocation is order-independent, so a poisoned
+        // lock (a panicked writer elsewhere) must not take the app down.
+        let mut n = self.next_id.lock().unwrap_or_else(PoisonError::into_inner);
         let id = *n;
         *n += 1;
         id
@@ -99,7 +107,7 @@ impl ShellManager {
             .unwrap_or("shell")
             .to_string();
 
-        let mut shells = self.shells.lock().unwrap();
+        let mut shells = self.shells.lock().unwrap_or_else(PoisonError::into_inner);
         shells.insert(
             id,
             Shell {
@@ -112,7 +120,7 @@ impl ShellManager {
     }
 
     pub fn write(&self, id: u32, data: &str) -> Result<(), String> {
-        let mut shells = self.shells.lock().unwrap();
+        let mut shells = self.shells.lock().unwrap_or_else(PoisonError::into_inner);
         let s = shells
             .get_mut(&id)
             .ok_or_else(|| "no such shell".to_string())?;
@@ -123,7 +131,7 @@ impl ShellManager {
     }
 
     pub fn resize(&self, id: u32, rows: u16, cols: u16) -> Result<(), String> {
-        let shells = self.shells.lock().unwrap();
+        let shells = self.shells.lock().unwrap_or_else(PoisonError::into_inner);
         let s = shells.get(&id).ok_or_else(|| "no such shell".to_string())?;
         s.master
             .resize(PtySize {
@@ -136,8 +144,13 @@ impl ShellManager {
     }
 
     pub fn kill(&self, id: u32) -> Result<(), String> {
-        let mut shells = self.shells.lock().unwrap();
-        if let Some(mut s) = shells.remove(&id) {
+        // Remove under the lock, then kill+wait outside it: reaping can take
+        // a while and must not stall writes/resizes on other shells.
+        let mut s = {
+            let mut shells = self.shells.lock().unwrap_or_else(PoisonError::into_inner);
+            shells.remove(&id)
+        };
+        if let Some(s) = s.as_mut() {
             let _ = s.child.kill();
             let _ = s.child.wait();
         }
@@ -145,6 +158,29 @@ impl ShellManager {
     }
 
     pub fn list(&self) -> Vec<u32> {
-        self.shells.lock().unwrap().keys().copied().collect()
+        self.shells
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn ids_increase_and_missing_shell_ops_fail_soft() {
+        let m = ShellManager::new();
+        let a = m.alloc_id();
+        let b = m.alloc_id();
+        assert_eq!(b, a + 1);
+        assert!(m.write(a, "x").is_err());
+        assert!(m.resize(a, 1, 1).is_err());
+        assert!(m.kill(a).is_ok()); // idempotent
+        assert!(m.list().is_empty());
     }
 }

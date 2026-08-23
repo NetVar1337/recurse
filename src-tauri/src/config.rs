@@ -57,3 +57,36 @@ pub fn set_api_key(key: Option<String>) -> Result<(), String> {
 pub fn set_model(model: String) -> Result<(), String> {
     update(|c| c.model = Some(model))
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn set_and_load_roundtrip() {
+        crate::testhome::with_test_home(|_| {
+            let cfg = load();
+            assert!(cfg.openrouter_api_key.is_none());
+            set_api_key(Some("sk-test".into())).unwrap();
+            set_model("model-x".into()).unwrap();
+            let cfg = load();
+            assert_eq!(cfg.openrouter_api_key.as_deref(), Some("sk-test"));
+            assert_eq!(cfg.model.as_deref(), Some("model-x"));
+            // Updating one field preserves the other.
+            set_model("model-y".into()).unwrap();
+            let cfg = load();
+            assert_eq!(cfg.model.as_deref(), Some("model-y"));
+            assert_eq!(cfg.openrouter_api_key.as_deref(), Some("sk-test"));
+        });
+    }
+
+    #[test]
+    fn empty_key_clears_entry() {
+        crate::testhome::with_test_home(|_| {
+            set_api_key(Some("k".into())).unwrap();
+            set_api_key(None).unwrap();
+            assert!(load().openrouter_api_key.is_none());
+        });
+    }
+}

@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -16,10 +16,20 @@ pub struct ToolContext {
     pub session: Arc<Mutex<Option<R2Session>>>,
     pub debug: Arc<Mutex<Option<R2Session>>>,
     pub debug_stdin: Arc<Mutex<Option<File>>>,
+    /// Same gate the Tauri commands use, so agent-issued continues cannot
+    /// interleave with a UI-issued one and inspections fail fast either way.
+    pub debug_busy: Arc<AtomicBool>,
+    /// Published r2 PID for stop/interrupt — agent-spawned sessions must be
+    /// reachable by the teardown path exactly like UI-spawned ones.
+    pub debug_pid: Arc<std::sync::atomic::AtomicU32>,
+    /// Stop flag for the stdout drain pump (agent path, no UI attached).
+    pub debug_output_done: Arc<std::sync::atomic::AtomicBool>,
     pub project: Option<String>,
 }
 
 const MAX_RESULT_CHARS: usize = 12_000;
+/// Matches `commands::STDIN_TIMEOUT`; kept local so the modules stay decoupled.
+const STDIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn tool(name: &str, description: &str, params: Value) -> Value {
     json!({
@@ -209,14 +219,19 @@ fn render(value: Value) -> String {
 
 fn truncate(s: &str) -> String {
     if s.len() <= MAX_RESULT_CHARS {
-        s.to_string()
-    } else {
-        format!(
-            "{}\n...\n[truncated {} characters]",
-            &s[..MAX_RESULT_CHARS],
-            s.len() - MAX_RESULT_CHARS
-        )
+        return s.to_string();
     }
+    // Byte-slicing would panic on a multi-byte UTF-8 boundary; cut on a char
+    // boundary instead.
+    let mut cut = MAX_RESULT_CHARS;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!(
+        "{}\n...\n[truncated {} characters]",
+        &s[..cut],
+        s.len() - cut
+    )
 }
 
 fn with_sess<F>(ctx: &ToolContext, f: F) -> Result<Value, String>
@@ -233,14 +248,23 @@ where
     f(sess)
 }
 
+/// Run `f` against the live debug session, failing fast when a continue is
+/// in flight (same contract as the Tauri inspection commands).
 fn with_debug<F>(ctx: &ToolContext, f: F) -> Result<Value, String>
 where
     F: FnOnce(&R2Session) -> Result<Value, String>,
 {
+    if ctx.debug_busy.load(Ordering::SeqCst) {
+        return Err("debugger is running — wait for continue to hit a breakpoint".into());
+    }
     let guard = ctx
         .debug
         .lock()
         .map_err(|e| format!("debug lock poisoned: {e}"))?;
+    // Re-check under the lock: a continue may have started while we waited.
+    if ctx.debug_busy.load(Ordering::SeqCst) {
+        return Err("debugger is running — wait for continue to hit a breakpoint".into());
+    }
     let sess = guard
         .as_ref()
         .ok_or_else(|| "debugger not started".to_string())?;
@@ -249,14 +273,21 @@ where
 
 /// Ensure a debug session exists (spawned on the currently loaded binary) so
 /// the agent can start the debugger autonomously, then run `f` against it.
+/// Refuses to spawn while a continue is running.
 fn with_debug_mut<F>(ctx: &ToolContext, f: F) -> Result<Value, String>
 where
     F: FnOnce(&R2Session) -> Result<Value, String>,
 {
+    if ctx.debug_busy.load(Ordering::SeqCst) {
+        return Err("debugger is running — wait for continue to hit a breakpoint".into());
+    }
     let mut guard = ctx
         .debug
         .lock()
         .map_err(|e| format!("debug lock poisoned: {e}"))?;
+    if ctx.debug_busy.load(Ordering::SeqCst) {
+        return Err("debugger is running — wait for continue to hit a breakpoint".into());
+    }
     if guard.is_none() {
         let path = {
             let s = ctx
@@ -268,18 +299,53 @@ where
                 .path
                 .clone()
         };
-        debugger::prepare_profile()?;
-        let stdin = debugger::open_stdin()?;
-        *guard = Some(
-            crate::session::R2Session::open_with_args(path, crate::debugger::SPAWN_ARGS.to_vec())
-                .map_err(|e| format!("failed to start debugger: {e}"))?,
-        );
+        // Discarding pump (attached inside spawn): the agent path has no UI
+        // to feed, but the stdout FIFO must be drained or the debuggee blocks
+        // on a full pipe.
+        ctx.debug_output_done
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let done = Arc::clone(&ctx.debug_output_done);
+        let (sess, stdin) = debugger::spawn_debug_session(&path, done, |_| {})
+            .map_err(|e| format!("failed to start debugger: {e}"))?;
+        ctx.debug_pid.store(sess.pid(), Ordering::SeqCst);
+        *guard = Some(sess);
         *ctx.debug_stdin
             .lock()
             .map_err(|e| format!("debug stdin lock poisoned: {e}"))? = Some(stdin);
     }
-    let sess = guard.as_ref().unwrap();
+    let sess = guard
+        .as_ref()
+        .ok_or_else(|| "debugger session vanished".to_string())?;
     f(sess)
+}
+
+/// Agent-side continue. Takes the same single-continue gate as the UI's
+/// `dc` so an agent turn and a user click can never run two continues at
+/// once; the flag is always cleared afterwards (success or failure).
+fn agent_continue(ctx: &ToolContext) -> Result<Value, String> {
+    if ctx
+        .debug_busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("debugger already running".into());
+    }
+    // Take the lock directly — with_debug would reject because we just set
+    // the very busy flag it treats as a blocked-continue marker.
+    let guard = match ctx.debug.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            ctx.debug_busy.store(false, Ordering::SeqCst);
+            return Err(format!("debug lock poisoned: {e}"));
+        }
+    };
+    let result = match guard.as_ref() {
+        Some(sess) => debugger::continue_run(sess),
+        None => Err("debugger not started".into()),
+    };
+    drop(guard);
+    ctx.debug_busy.store(false, Ordering::SeqCst);
+    result
 }
 
 /// Execute a single tool call against the live sessions and return its result
@@ -327,10 +393,14 @@ pub fn execute(tc: &ToolCall, ctx: &ToolContext) -> Result<String, String> {
             })
         }
         "debug_start" => {
-            let argv: Vec<&str> = args
+            let argv: Vec<String> = args
                 .get("args")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<&str>>())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<String>>()
+                })
                 .unwrap_or_default();
             with_debug_mut(ctx, |s| debugger::start(s, &argv))
         }
@@ -339,7 +409,7 @@ pub fn execute(tc: &ToolCall, ctx: &ToolContext) -> Result<String, String> {
             with_debug(ctx, |s| debugger::breakpoint(s, addr))
         }
         "debug_breakpoints" => with_debug(ctx, debugger::breakpoints),
-        "debug_continue" => with_debug(ctx, debugger::continue_run),
+        "debug_continue" => agent_continue(ctx),
         "debug_step" => with_debug(ctx, debugger::step),
         "debug_step_over" => with_debug(ctx, debugger::step_over),
         "debug_stdin" => {
@@ -351,11 +421,10 @@ pub fn execute(tc: &ToolCall, ctx: &ToolContext) -> Result<String, String> {
             let pipe = stdin
                 .as_mut()
                 .ok_or_else(|| "debugger stdin is not available".to_string())?;
-            pipe.write_all(format!("{data}\n").as_bytes())
-                .map_err(|e| format!("debugger stdin write failed: {e}"))?;
-            pipe.flush()
-                .map_err(|e| format!("debugger stdin flush failed: {e}"))?;
-            Ok(json!({ "written": true }))
+            // Bounded nonblocking write: a stopped debuggee must not wedge
+            // the agent loop.
+            debugger::write_stdin(pipe, format!("{data}\n").as_bytes(), STDIN_TIMEOUT)
+                .map(|_| json!({ "written": true }))
         }
         "debug_registers" => with_debug(ctx, debugger::registers),
         "debug_read_memory" => {
@@ -403,4 +472,91 @@ pub fn execute(tc: &ToolCall, ctx: &ToolContext) -> Result<String, String> {
     };
 
     result.map(|v| truncate(&render(v)))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    mod tooltests {
+        use super::*;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use crate::agent::{ToolCall, ToolCallFn};
+
+        fn ctx() -> ToolContext {
+            ToolContext {
+                session: Arc::new(Mutex::new(None)),
+                debug: Arc::new(Mutex::new(None)),
+                debug_stdin: Arc::new(Mutex::new(None)),
+                debug_busy: Arc::new(AtomicBool::new(false)),
+                debug_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                debug_output_done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                project: None,
+            }
+        }
+
+        #[test]
+        fn truncate_respects_utf8_boundaries() {
+            // Regression: byte-slicing at MAX_RESULT_CHARS panicked when the
+            // cut landed inside a multi-byte character.
+            let ascii = "a".repeat(MAX_RESULT_CHARS);
+            assert_eq!(truncate(&ascii), ascii);
+            let cjk = "漢".repeat(10_000); // 30k bytes of 3-byte chars
+            let t = truncate(&cjk);
+            assert!(t.chars().count() <= MAX_RESULT_CHARS / 3 + 100);
+            assert!(t.contains("[truncated"));
+        }
+
+        #[test]
+        fn arg_helpers() {
+            let v = serde_json::json!({"s": "x", "n": 7});
+            assert_eq!(get_str(&v, "s").unwrap(), "x");
+            assert!(get_str(&v, "missing").is_err());
+            assert_eq!(get_u64(&v, "n").unwrap(), 7);
+            assert!(get_u64(&v, "s").is_err());
+            assert_eq!(get_u64_opt(&v, "n", 1), 7);
+            assert_eq!(get_u64_opt(&v, "nope", 42), 42);
+        }
+
+        #[test]
+        fn render_and_unknown_tool() {
+            assert_eq!(render(Value::String("s".into())), "s");
+            assert!(render(serde_json::json!({"a":1})).contains("\"a\":1"));
+            let tc = ToolCall { id: "i".into(), call_type: "function".into(),
+                function: ToolCallFn { name: "nope".into(), arguments: "{}".into() } };
+            assert!(execute(&tc, &ctx()).unwrap_err().contains("unknown tool"));
+        }
+
+        #[test]
+        fn missing_sessions_report_clean_errors() {
+            for name in ["disassemble", "debug_registers", "debug_continue"] {
+                let tc = ToolCall { id: "i".into(), call_type: "function".into(),
+                    function: ToolCallFn {
+                        name: name.into(),
+                        arguments: if name == "disassemble" { r#"{"addr":16}"#.into() } else { "{}".into() },
+                    }};
+                let err = execute(&tc, &ctx()).unwrap_err();
+                assert!(err.contains("no binary loaded") || err.contains("debugger not started"), "{name}: {err}");
+            }
+        }
+
+        #[test]
+        fn memory_tools_roundtrip_via_execute() {
+            crate::testhome::with_test_home(|_| {
+                let c = ctx();
+                let mk = |n: &str, a: serde_json::Value| ToolCall {
+                    id: "i".into(), call_type: "function".into(),
+                    function: ToolCallFn { name: n.into(), arguments: a.to_string() },
+                };
+                execute(&mk("save_memory", serde_json::json!({"key":"k","value":"v"})), &c).unwrap();
+                let out = execute(&mk("load_memory", serde_json::json!({"key":"k"})), &c).unwrap();
+                assert!(out.contains("v"));
+                execute(&mk("list_memory", serde_json::json!({})), &c).unwrap();
+                execute(&mk("delete_memory", serde_json::json!({"key":"k"})), &c).unwrap();
+                assert!(execute(&mk("load_memory", serde_json::json!({"key":"k"})), &c).is_err());
+            });
+        }
+    }
 }
