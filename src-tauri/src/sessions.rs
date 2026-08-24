@@ -37,7 +37,7 @@ fn sessions_dir(project: Option<&str>) -> Result<PathBuf, String> {
     Ok(project::project_dir(effective_project(project))?.join("sessions"))
 }
 
-fn session_dir(project: Option<&str>, id: &str) -> Result<PathBuf, String> {
+pub fn session_dir(project: Option<&str>, id: &str) -> Result<PathBuf, String> {
     Ok(sessions_dir(project)?.join(id))
 }
 

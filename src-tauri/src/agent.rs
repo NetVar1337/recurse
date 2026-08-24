@@ -312,11 +312,10 @@ fn build_system_prompt(path: &str, info: &Value, memory: &str) -> String {
          flags, or passwords.\n\n\
          Current target: {path}\n\
          Binary: arch={arch} bits={bits} type={kind}\n\n\
-         You act through tools. Prefer the analysis tools to read the binary, \
-         the debug tools to run and inspect it at runtime, and the memory \
-         tools to record findings so they survive between sessions. After \
-         each tool result, reason about what you learned and decide the next \
-         step. Be concise and focused on the task."
+         You act through tools. Action-first: prefer bash with r2 (`r2 -AA -q -c 'izz; afl; pdf @ 0x...; p8 ...; ps @ ...'`) and python (uv, capstone, unicorn, numba) to actually reverse and solve, then write the solution (write/edit/apply_patch) – do not stall in read/search loops.\n\
+         Tools: bash (persistent shell, workdir instead of cd, Python via python3/uv, r2 via r2 -AA -q -c) is your primary driver; use read/write/edit/apply_patch for file I/O (2000-line default, edit needs prior read); grep/glob are ripgrep-style but often return empty on stripped PE – if they do, switch to bash+r2 instead of retrying same pattern; todowrite to plan, skill to load guidance, question to ask user.\n\
+         Critical: DO NOT make redundant read/search/grep calls with identical args. The harness will return `doom_loop` after 3 repeats and you must try a different tool/args. If a tool output is truncated (~12000 chars) or says 'No files found', narrow with offset/limit or include/path, or switch to bash+r2. After each tool result, reason briefly and pick the highest-value next action that writes or executes, not just reads.\n\
+         Keep responses short (CLI), be concise, and verify via bash (run keygen, test serial) before finishing."
     );
     if !memory.is_empty() {
         prompt.push_str("\n\nPreviously saved memory (from earlier sessions):\n");
