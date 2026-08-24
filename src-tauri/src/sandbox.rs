@@ -186,8 +186,11 @@ pub fn wrap_r2_argv_with(
             argv.push("--bind".into());
             argv.push(private_dir.to_string_lossy().into_owned());
             argv.push(private_dir.to_string_lossy().into_owned());
-            // The target itself, read-only, same path.
-            argv.push("--ro-bind".into());
+            // The target itself. Use --bind (rw) not --ro-bind: r2 -d's dbg://
+            // plugin opens the file with WRITE (even for read-only debugging)
+            // and would fail with "Cannot open 'dbg://... for writing" if ro.
+            // The sandbox still isolates it via --die-with-parent + no HOME.
+            argv.push("--bind".into());
             argv.push(target.to_string_lossy().into_owned());
             argv.push(target.to_string_lossy().into_owned());
             // Then the payload — absolute r2 path so exec cannot miss,

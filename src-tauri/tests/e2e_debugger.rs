@@ -715,6 +715,10 @@ fn agent_tools_drive_real_debug_session() {
         debug_busy: h.state.debug_busy.clone(),
         debug_pid: h.state.debug_pid.clone(),
         debug_output_done: h.state.debug_output_done.clone(),
+        action_first: false,
+        bash_used: Arc::new(AtomicBool::new(false)),
+        bash_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        python_used: Arc::new(AtomicBool::new(false)),
         project: None,
     };
     let mk = |name: &str, args: serde_json::Value| recurse_lib::agent::ToolCall {
@@ -726,32 +730,31 @@ fn agent_tools_drive_real_debug_session() {
         },
     };
 
-    // Analysis-side tool.
-    assert!(execute(&mk("functions", serde_json::json!({})), &ctx).is_ok());
+    // The agent surface is bash/read/write/edit only — every native r2/debug
+    // tool must be refused as UI-only so the agent drives analysis via bash.
+    for native in [
+        "functions",
+        "debug_start",
+        "debug_breakpoint",
+        "debug_registers",
+        "debug_continue",
+        "debug_stdin",
+    ] {
+        let err = execute(&mk(native, serde_json::json!({})), &ctx)
+            .err()
+            .unwrap_or_else(|| format!("{native}: expected rejection"));
+        assert!(err.contains("unknown tool"), "{native}: {err}");
+    }
 
-    // debug_start spawns through the sandbox-aware path.
-    execute(&mk("debug_start", serde_json::json!({})), &ctx).expect("agent debug_start");
-    assert!(!h.state.debug_pid.load(Ordering::SeqCst).eq(&0));
-
-    // Breakpoint + continue via tools hits main like the UI path.
-    execute(
-        &mk("debug_breakpoint", serde_json::json!({"addr": "0"})),
+    // bash works over the live session's environment and marks bash_used.
+    assert!(!ctx.bash_used.load(Ordering::SeqCst));
+    let out = execute(
+        &mk("bash", serde_json::json!({"command": "echo agent-bash-ok"})),
         &ctx,
     )
-    .unwrap_err(); // bad addr rejected
-    execute(&mk("debug_registers", serde_json::json!({})), &ctx).expect("registers while stopped");
-
-    // Single-continue gate: second concurrent continue is refused.
-    let busy2 = ctx.debug_busy.clone();
-    busy2.store(true, Ordering::SeqCst); // simulate in-flight continue
-    let err = execute(&mk("debug_continue", serde_json::json!({})), &ctx).unwrap_err();
-    assert!(err.contains("already running"), "{err}");
-    busy2.store(false, Ordering::SeqCst);
-
-    // Memory tools already covered in unit tests; stdin error path here:
-    let err = execute(&mk("debug_stdin", serde_json::json!({"data": "x"})), &ctx);
-    // FIFO exists after debug_start; write must succeed (program at entry).
-    assert!(err.is_ok(), "{err:?}");
+    .expect("agent bash");
+    assert!(out.contains("agent-bash-ok"), "{out}");
+    assert!(ctx.bash_used.load(Ordering::SeqCst));
 
     commands::debug_stop_impl(&h.state).unwrap();
 }

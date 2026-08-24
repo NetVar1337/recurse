@@ -306,16 +306,13 @@ fn build_system_prompt(path: &str, info: &Value, memory: &str) -> String {
     let bits = info["bin"]["bits"].as_u64().unwrap_or(0);
     let kind = info["bin"]["type"].as_str().unwrap_or("?");
     let mut prompt = format!(
-        "You are Recurse, an expert reverse-engineering agent embedded in a \
-         desktop binary analysis tool. Your goal is to analyze and crack \
-         targets (crackmes): locate the validation logic and recover keys, \
-         flags, or passwords.\n\n\
-         Current target: {path}\n\
-         Binary: arch={arch} bits={bits} type={kind}\n\n\
-         You act through tools. Action-first: prefer bash with r2 (`r2 -AA -q -c 'izz; afl; pdf @ 0x...; p8 ...; ps @ ...'`) and python (uv, capstone, unicorn, numba) to actually reverse and solve, then write the solution (write/edit/apply_patch) – do not stall in read/search loops.\n\
-         Tools: bash (persistent shell, workdir instead of cd, Python via python3/uv, r2 via r2 -AA -q -c) is your primary driver; use read/write/edit/apply_patch for file I/O (2000-line default, edit needs prior read); grep/glob are ripgrep-style but often return empty on stripped PE – if they do, switch to bash+r2 instead of retrying same pattern; todowrite to plan, skill to load guidance, question to ask user.\n\
-         Critical: DO NOT make redundant read/search/grep calls with identical args. The harness will return `doom_loop` after 3 repeats and you must try a different tool/args. If a tool output is truncated (~12000 chars) or says 'No files found', narrow with offset/limit or include/path, or switch to bash+r2. After each tool result, reason briefly and pick the highest-value next action that writes or executes, not just reads.\n\
-         Keep responses short (CLI), be concise, and verify via bash (run keygen, test serial) before finishing."
+        "You are Recurse, an expert reverse-engineering agent. Crack the target: recover the serial/key.\n\
+         Target: {path} arch={arch} bits={bits} type={kind} ({})\n\
+         Rules: You MUST be action-first and concise (<4 lines text). The first tool call MUST be bash.\n\
+         Workflow (do not deviate): 1) bash immediately with `file`, `ls`, and targeted r2 (`r2 -AA -q -c 'izz; iz; afl~main; p8 32 @ 0x140005160; ps @ 0x140005000; px 32 @ 0x1400051a0'`). 2) bash Python with capstone/unicorn/numba (`uv run --with capstone --with unicorn --with numba` or `uv venv`) to decode probe physics and brute-force. 3) write/edit keygen to /tmp/keygen.py (read first, then write/edit). 4) bash verify the keygen.\n\
+         Tools: bash for r2/python/uv; read/write/edit for files. If bash output is truncated, rerun a narrower r2 command.\n\
+         Anti-loop: doom_loop fires after 3 identical tool:args. Batch independent calls in parallel. Verify via bash before finishing.",
+        if kind.contains("pe") || kind.contains("mach0") || arch.contains("x86") && kind.contains("pe") { "PE/Mach-O on Linux — static bash+r2, not debug_*" } else { kind }
     );
     if !memory.is_empty() {
         prompt.push_str("\n\nPreviously saved memory (from earlier sessions):\n");
@@ -657,6 +654,8 @@ impl Agent {
             return Ok(());
         }
 
+        let mut empty_final_retries = 0u8;
+        let mut continuation_nudge: Option<ChatMessage> = None;
         loop {
             if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
                 self.cancel
@@ -670,6 +669,9 @@ impl Agent {
                     .map(compact_for_model)
                     .map(|m| m.without_reasoning()),
             );
+            if let Some(nudge) = continuation_nudge.take() {
+                full.push(nudge);
+            }
 
             let outcome = stream_http(run_id, config, &full, tools, emit)?;
 
@@ -720,6 +722,21 @@ impl Agent {
                     });
                     self.messages.push(ChatMessage::tool(tc.id.clone(), result));
                 }
+                continue;
+            }
+
+            // Some models emit an empty text response after a tool result. It
+            // is not a valid completion for an action-oriented agent: keep the
+            // turn alive and transiently ask for the next action instead of
+            // persisting an empty answer and stopping.
+            if outcome.content.trim().is_empty() {
+                empty_final_retries += 1;
+                if empty_final_retries > 2 {
+                    return Err("model returned an empty answer three times; the agent did not complete the task".into());
+                }
+                continuation_nudge = Some(ChatMessage::user(
+                    "Continue the task. Do not finish with an empty answer. Use the next highest-value action now; for reverse engineering, run bash with targeted r2/Python and write or verify the solver.",
+                ));
                 continue;
             }
 
@@ -886,6 +903,18 @@ mod tests {
         assert!(res.is_ok(), "run failed: {res:?}");
         assert_eq!(content[0], "Hello, world!");
         assert!(events.iter().any(|e| matches!(e, AgentEvent::Done { .. })));
+    }
+
+    #[test]
+    fn empty_model_response_is_retried_before_completion() {
+        let (res, events, content, messages) =
+            run_with(vec![content_body(""), content_body("continued")]);
+        assert!(res.is_ok(), "run failed: {res:?}");
+        assert_eq!(content[0], "continued");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done { content, .. } if content == "continued")));
+        assert!(!messages.iter().any(|m| m.role == "user" && m.content.as_deref() == Some("Continue the task. Do not finish with an empty answer. Use the next highest-value action now; for reverse engineering, run bash with targeted r2/Python and write or verify the solver.")));
     }
 
     #[test]

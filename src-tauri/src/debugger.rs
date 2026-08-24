@@ -209,13 +209,32 @@ pub fn spawn_debug_session(
     done: Arc<AtomicBool>,
     sink: impl FnMut(Vec<u8>) + Send + 'static,
 ) -> Result<(R2Session, File), String> {
+    // On Linux, r2 -d (dbg://) only supports native ELF via ptrace.
+    // PE (Windows) and Mach-O (macOS) will always fail with
+    // "Cannot open 'dbg://... for writing" — tell the agent to use
+    // static analysis (bash + r2 -AA) instead of debug_* tools.
+    if let Ok(out) = std::process::Command::new("file").arg(target).output() {
+        let txt = String::from_utf8_lossy(&out.stdout);
+        if txt.contains("Mach-O") || txt.contains("PE32") || txt.contains("MS Windows") {
+            return Err(format!(
+                "Live debugging (r2 -d / dbg://) is not supported for this binary on Linux ({}). Use bash with `r2 -AA -q -c 'afl; pdf @ ...; izz; px ...'` and python (capstone/unicorn) for static analysis instead of debug_* tools.",
+                txt.lines().next().unwrap_or("non-ELF").trim()
+            ));
+        }
+    }
     prepare_profile()?;
     // Anchor stdin: r2 blocks opening the redirect until a writer exists.
     let stdin = open_stdin()?;
     // Reader side up next: attach the pump before r2 can block on it.
     spawn_output_pump(Arc::clone(&done), sink)?;
     let argv = crate::sandbox::wrap_r2_argv(target, &spawn_args(), &paths().dir)?;
-    let sess = R2Session::open_argv(argv).map_err(|e| format!("failed to start debugger: {e}"))?;
+    let sess = R2Session::open_argv(argv).map_err(|e| {
+        if e.contains("dbg://") && e.contains("for writing") {
+            format!("{e} — Live debugging (r2 -d) only works for native ELF on Linux/macOS. For PE/Mach-O like '{}', use bash with `r2 -AA` static analysis instead.", target.display())
+        } else {
+            format!("failed to start debugger: {e}")
+        }
+    })?;
     Ok((sess, stdin))
 }
 #[cfg(windows)]

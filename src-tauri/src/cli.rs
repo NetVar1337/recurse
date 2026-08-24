@@ -24,8 +24,8 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
@@ -43,7 +43,11 @@ use crate::tools::ToolContext;
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
-#[command(name = "recurse-cli", version, about = "Headless agent harness for Recurse — deterministic r2 + bash + file tools")]
+#[command(
+    name = "recurse-cli",
+    version,
+    about = "Headless agent harness for Recurse — deterministic r2 + bash + file tools"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -191,14 +195,20 @@ pub fn run() -> Result<(), String> {
 
 fn cmd_tools() -> Result<(), String> {
     let schema = crate::tools::schema();
-    println!("{}", serde_json::to_string_pretty(&schema).map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&schema).map_err(|e| e.to_string())?
+    );
     Ok(())
 }
 
 fn cmd_models() -> Result<(), String> {
     let models = crate::agent::fetch_models()?;
     for m in models {
-        println!("{}\t{}\tfree={} ctx={} price={}", m.id, m.name, m.free, m.context_length, m.prompt_price);
+        println!(
+            "{}\t{}\tfree={} ctx={} price={}",
+            m.id, m.name, m.free, m.context_length, m.prompt_price
+        );
     }
     Ok(())
 }
@@ -209,7 +219,10 @@ fn cmd_history(args: HistoryArgs) -> Result<(), String> {
             let json = sessions::load_history(args.project.as_deref(), &args.session)
                 .ok_or_else(|| format!("no history for session {}", args.session))?;
             let msgs: Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-            println!("{}", serde_json::to_string_pretty(&msgs).map_err(|e| e.to_string())?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&msgs).map_err(|e| e.to_string())?
+            );
         }
         HistoryFormat::Human => {
             let json = sessions::load_history(args.project.as_deref(), &args.session)
@@ -219,7 +232,7 @@ fn cmd_history(args: HistoryArgs) -> Result<(), String> {
                 let role = &m.role;
                 let content = m.content.as_deref().unwrap_or("");
                 let reasoning = m.reasoning.as_deref().unwrap_or("");
-                println!("--- message {} [{}] ---", i+1, role);
+                println!("--- message {} [{}] ---", i + 1, role);
                 if !reasoning.is_empty() {
                     println!("[reasoning] {}", reasoning);
                 }
@@ -247,7 +260,8 @@ fn cmd_history(args: HistoryArgs) -> Result<(), String> {
                 // Fallback: render from chat.json
                 let json = sessions::load_history(args.project.as_deref(), &args.session)
                     .ok_or_else(|| format!("no history for session {}", args.session))?;
-                let msgs: Vec<ChatMessage> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+                let msgs: Vec<ChatMessage> =
+                    serde_json::from_str(&json).map_err(|e| e.to_string())?;
                 println!("{}", render_markdown(&msgs, &args.session));
             }
         }
@@ -258,7 +272,8 @@ fn cmd_history(args: HistoryArgs) -> Result<(), String> {
 fn cmd_export(args: ExportArgs) -> Result<(), String> {
     let session = sessions::get(args.project.as_deref(), &args.session)
         .map_err(|e| format!("get session: {e}"))?;
-    let history_json = sessions::load_history(args.project.as_deref(), &args.session).unwrap_or_else(|| "[]".into());
+    let history_json = sessions::load_history(args.project.as_deref(), &args.session)
+        .unwrap_or_else(|| "[]".into());
     let msgs: Vec<ChatMessage> = serde_json::from_str(&history_json).map_err(|e| e.to_string())?;
 
     let out_value = if args.opencode {
@@ -313,7 +328,9 @@ fn cmd_export(args: ExportArgs) -> Result<(), String> {
                 parts.push(serde_json::json!({"type":"text","text": "", "id": format!("prt_{:04}_empty", idx), "sessionID": op_id, "messageID": msg_id}));
             }
             let role = m.role.clone();
-            let directory = project::project_dir(args.project.as_deref().unwrap_or("default")).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "/tmp".into());
+            let directory = project::project_dir(args.project.as_deref().unwrap_or("default"))
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "/tmp".into());
             let mut info = serde_json::json!({
                 "id": msg_id, "role": role, "agent": "build", "mode": "build", "path": {"cwd": directory, "root": "/"}, "providerID": "opencode", "modelID": session.model, "model": { "modelID": session.model, "providerID": "opencode", "id": session.model }, "time": { "created": session.created_at, "completed": session.updated_at }, "sessionID": op_id, "cost": 0, "tokens": {"total": 0, "input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "finish": "stop"
             });
@@ -337,7 +354,11 @@ fn cmd_export(args: ExportArgs) -> Result<(), String> {
     let pretty = serde_json::to_string_pretty(&out_value).map_err(|e| e.to_string())?;
     if let Some(out) = args.output {
         std::fs::write(&out, pretty).map_err(|e| e.to_string())?;
-        eprintln!("[recurse-cli] exported {} to {}", args.session, out.display());
+        eprintln!(
+            "[recurse-cli] exported {} to {}",
+            args.session,
+            out.display()
+        );
     } else {
         println!("{}", pretty);
     }
@@ -345,47 +366,110 @@ fn cmd_export(args: ExportArgs) -> Result<(), String> {
 }
 
 fn cmd_import(args: ImportArgs) -> Result<(), String> {
-    let raw = std::fs::read_to_string(&args.file).map_err(|e| format!("read {}: {e}", args.file.display()))?;
+    let raw = std::fs::read_to_string(&args.file)
+        .map_err(|e| format!("read {}: {e}", args.file.display()))?;
     // Opencode's `export` prints "Exporting session: ses_..." to stdout before JSON when
     // redirected via `> file`; be tolerant and slice to first `{`.
-    let data = raw.trim_start().find('{').map(|i| &raw[i..]).unwrap_or(&raw);
-    let v: Value = serde_json::from_str(data).map_err(|e| format!("parse {}: {e} (first 200 chars: {})", args.file.display(), &data[..data.len().min(200)]))?;
+    let data = raw
+        .trim_start()
+        .find('{')
+        .map(|i| &raw[i..])
+        .unwrap_or(&raw);
+    let v: Value = serde_json::from_str(data).map_err(|e| {
+        format!(
+            "parse {}: {e} (first 200 chars: {})",
+            args.file.display(),
+            &data[..data.len().min(200)]
+        )
+    })?;
 
     // Detect opencode export (has "info" + "messages" with parts) vs recurse export (has "session" + "messages" as ChatMessage)
     let (session_id, chat_json) = if v.get("info").is_some() && v.get("messages").is_some() {
         // opencode format
         let info = &v["info"];
-        let sid = args.session.clone().unwrap_or_else(|| info.get("id").and_then(|x| x.as_str()).unwrap_or("imported").to_string());
-        let sid = if sid.starts_with("ses_") { format!("s-op-{}", &sid[4..8]) } else { sid };
-        let messages = v.get("messages").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        let sid = args.session.clone().unwrap_or_else(|| {
+            info.get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("imported")
+                .to_string()
+        });
+        let sid = if sid.starts_with("ses_") {
+            format!("s-op-{}", &sid[4..8])
+        } else {
+            sid
+        };
+        let messages = v
+            .get("messages")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
         let mut chat: Vec<ChatMessage> = Vec::new();
         for m in messages {
             let info = m.get("info").cloned().unwrap_or(Value::Null);
-            let role = info.get("role").and_then(|x| x.as_str()).unwrap_or("assistant").to_string();
-            let parts = m.get("parts").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+            let role = info
+                .get("role")
+                .and_then(|x| x.as_str())
+                .unwrap_or("assistant")
+                .to_string();
+            let parts = m
+                .get("parts")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
             let mut content: Vec<String> = Vec::new();
             let mut tool_calls = Vec::new();
             let mut reasoning: Option<String> = None;
             for p in parts {
                 let typ = p.get("type").and_then(|x| x.as_str()).unwrap_or("");
                 match typ {
-                    "text" => if let Some(t) = p.get("text").and_then(|x| x.as_str()) { content.push(t.to_string()); },
-                    "reasoning" => if let Some(t) = p.get("text").and_then(|x| x.as_str()) { reasoning = Some(t.to_string()); },
+                    "text" => {
+                        if let Some(t) = p.get("text").and_then(|x| x.as_str()) {
+                            content.push(t.to_string());
+                        }
+                    }
+                    "reasoning" => {
+                        if let Some(t) = p.get("text").and_then(|x| x.as_str()) {
+                            reasoning = Some(t.to_string());
+                        }
+                    }
                     "tool" => {
-                        let tool = p.get("tool").and_then(|x| x.as_str()).unwrap_or("bash").to_string();
-                        let call_id = p.get("callID").and_then(|x| x.as_str()).unwrap_or("call_import").to_string();
-                        let input = p.get("state").and_then(|s| s.get("input")).cloned().unwrap_or(Value::Null);
+                        let tool = p
+                            .get("tool")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("bash")
+                            .to_string();
+                        let call_id = p
+                            .get("callID")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("call_import")
+                            .to_string();
+                        let input = p
+                            .get("state")
+                            .and_then(|s| s.get("input"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
                         tool_calls.push(crate::agent::ToolCall {
                             id: call_id,
                             call_type: "function".into(),
-                            function: crate::agent::ToolCallFn { name: tool, arguments: input.to_string() }
+                            function: crate::agent::ToolCallFn {
+                                name: tool,
+                                arguments: input.to_string(),
+                            },
                         });
                     }
                     _ => {}
                 }
             }
-            let text = if content.is_empty() { None } else { Some(content.join("\n")) };
-            let tc_opt = if tool_calls.is_empty() { None } else { Some(tool_calls) };
+            let text = if content.is_empty() {
+                None
+            } else {
+                Some(content.join("\n"))
+            };
+            let tc_opt = if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            };
             let mut msg = ChatMessage {
                 role: role.clone(),
                 content: text,
@@ -399,15 +483,45 @@ fn cmd_import(args: ImportArgs) -> Result<(), String> {
             }
             chat.push(msg);
         }
-        (sid, serde_json::to_string(&chat).map_err(|e| e.to_string())?)
+        (
+            sid,
+            serde_json::to_string(&chat).map_err(|e| e.to_string())?,
+        )
     } else if v.get("session").is_some() {
         let sess = &v["session"];
-        let sid = args.session.clone().or_else(|| sess.get("id").and_then(|x| x.as_str()).map(|s| s.to_string())).unwrap_or_else(|| format!("s-import-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+        let sid = args
+            .session
+            .clone()
+            .or_else(|| {
+                sess.get("id")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "s-import-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                )
+            });
         let msgs = v.get("messages").cloned().unwrap_or(Value::Array(vec![]));
-        (sid, serde_json::to_string(&msgs).map_err(|e| e.to_string())?)
+        (
+            sid,
+            serde_json::to_string(&msgs).map_err(|e| e.to_string())?,
+        )
     } else if v.is_array() {
         // raw ChatMessage array
-        let sid = args.session.clone().unwrap_or_else(|| format!("s-import-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+        let sid = args.session.clone().unwrap_or_else(|| {
+            format!(
+                "s-import-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            )
+        });
         (sid, data.to_string())
     } else {
         return Err("unrecognized import format (expected opencode export, recurse export, or ChatMessage array)".into());
@@ -428,14 +542,24 @@ fn cmd_import(args: ImportArgs) -> Result<(), String> {
                 // also fix session.json id
                 if let Ok(mut sess) = sessions::get(project.as_deref(), &sid) {
                     sess.id = sid.clone();
-                    let _ = std::fs::write(dst.join("session.json"), serde_json::to_string_pretty(&sess).unwrap_or_default());
+                    let _ = std::fs::write(
+                        dst.join("session.json"),
+                        serde_json::to_string_pretty(&sess).unwrap_or_default(),
+                    );
                 }
             }
             sessions::get(project.as_deref(), &sid).unwrap()
         })
     })?;
-    sessions::save_history(project.as_deref(), &session_id, &chat_json).map_err(|e| e.to_string())?;
-    eprintln!("[recurse-cli] imported {} ({} bytes) into project={} session={}", args.file.display(), chat_json.len(), project.as_deref().unwrap_or("default"), &session_id);
+    sessions::save_history(project.as_deref(), &session_id, &chat_json)
+        .map_err(|e| e.to_string())?;
+    eprintln!(
+        "[recurse-cli] imported {} ({} bytes) into project={} session={}",
+        args.file.display(),
+        chat_json.len(),
+        project.as_deref().unwrap_or("default"),
+        &session_id
+    );
     Ok(())
 }
 
@@ -447,20 +571,42 @@ fn render_markdown(msgs: &[ChatMessage], session_id: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Session {}\n\n", session_id));
     for (i, m) in msgs.iter().enumerate() {
-        out.push_str(&format!("## {}: {} ({} of {})\n\n", m.role, m.content.as_deref().unwrap_or("").lines().next().unwrap_or(""), i+1, msgs.len()));
+        out.push_str(&format!(
+            "## {}: {} ({} of {})\n\n",
+            m.role,
+            m.content
+                .as_deref()
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or(""),
+            i + 1,
+            msgs.len()
+        ));
         if let Some(r) = &m.reasoning {
-            if !r.is_empty() { out.push_str(&format!("> Reasoning: {}\n\n", r)); }
+            if !r.is_empty() {
+                out.push_str(&format!("> Reasoning: {}\n\n", r));
+            }
         }
         if let Some(tcs) = &m.tool_calls {
             for tc in tcs {
-                out.push_str(&format!("**Tool call `{}`** `id={}`\n```json\n{}\n```\n\n", tc.function.name, tc.id, tc.function.arguments));
+                out.push_str(&format!(
+                    "**Tool call `{}`** `id={}`\n```json\n{}\n```\n\n",
+                    tc.function.name, tc.id, tc.function.arguments
+                ));
             }
         }
         if let Some(tid) = &m.tool_call_id {
-            out.push_str(&format!("*Tool result {}*\n```\n{}\n```\n\n", tid, m.content.as_deref().unwrap_or("")));
+            out.push_str(&format!(
+                "*Tool result {}*\n```\n{}\n```\n\n",
+                tid,
+                m.content.as_deref().unwrap_or("")
+            ));
         } else if m.tool_calls.is_none() {
             if let Some(c) = &m.content {
-                if !c.is_empty() { out.push_str(&format!("{}\n\n", c)); }
+                if !c.is_empty() {
+                    out.push_str(&format!("{}\n\n", c));
+                }
             }
         }
         out.push_str("---\n\n");
@@ -468,10 +614,20 @@ fn render_markdown(msgs: &[ChatMessage], session_id: &str) -> String {
     out
 }
 
-fn write_transcript(project: Option<&str>, session_id: &str, prompt: &str, agent: &Agent, info: &Value, duration_ms: u128) {
+fn write_transcript(
+    project: Option<&str>,
+    session_id: &str,
+    prompt: &str,
+    agent: &Agent,
+    info: &Value,
+    duration_ms: u128,
+) {
     let msgs = agent.messages();
     let md = render_markdown(msgs, session_id);
-    let header = format!("# Transcript for {}\n\nPrompt: {}\nBinary info: {}\nDuration: {}ms\n\n", session_id, prompt, info, duration_ms);
+    let header = format!(
+        "# Transcript for {}\n\nPrompt: {}\nBinary info: {}\nDuration: {}ms\n\n",
+        session_id, prompt, info, duration_ms
+    );
     let full = header + &md;
     if let Ok(dir) = sessions::session_dir(project, session_id) {
         let _ = std::fs::create_dir_all(&dir);
@@ -480,26 +636,46 @@ fn write_transcript(project: Option<&str>, session_id: &str, prompt: &str, agent
         // Also append to per-project log for human browsing
         if let Ok(proj_dir) = project::project_dir(project.unwrap_or("default")) {
             let log = proj_dir.join("transcript.log");
-            let _ = std::fs::OpenOptions::new().create(true).append(true).open(&log).and_then(|mut f| {
-                writeln!(f, "\n=== {} session={} ===\nPrompt: {}\nMessages: {}\n", chrono_lite(), session_id, prompt, msgs.len())
-            });
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+                .and_then(|mut f| {
+                    writeln!(
+                        f,
+                        "\n=== {} session={} ===\nPrompt: {}\nMessages: {}\n",
+                        chrono_lite(),
+                        session_id,
+                        prompt,
+                        msgs.len()
+                    )
+                });
         }
     }
 }
 
 fn chrono_lite() -> String {
     // Cheap timestamp without adding chrono dep: seconds since epoch
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("{}", secs)
 }
 
 fn cmd_run(mut args: RunArgs) -> Result<(), String> {
     // Agent-first but human-readable: mark CLI mode for tools like `question` to prompt via tty
     // SAFETY: single-threaded setup path before any threads that read this.
-    unsafe { std::env::set_var("RECURSE_CLI", "1"); }
+    unsafe {
+        std::env::set_var("RECURSE_CLI", "1");
+    }
 
     // If --interactive and no prompt, enter REPL loop (back-and-forth)
-    if args.interactive && args.prompt.is_none() && args.prompt_pos.is_empty() && atty::is(atty::Stream::Stdin) {
+    if args.interactive
+        && args.prompt.is_none()
+        && args.prompt_pos.is_empty()
+        && atty::is(atty::Stream::Stdin)
+    {
         return cmd_run_repl(args);
     }
 
@@ -526,7 +702,9 @@ fn cmd_run(mut args: RunArgs) -> Result<(), String> {
 
 fn resolve_prompt(args: &mut RunArgs) -> Result<String, String> {
     if let Some(p) = args.prompt.take() {
-        if !p.trim().is_empty() { return Ok(p); }
+        if !p.trim().is_empty() {
+            return Ok(p);
+        }
     }
     if !args.prompt_pos.is_empty() {
         return Ok(args.prompt_pos.join(" "));
@@ -534,35 +712,60 @@ fn resolve_prompt(args: &mut RunArgs) -> Result<String, String> {
     if !atty::is(atty::Stream::Stdin) {
         let mut buf = String::new();
         use std::io::Read;
-        std::io::stdin().read_to_string(&mut buf).map_err(|e| e.to_string())?;
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| e.to_string())?;
         let t = buf.trim().to_string();
-        if !t.is_empty() { return Ok(t); }
+        if !t.is_empty() {
+            return Ok(t);
+        }
     }
     Err("prompt required: --prompt \"<task>\" or positional PROMPT or piped stdin (or --interactive for REPL)".into())
 }
 
 fn resolve_binary(args: &RunArgs) -> Result<PathBuf, String> {
     if let Some(p) = args.binary.clone() {
-        if !p.exists() { return Err(format!("binary not found: {}", p.display())); }
+        if !p.exists() {
+            return Err(format!("binary not found: {}", p.display()));
+        }
         Ok(p)
     } else if let Some(proj) = args.project.clone() {
         let pr = project::get(&proj).map_err(|e| format!("project {proj}: {e}"))?;
         project::touch(&proj).ok();
         let pb = PathBuf::from(pr.binary_path);
-        if !pb.exists() { return Err(format!("project {} binary not found: {}", proj, pb.display())); }
+        if !pb.exists() {
+            return Err(format!(
+                "project {} binary not found: {}",
+                proj,
+                pb.display()
+            ));
+        }
         Ok(pb)
     } else {
         Err("either --binary <path> or --project <name> is required".into())
     }
 }
 
-fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_opt: Option<String>) -> Result<(), String> {
+fn run_one_turn(
+    args: RunArgs,
+    prompt: String,
+    binary_path: PathBuf,
+    session_id_opt: Option<String>,
+) -> Result<(), String> {
     // Resolve LLM config with CLI overrides
     let mut cfg = LlmConfig::default();
-    if let Some(m) = args.model.clone() { cfg.model = m; }
-    if let Some(e) = args.endpoint.clone() { cfg.endpoint = e; }
-    if let Some(k) = args.api_key.clone() { cfg.api_key = Some(k); }
-    if args.dry_run { cfg.api_key = None; }
+    if let Some(m) = args.model.clone() {
+        cfg.model = m;
+    }
+    if let Some(e) = args.endpoint.clone() {
+        cfg.endpoint = e;
+    }
+    if let Some(k) = args.api_key.clone() {
+        cfg.api_key = Some(k);
+    }
+    if args.dry_run {
+        cfg.api_key = None;
+    }
 
     let proj_name = args.project.clone();
     let session_id = if let Some(sid) = session_id_opt {
@@ -570,7 +773,11 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
         sid
     } else {
         let s = sessions::create(proj_name.as_deref(), &cfg.model).map_err(|e| e.to_string())?;
-        eprintln!("[recurse-cli] new session {} (project={})", s.id, proj_name.as_deref().unwrap_or("default"));
+        eprintln!(
+            "[recurse-cli] new session {} (project={})",
+            s.id,
+            proj_name.as_deref().unwrap_or("default")
+        );
         s.id
     };
 
@@ -587,7 +794,10 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
     eprintln!("[recurse-cli] opening {} ...", binary_path.display());
     let r2 = R2Session::open(binary_path.to_string_lossy().to_string())?;
     let info = engine::info(&r2);
-    eprintln!("[recurse-cli] binary: {}", serde_json::to_string(&info).unwrap_or_default());
+    eprintln!(
+        "[recurse-cli] binary: {}",
+        serde_json::to_string(&info).unwrap_or_default()
+    );
     eprintln!("[recurse-cli] analyzing (aaa) ...");
     let _ = r2.analyze();
 
@@ -604,18 +814,27 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
 
     // Determine json_log path: explicit or <session>/events.jsonl (agent-first log)
     let json_log_path = args.json_log.clone().or_else(|| {
-        sessions::session_dir(proj_name.as_deref(), &session_id).ok().map(|p| p.join("events.jsonl"))
+        sessions::session_dir(proj_name.as_deref(), &session_id)
+            .ok()
+            .map(|p| p.join("events.jsonl"))
     });
     let json_writer: Option<Arc<Mutex<BufWriter<File>>>> = if let Some(p) = &json_log_path {
-        if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         match File::create(p) {
             Ok(f) => {
                 eprintln!("[recurse-cli] json-log: {}", p.display());
                 Some(Arc::new(Mutex::new(BufWriter::new(f))))
             }
-            Err(e) => { eprintln!("[recurse-cli] warn: create {}: {e}", p.display()); None }
+            Err(e) => {
+                eprintln!("[recurse-cli] warn: create {}: {e}", p.display());
+                None
+            }
         }
-    } else { None };
+    } else {
+        None
+    };
 
     // Write deterministic header for replay (system prompt + tool schema + info)
     if let Some(w) = &json_writer {
@@ -637,14 +856,30 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
     }
 
     let tools = crate::tools::schema();
-    let path_str = session.lock().map_err(|e| e.to_string())?.as_ref().map(|s| s.path.to_string_lossy().to_string()).unwrap_or_default();
-    let info_clone = session.lock().map_err(|e| e.to_string())?.as_ref().map(|s| s.info.clone()).unwrap_or(Value::Null);
+    let path_str = session
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .map(|s| s.path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let info_clone = session
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .map(|s| s.info.clone())
+        .unwrap_or(Value::Null);
     let run_id = session_id.clone();
     let verbose = args.verbose;
     let emit_json = args.json;
 
     #[derive(Default)]
-    struct Counters { tool_calls: usize, tool_results: usize, tokens: usize, reasoning_chars: usize, errors: usize }
+    struct Counters {
+        tool_calls: usize,
+        tool_results: usize,
+        tokens: usize,
+        reasoning_chars: usize,
+        errors: usize,
+    }
     let counters = Arc::new(Mutex::new(Counters::default()));
     let counters_clone = counters.clone();
 
@@ -655,6 +890,10 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
         debug_busy: debug_busy.clone(),
         debug_pid: debug_pid.clone(),
         debug_output_done: debug_output_done.clone(),
+        action_first: true,
+        bash_used: Arc::new(AtomicBool::new(false)),
+        bash_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        python_used: Arc::new(AtomicBool::new(false)),
         project: proj_name.clone(),
     };
 
@@ -671,11 +910,13 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
         move |ev: AgentEvent| {
             if let Ok(mut c) = counters.lock() {
                 match &ev {
-                    AgentEvent::ToolCall{..} => c.tool_calls += 1,
-                    AgentEvent::ToolResult{..} => c.tool_results += 1,
-                    AgentEvent::Token{delta,..} => c.tokens += delta.chars().count(),
-                    AgentEvent::Reasoning{delta,..} => c.reasoning_chars += delta.chars().count(),
-                    AgentEvent::Error{..} => c.errors += 1,
+                    AgentEvent::ToolCall { .. } => c.tool_calls += 1,
+                    AgentEvent::ToolResult { .. } => c.tool_results += 1,
+                    AgentEvent::Token { delta, .. } => c.tokens += delta.chars().count(),
+                    AgentEvent::Reasoning { delta, .. } => {
+                        c.reasoning_chars += delta.chars().count()
+                    }
+                    AgentEvent::Error { .. } => c.errors += 1,
                     _ => {}
                 }
             }
@@ -686,19 +927,44 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
                 }
             }
             if emit_json {
-                println!("{}", serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into()));
+                println!(
+                    "{}",
+                    serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into())
+                );
             } else {
                 match &ev {
-                    AgentEvent::Reasoning{delta,..} if verbose => eprint!("{}", delta),
-                    AgentEvent::Reasoning{..} => {},
-                    AgentEvent::Token{delta,..} => print!("{}", delta),
-                    AgentEvent::ToolCall{id, name, arguments, ..} => eprintln!("\n[tool_call:{}] {} {}", id, name, truncate_for_log(arguments, verbose)),
-                    AgentEvent::ToolResult{id, name, result, ..} => {
-                        let status = if result.contains("tool error") { "ERR" } else { "ok" };
-                        eprintln!("[tool_result:{}] {} [{}] -> {}", id, name, status, truncate_for_log(result, verbose));
+                    AgentEvent::Reasoning { delta, .. } if verbose => eprint!("{}", delta),
+                    AgentEvent::Reasoning { .. } => {}
+                    AgentEvent::Token { delta, .. } => print!("{}", delta),
+                    AgentEvent::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } => eprintln!(
+                        "\n[tool_call:{}] {} {}",
+                        id,
+                        name,
+                        truncate_for_log(arguments, verbose)
+                    ),
+                    AgentEvent::ToolResult {
+                        id, name, result, ..
+                    } => {
+                        let status = if result.contains("tool error") {
+                            "ERR"
+                        } else {
+                            "ok"
+                        };
+                        eprintln!(
+                            "[tool_result:{}] {} [{}] -> {}",
+                            id,
+                            name,
+                            status,
+                            truncate_for_log(result, verbose)
+                        );
                     }
-                    AgentEvent::Done{content,..} => eprintln!("\n[done] {}", content),
-                    AgentEvent::Error{message,..} => eprintln!("\n[error] {}", message),
+                    AgentEvent::Done { content, .. } => eprintln!("\n[done] {}", content),
+                    AgentEvent::Error { message, .. } => eprintln!("\n[error] {}", message),
                 }
                 let _ = std::io::stdout().flush();
                 let _ = std::io::stderr().flush();
@@ -708,7 +974,17 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
 
     let mut emit_box: Box<dyn FnMut(AgentEvent)> = Box::new(emit);
     let mut exec = |tc: &crate::agent::ToolCall| crate::tools::execute(tc, &ctx);
-    let res = agent.run(&run_id, &cfg, &path_str, &info_clone, &memory_str, &prompt, &tools, &mut exec, &mut *emit_box);
+    let res = agent.run(
+        &run_id,
+        &cfg,
+        &path_str,
+        &info_clone,
+        &memory_str,
+        &prompt,
+        &tools,
+        &mut exec,
+        &mut *emit_box,
+    );
     let elapsed = start.elapsed().as_millis();
 
     // Persist history + update transcript (human-readable, agent-first)
@@ -724,10 +1000,32 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
         }
     }
     // Human-readable Markdown transcript (append)
-    write_transcript(proj_name.as_deref(), &session_id, &prompt, &agent, &info_clone, elapsed);
+    write_transcript(
+        proj_name.as_deref(),
+        &session_id,
+        &prompt,
+        &agent,
+        &info_clone,
+        elapsed,
+    );
     // Also flush json_writer header counters
-    let c = counters.lock().map(|g| format!("tool_calls={} tool_results={} tokens={} reasoning_chars={} errors={}", g.tool_calls, g.tool_results, g.tokens, g.reasoning_chars, g.errors)).unwrap_or_default();
-    eprintln!("\n[recurse-cli] finished session={} history={}→{} {} res={:?}", session_id, history_len_before, agent.messages().len(), c, res.as_ref().map(|_| "ok").unwrap_or("err"));
+    let c = counters
+        .lock()
+        .map(|g| {
+            format!(
+                "tool_calls={} tool_results={} tokens={} reasoning_chars={} errors={}",
+                g.tool_calls, g.tool_results, g.tokens, g.reasoning_chars, g.errors
+            )
+        })
+        .unwrap_or_default();
+    eprintln!(
+        "\n[recurse-cli] finished session={} history={}→{} {} res={:?}",
+        session_id,
+        history_len_before,
+        agent.messages().len(),
+        c,
+        res.as_ref().map(|_| "ok").unwrap_or("err")
+    );
     if let Some(w) = json_writer {
         if let Ok(mut g) = w.lock() {
             let summary = serde_json::json!({"kind":"summary","session":session_id,"prompt":prompt,"counters":c,"elapsed_ms":elapsed,"result": res.as_ref().map(|_| "ok").unwrap_or("err"), "history_len": agent.messages().len()});
@@ -748,15 +1046,28 @@ fn run_one_turn(args: RunArgs, prompt: String, binary_path: PathBuf, session_id_
             eprint!("recurse[{}]> ", session_id);
             let _ = std::io::stderr().flush();
             let mut line = String::new();
-            if std::io::stdin().read_line(&mut line).map(|n| n == 0).unwrap_or(true) {
+            if std::io::stdin()
+                .read_line(&mut line)
+                .map(|n| n == 0)
+                .unwrap_or(true)
+            {
                 break;
             }
             let t = line.trim();
-            if t.is_empty() { continue; }
-            if t == "exit" || t == "quit" { break; }
+            if t.is_empty() {
+                continue;
+            }
+            if t == "exit" || t == "quit" {
+                break;
+            }
             let mut inner = next_args.clone();
             inner.prompt = Some(t.to_string());
-            if let Err(e) = run_one_turn(inner, t.to_string(), binary_path.clone(), Some(session_id.clone())) {
+            if let Err(e) = run_one_turn(
+                inner,
+                t.to_string(),
+                binary_path.clone(),
+                Some(session_id.clone()),
+            ) {
                 eprintln!("[recurse-cli] turn error: {e}");
             }
         }
@@ -771,30 +1082,59 @@ fn cmd_run_repl(args: RunArgs) -> Result<(), String> {
     let mut session_id: Option<String> = None;
     if args.continue_last {
         if let Ok(list) = sessions::list(args.project.as_deref()) {
-            if let Some(s) = list.first() { session_id = Some(s.id.clone()); }
+            if let Some(s) = list.first() {
+                session_id = Some(s.id.clone());
+            }
         }
     }
-    eprintln!("[recurse-cli] interactive REPL for {} (project={})", binary_path.display(), args.project.as_deref().unwrap_or("default"));
+    eprintln!(
+        "[recurse-cli] interactive REPL for {} (project={})",
+        binary_path.display(),
+        args.project.as_deref().unwrap_or("default")
+    );
     eprintln!("Type your task, or 'exit' to quit. Agent is deterministic; every turn is logged to <session>/events.jsonl + transcript.md");
     loop {
-        eprint!("recurse{}> ", session_id.as_deref().map(|s| format!("[{}]", &s[..8])).unwrap_or_default());
+        eprint!(
+            "recurse{}> ",
+            session_id
+                .as_deref()
+                .map(|s| format!("[{}]", &s[..8]))
+                .unwrap_or_default()
+        );
         let _ = std::io::stderr().flush();
         let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).map(|n| n == 0).unwrap_or(true) { break; }
+        if std::io::stdin()
+            .read_line(&mut line)
+            .map(|n| n == 0)
+            .unwrap_or(true)
+        {
+            break;
+        }
         let t = line.trim();
-        if t.is_empty() { continue; }
-        if t == "exit" || t == "quit" { break; }
+        if t.is_empty() {
+            continue;
+        }
+        if t == "exit" || t == "quit" {
+            break;
+        }
         let mut inner = args.clone();
         inner.prompt = Some(t.to_string());
         inner.prompt_pos.clear();
         inner.interactive = false; // one turn per REPL iteration
         inner.session = session_id.clone();
-        match run_one_turn(inner, t.to_string(), binary_path.clone(), session_id.clone()) {
+        match run_one_turn(
+            inner,
+            t.to_string(),
+            binary_path.clone(),
+            session_id.clone(),
+        ) {
             Ok(()) => {
                 // Update session_id for next loop (if it was None, now it exists)
                 if session_id.is_none() {
                     if let Ok(list) = sessions::list(args.project.as_deref()) {
-                        if let Some(s) = list.first() { session_id = Some(s.id.clone()); }
+                        if let Some(s) = list.first() {
+                            session_id = Some(s.id.clone());
+                        }
                     }
                 }
             }
@@ -805,9 +1145,13 @@ fn cmd_run_repl(args: RunArgs) -> Result<(), String> {
 }
 
 fn truncate_for_log(s: &str, verbose: bool) -> String {
-    if verbose || s.len() <= 2000 { s.to_string() } else {
+    if verbose || s.len() <= 2000 {
+        s.to_string()
+    } else {
         let mut cut = 2000;
-        while !s.is_char_boundary(cut) { cut -= 1; }
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
         format!("{} ...[truncated {} chars]", &s[..cut], s.len() - cut)
     }
 }
@@ -815,7 +1159,11 @@ fn truncate_for_log(s: &str, verbose: bool) -> String {
 // Tiny atty shim
 mod atty {
     #[allow(dead_code)]
-    pub enum Stream { Stdin, Stdout, Stderr }
+    pub enum Stream {
+        Stdin,
+        Stdout,
+        Stderr,
+    }
     pub fn is(s: Stream) -> bool {
         use std::io::IsTerminal;
         match s {

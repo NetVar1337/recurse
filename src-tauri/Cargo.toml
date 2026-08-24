@@ -5,6 +5,7 @@ description = "Agentic reverse engineering environment"
 authors = ["Aayush Khanna"]
 license = "MIT"
 edition = "2021"
+default-run = "recurse"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -407,6 +407,10 @@ pub async fn agent_chat(
             debug_busy,
             debug_pid,
             debug_output_done,
+            action_first: true,
+            bash_used: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            bash_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            python_used: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             project,
         };
 
