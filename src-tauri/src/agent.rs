@@ -8,7 +8,6 @@ use crate::config;
 const OPENROUTER_MODELS: &str = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODELS_LIST: &str = "https://openrouter.ai/api/v1/models";
 const DEFAULT_MODEL: &str = "openrouter/auto";
-const MAX_TOOL_ITERATIONS: usize = 16;
 
 /// One tool call emitted by the model.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -599,8 +598,7 @@ impl Agent {
 
     /// Request cancellation of the current run (no-op when idle).
     pub fn request_cancel(&self) {
-        self.cancel
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Replace history (used to restore a persisted conversation).
@@ -618,7 +616,8 @@ impl Agent {
 
     /// Run one user turn to completion: stream the reply, execute any tool
     /// calls the model requests, feed results back, and loop until the model
-    /// produces a final answer (or the iteration budget is exhausted).
+    /// produces a final answer. There is no hard iteration cap; a runaway run
+    /// is stopped via the cooperative cancel flag (`request_cancel`).
     ///
     /// `exec` runs a tool call (name + JSON arguments) against the live r2 /
     /// debug / memory backends and returns its result text.
@@ -659,7 +658,7 @@ impl Agent {
             return Ok(());
         }
 
-        for _ in 0..MAX_TOOL_ITERATIONS {
+        loop {
             if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
                 self.cancel
                     .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -696,9 +695,14 @@ impl Agent {
                         // tool reply before the next request.
                         let mut cancelled = false;
                         for tc in &outcome.tool_calls {
-                            let content = if cancelled { "cancelled".into() } else { "cancelled before execution".into() };
+                            let content = if cancelled {
+                                "cancelled".into()
+                            } else {
+                                "cancelled before execution".into()
+                            };
                             cancelled = true;
-                            self.messages.push(ChatMessage::tool(tc.id.clone(), content));
+                            self.messages
+                                .push(ChatMessage::tool(tc.id.clone(), content));
                         }
                         return Err("run cancelled".into());
                     }
@@ -731,8 +735,6 @@ impl Agent {
             );
             return Ok(());
         }
-
-        Err("agent exceeded the maximum number of tool iterations".into())
     }
 }
 
@@ -961,16 +963,10 @@ mod tests {
         );
         assert_eq!(res.unwrap_err(), "run cancelled");
         // Transcript stays protocol-valid: every requested tool id got a reply.
-        let tool_replies = agent
-            .messages()
-            .iter()
-            .filter(|m| m.role == "tool")
-            .count();
+        let tool_replies = agent.messages().iter().filter(|m| m.role == "tool").count();
         assert_eq!(tool_replies, 1);
         assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::Done { .. })),
+            !events.iter().any(|e| matches!(e, AgentEvent::Done { .. })),
             "no Done after cancellation"
         );
         assert!(agent.messages().last().unwrap().role == "tool");
