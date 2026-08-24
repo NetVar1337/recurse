@@ -112,20 +112,9 @@ pub fn interrupt_busy_debugger(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
     // Signal the whole process group so the sandbox wrapper (bwrap) cannot
-    // swallow the signal meant for r2.
-    let group_kill = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGINT) };
-    let sent = if group_kill == 0 {
-        true
-    } else {
-        eprintln!("[recurse][debug] group SIGINT failed, signaling leader only");
-        let leader_kill = unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
-        leader_kill == 0
-    };
-    if !sent {
-        return Err(format!(
-            "failed to signal debugger group {pid}: {}",
-            std::io::Error::last_os_error()
-        ));
+    // swallow the signal meant for r2. Cross-platform via `process` helper.
+    if !crate::process::interrupt_process(pid) {
+        return Err(format!("failed to signal debugger group {pid}"));
     }
     eprintln!("[recurse][debug] interrupted r2 group {pid}");
     let deadline = Instant::now() + INTERRUPT_GRACE;
@@ -134,9 +123,7 @@ pub fn interrupt_busy_debugger(state: &AppState) -> Result<(), String> {
     }
     if state.debug_busy.load(Ordering::SeqCst) {
         eprintln!("[recurse][debug] SIGINT ignored — escalating to SIGKILL for group {pid}");
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-        }
+        crate::process::terminate_process(pid);
         let deadline = Instant::now() + Duration::from_secs(3);
         while state.debug_busy.load(Ordering::SeqCst) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
@@ -191,9 +178,7 @@ fn acquire_debug_for_teardown(
                     let pid = state.debug_pid.load(Ordering::SeqCst);
                     if pid != 0 {
                         eprintln!("[recurse][debug] teardown: force-killing group {pid}");
-                        unsafe {
-                            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                        }
+                        crate::process::terminate_process(pid);
                     }
                     escalated = true;
                 } else if escalated && Instant::now() >= deadline + Duration::from_secs(10) {
@@ -873,9 +858,7 @@ pub async fn debug_command(cmd: String, state: State<'_, AppState>) -> Result<Va
 /// No-op when the debugger is not running.
 /// Fetch the accumulated live debuggee output (console bootstrap + poll).
 #[tauri::command]
-pub fn debug_output_get(
-    state: State<'_, AppState>,
-) -> Result<String, String> {
+pub fn debug_output_get(state: State<'_, AppState>) -> Result<String, String> {
     let buf = state
         .debug_output
         .lock()
@@ -892,15 +875,11 @@ pub fn debug_interrupt(state: State<'_, AppState>) -> Result<(), String> {
     if pid == 0 {
         return Err("debugger is marked running but no live r2 process is known".into());
     }
-    let ok = unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) } == 0;
-    if ok {
+    if crate::process::interrupt_process(pid) {
         eprintln!("[recurse][debug] sent SIGINT to r2 pid {pid}");
         Ok(())
     } else {
-        Err(format!(
-            "failed to signal r2 pid {pid}: {}",
-            std::io::Error::last_os_error()
-        ))
+        Err(format!("failed to signal r2 pid {pid}"))
     }
 }
 
@@ -1113,7 +1092,11 @@ pub fn list_projects() -> Result<Vec<Project>, String> {
 }
 
 /// Core of [`create_project`]; see [`open_binary_impl`].
-pub fn create_project_impl(state: &AppState, name: &str, binary_path: &str) -> Result<Project, String> {
+pub fn create_project_impl(
+    state: &AppState,
+    name: &str,
+    binary_path: &str,
+) -> Result<Project, String> {
     let p = project::create(name, binary_path)?;
     *state
         .project

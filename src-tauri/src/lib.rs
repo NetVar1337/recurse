@@ -4,15 +4,16 @@ pub mod config;
 pub mod debugger;
 pub mod engine;
 pub mod memory;
+pub mod process;
 pub mod project;
 pub mod sandbox;
 pub mod session;
 pub mod sessions;
+pub mod shell;
 /// Test-only helpers (HOME isolation). Hidden from docs but compiled so the
 /// integration tests can share it.
 #[doc(hidden)]
 pub mod testhome;
-pub mod shell;
 pub mod tools;
 
 use std::sync::{atomic::AtomicBool, atomic::AtomicU32, Arc, Mutex};
@@ -75,6 +76,17 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Belt-and-suspenders Wayland fix for direct `cargo run` / tests
+    // without going through `main.rs`. Mirrors the env setup in `main.rs`.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            // SAFETY: still before GTK/WebKit init, single-threaded setup path.
+            unsafe {
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            }
+        }
+    }
     // Startup failure is unrecoverable by design: without an event loop
     // there is no app. This is the one sanctioned expect().
     #[allow(clippy::expect_used)]
@@ -105,7 +117,8 @@ pub fn run() {
             current_session: Mutex::new(None),
             shell: shell::ShellManager::new(),
         })
-        .invoke_handler(tauri::generate_handler![            commands::open_binary,
+        .invoke_handler(tauri::generate_handler![
+            commands::open_binary,
             commands::analyze,
             commands::close_binary,
             commands::binary_info,

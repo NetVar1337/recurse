@@ -1,5 +1,4 @@
 use std::io::{BufReader, Read, Write};
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -33,16 +32,14 @@ struct R2PipeProc {
 
 impl R2PipeProc {
     fn spawn(program: &str, args: &[String]) -> Result<Self, String> {
-        let mut child = Command::new(program)
-            .args(args)
-            // Own process group so interrupt/teardown can signal the whole
-            // sandboxed tree (r2 + debuggee + wrapper) via kill(-pgid).
-            .process_group(0)
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        crate::process::configure_command(&mut cmd);
+        let mut child = cmd
             // Own process group: lets interrupt/teardown signal the entire
             // tree (r2 + its debuggee + any sandbox wrapper like bwrap)
             // without touching unrelated processes. The group id equals the
-            // child's pid.
-            
+            // child's pid on Unix.
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -53,10 +50,10 @@ impl R2PipeProc {
 
         // The protocol opens with a single NUL byte once r2 is ready.
         let mut nul = [0u8; 1];
-                stdout
+        stdout
             .read_exact(&mut nul)
             .map_err(|e| format!("r2 did not initialize: {e}"))?;
-        
+
         Ok(R2PipeProc {
             write: stdin,
             read: BufReader::new(stdout),
@@ -66,7 +63,7 @@ impl R2PipeProc {
 
     /// Run one command, returning its raw output (without the trailing NUL).
     fn cmd(&mut self, cmd: &str) -> Result<String, String> {
-                self.write
+        self.write
             .write_all(format!("{cmd}\n").as_bytes())
             .map_err(|e| format!("r2 write failed: {e}"))?;
         self.write.flush().ok();
@@ -99,7 +96,7 @@ impl R2PipeProc {
 
 impl Drop for R2PipeProc {
     fn drop(&mut self) {
-                let _ = self.cmd("q!");
+        let _ = self.cmd("q!");
         let _ = self.child.wait();
     }
 }
@@ -215,29 +212,14 @@ impl R2Session {
     /// blocked debugger command (`dc`) unwinds and the pipe produces its
     /// response. Returns false when no live child is known.
     pub fn interrupt(&self) -> bool {
-        let pid = self.pid();
-        pid != 0 && kill_group(pid, libc::SIGINT)
+        crate::process::interrupt_process(self.pid())
     }
 
     /// Send SIGKILL to the r2 child's process group. Last-resort teardown
     /// when SIGINT does not unblock a wedged command; the broken pipe makes
     /// the worker reply with an error to whoever is waiting.
     pub fn force_kill(&self) -> bool {
-        let pid = self.pid();
-        pid != 0 && kill_group(pid, libc::SIGKILL)
-    }
-}
-
-/// Signal a whole process group (the child was spawned as its own group
-/// leader, so pgid == pid). Falls back to signaling just the leader if group
-/// signaling fails.
-fn kill_group(pgid: u32, sig: i32) -> bool {
-    let g = pgid as libc::pid_t;
-    unsafe {
-        if libc::kill(-g, sig) == 0 {
-            return true;
-        }
-        libc::kill(g, sig) == 0
+        crate::process::terminate_process(self.pid())
     }
 }
 
@@ -270,7 +252,6 @@ fn worker(
     pid_out.store(pipe.pid(), Ordering::SeqCst);
     let _ = start_tx.send(Ok(()));
 
-
     while let Ok(msg) = rx.recv() {
         match msg {
             Cmd::Run { cmd, resp } => {
@@ -278,9 +259,7 @@ fn worker(
                 // non-JSON output degrades to a JSON string wrapper.
                 let result: Result<Value, String> = pipe
                     .cmd(&cmd)
-                    .map(|text| {
-                        serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text))
-                    })
+                    .map(|text| serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
                     .map_err(|e| e.to_string());
                 let _ = resp.send(result);
             }

@@ -26,6 +26,9 @@ function warn(msg: string, ...rest: unknown[]) {
 	console.warn(`${LOG} ${msg}`, ...rest);
 }
 
+const isWindows =
+	typeof navigator !== "undefined" && /Win/.test(navigator.platform);
+
 function fmtAddr(a?: number | null) {
 	return typeof a === "number" && Number.isFinite(a)
 		? `0x${a.toString(16)}`
@@ -295,6 +298,12 @@ export function DebugPanel() {
 
 	return (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
+			{isWindows && (
+				<div className="bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400 m-2 rounded-md border px-3 py-2 text-xs">
+					Live debugging (r2 -d + FIFOs + signals) requires Linux or macOS — analysis,
+					decompiler, agent and shells still work on Windows.
+				</div>
+			)}
 			<div className="border-border bg-card flex flex-nowrap items-center gap-1.5 overflow-x-auto border-b px-3 py-2">
 				<div className="mr-2 flex shrink-0 items-center gap-1.5 text-xs">
 					<span
@@ -312,8 +321,12 @@ export function DebugPanel() {
 					size="sm"
 					className="shrink-0"
 					onClick={start}
-					disabled={started || busy}
-					title="Start the program under the debugger"
+					disabled={started || busy || isWindows}
+					title={
+						isWindows
+							? "Live debugging requires Linux or macOS — analysis and agent still available on Windows"
+							: "Start the program under the debugger"
+					}
 				>
 					{busy && !started ? (
 						<Loader2 className="animate-spin" />

@@ -7,7 +7,9 @@
 pub fn with_test_home<F: FnOnce(&std::path::Path)>(f: F) {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    let _g = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let orig = std::env::var("HOME").ok();
     let dir = std::env::temp_dir().join(format!(
         "recurse-testhome-{}-{}",

@@ -61,7 +61,20 @@ impl ShellManager {
     }
 
     fn default_shell() -> String {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+        #[cfg(unix)]
+        {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+        }
+        #[cfg(windows)]
+        {
+            std::env::var("COMSPEC")
+                .or_else(|_| std::env::var("SHELL"))
+                .unwrap_or_else(|_| "cmd.exe".to_string())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        }
     }
 
     pub fn spawn(&self, app: AppHandle) -> Result<SpawnedShell, String> {
@@ -79,6 +92,7 @@ impl ShellManager {
 
         let shell = Self::default_shell();
         let mut cmd = CommandBuilder::new(&shell);
+        #[cfg(unix)]
         cmd.args(["-l"]);
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);

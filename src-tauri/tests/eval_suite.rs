@@ -47,8 +47,7 @@ fn compile(name: &str) -> Option<PathBuf> {
         .parent()
         .unwrap()
         .join(format!("fixtures/evals/{name}.c"));
-    let out =
-        std::env::temp_dir().join(format!("recurse-eval-{name}-{}", std::process::id()));
+    let out = std::env::temp_dir().join(format!("recurse-eval-{name}-{}", std::process::id()));
     let status = Command::new("cc")
         .args(["-O0", "-g", "-o"])
         .arg(&out)

@@ -481,9 +481,9 @@ mod tests {
 
     mod tooltests {
         use super::*;
+        use crate::agent::{ToolCall, ToolCallFn};
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
-        use crate::agent::{ToolCall, ToolCallFn};
 
         fn ctx() -> ToolContext {
             ToolContext {
@@ -524,21 +524,37 @@ mod tests {
         fn render_and_unknown_tool() {
             assert_eq!(render(Value::String("s".into())), "s");
             assert!(render(serde_json::json!({"a":1})).contains("\"a\":1"));
-            let tc = ToolCall { id: "i".into(), call_type: "function".into(),
-                function: ToolCallFn { name: "nope".into(), arguments: "{}".into() } };
+            let tc = ToolCall {
+                id: "i".into(),
+                call_type: "function".into(),
+                function: ToolCallFn {
+                    name: "nope".into(),
+                    arguments: "{}".into(),
+                },
+            };
             assert!(execute(&tc, &ctx()).unwrap_err().contains("unknown tool"));
         }
 
         #[test]
         fn missing_sessions_report_clean_errors() {
             for name in ["disassemble", "debug_registers", "debug_continue"] {
-                let tc = ToolCall { id: "i".into(), call_type: "function".into(),
+                let tc = ToolCall {
+                    id: "i".into(),
+                    call_type: "function".into(),
                     function: ToolCallFn {
                         name: name.into(),
-                        arguments: if name == "disassemble" { r#"{"addr":16}"#.into() } else { "{}".into() },
-                    }};
+                        arguments: if name == "disassemble" {
+                            r#"{"addr":16}"#.into()
+                        } else {
+                            "{}".into()
+                        },
+                    },
+                };
                 let err = execute(&tc, &ctx()).unwrap_err();
-                assert!(err.contains("no binary loaded") || err.contains("debugger not started"), "{name}: {err}");
+                assert!(
+                    err.contains("no binary loaded") || err.contains("debugger not started"),
+                    "{name}: {err}"
+                );
             }
         }
 
@@ -547,10 +563,18 @@ mod tests {
             crate::testhome::with_test_home(|_| {
                 let c = ctx();
                 let mk = |n: &str, a: serde_json::Value| ToolCall {
-                    id: "i".into(), call_type: "function".into(),
-                    function: ToolCallFn { name: n.into(), arguments: a.to_string() },
+                    id: "i".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFn {
+                        name: n.into(),
+                        arguments: a.to_string(),
+                    },
                 };
-                execute(&mk("save_memory", serde_json::json!({"key":"k","value":"v"})), &c).unwrap();
+                execute(
+                    &mk("save_memory", serde_json::json!({"key":"k","value":"v"})),
+                    &c,
+                )
+                .unwrap();
                 let out = execute(&mk("load_memory", serde_json::json!({"key":"k"})), &c).unwrap();
                 assert!(out.contains("v"));
                 execute(&mk("list_memory", serde_json::json!({})), &c).unwrap();

@@ -1,19 +1,35 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::session::R2Session;
 
+#[cfg(unix)]
+use std::fs::{self, OpenOptions};
+#[cfg(unix)]
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
+#[cfg(unix)]
+use std::sync::OnceLock;
+#[cfg(unix)]
+use std::time::Instant;
+
+#[allow(dead_code)]
+const WINDOWS_DEBUG_MSG: &str =
+    "Live debugging (r2 -d + FIFOs + signals) requires Linux or macOS — analysis and agent remain available on Windows";
+
 /// Private, per-process runtime directory for debugger support files. Using a
 /// PID-scoped directory prevents two Recurse instances from sharing (and
 /// cross-writing) each other's FIFOs, and keeps the files out of reach of
 /// other users (`0700`).
+#[cfg(unix)]
 struct DebugPaths {
     dir: PathBuf,
     profile: PathBuf,
@@ -21,6 +37,7 @@ struct DebugPaths {
     stdout: PathBuf,
 }
 
+#[cfg(unix)]
 fn paths() -> &'static DebugPaths {
     static PATHS: OnceLock<DebugPaths> = OnceLock::new();
     PATHS.get_or_init(|| {
@@ -35,6 +52,7 @@ fn paths() -> &'static DebugPaths {
     })
 }
 
+#[cfg(unix)]
 fn mkfifo_at(path: &PathBuf, what: &str) -> Result<(), String> {
     let _ = fs::remove_file(path);
     let cpath = std::ffi::CString::new(
@@ -63,6 +81,7 @@ fn mkfifo_at(path: &PathBuf, what: &str) -> Result<(), String> {
 /// coreutils being installed. We remove any stale node first, then create it
 /// exclusively in a directory only this process can write to, so there is no
 /// creation race.
+#[cfg(unix)]
 pub fn prepare_profile() -> Result<(), String> {
     fs::create_dir_all(&paths().dir)
         .map_err(|e| format!("failed to create debugger runtime dir: {e}"))?;
@@ -79,8 +98,13 @@ pub fn prepare_profile() -> Result<(), String> {
     .map_err(|e| format!("failed to write debugger profile: {e}"))?;
     Ok(())
 }
+#[cfg(windows)]
+pub fn prepare_profile() -> Result<(), String> {
+    Err(WINDOWS_DEBUG_MSG.into())
+}
 
 /// Open the debuggee stdout FIFO (nonblocking read side) for the pump thread.
+#[cfg(unix)]
 pub fn open_stdout_reader() -> Result<File, String> {
     OpenOptions::new()
         .read(true)
@@ -88,19 +112,29 @@ pub fn open_stdout_reader() -> Result<File, String> {
         .open(&paths().stdout)
         .map_err(|e| format!("failed to open debugger stdout: {e}"))
 }
+#[cfg(windows)]
+pub fn open_stdout_reader() -> Result<File, String> {
+    Err(WINDOWS_DEBUG_MSG.into())
+}
 
 /// Keep a writer anchor on the stdout FIFO so the reader never sees EOF while
 /// the session is alive.
+#[cfg(unix)]
 pub fn open_stdout_anchor() -> Result<File, String> {
     OpenOptions::new()
         .write(true)
         .open(&paths().stdout)
         .map_err(|e| format!("failed to anchor debugger stdout: {e}"))
 }
+#[cfg(windows)]
+pub fn open_stdout_anchor() -> Result<File, String> {
+    Err(WINDOWS_DEBUG_MSG.into())
+}
 
 /// Spawn a thread that tails the debuggee stdout FIFO and hands chunks to
 /// `sink` until `done` flips true. Nonblocking reads + short sleeps: no busy
 /// spin, no blocked teardown.
+#[cfg(unix)]
 pub fn spawn_output_pump(
     done: Arc<AtomicBool>,
     mut sink: impl FnMut(Vec<u8>) + Send + 'static,
@@ -128,12 +162,21 @@ pub fn spawn_output_pump(
         .map_err(|e| format!("failed to spawn stdout pump: {e}"))?;
     Ok(())
 }
+#[cfg(windows)]
+pub fn spawn_output_pump(
+    _done: Arc<AtomicBool>,
+    _sink: impl FnMut(Vec<u8>) + Send + 'static,
+) -> Result<(), String> {
+    Err(WINDOWS_DEBUG_MSG.into())
+}
 
+#[cfg(unix)]
 fn reader_read(f: &File, buf: &mut [u8]) -> std::io::Result<usize> {
     Read::read(&mut &*f, buf)
 }
 
 /// r2 command-line args for the debug session (must mirror the profile).
+#[cfg(unix)]
 pub fn spawn_args() -> Vec<String> {
     vec![
         "-d".to_string(),
@@ -142,6 +185,10 @@ pub fn spawn_args() -> Vec<String> {
         "-r".to_string(),
         paths().profile.to_string_lossy().to_string(),
     ]
+}
+#[cfg(windows)]
+pub fn spawn_args() -> Vec<String> {
+    vec!["-d".to_string()]
 }
 
 /// Spawn the debug r2 session for `target` under the active sandbox backend:
@@ -156,6 +203,7 @@ pub fn spawn_args() -> Vec<String> {
 /// BEFORE we spawn r2, or startup deadlocks before the protocol handshake.
 /// The stdin anchor is held here; the stdout reader is owned by the pump
 /// thread started below, driven by `sink` until `done` flips true.
+#[cfg(unix)]
 pub fn spawn_debug_session(
     target: &Path,
     done: Arc<AtomicBool>,
@@ -167,15 +215,23 @@ pub fn spawn_debug_session(
     // Reader side up next: attach the pump before r2 can block on it.
     spawn_output_pump(Arc::clone(&done), sink)?;
     let argv = crate::sandbox::wrap_r2_argv(target, &spawn_args(), &paths().dir)?;
-    let sess = R2Session::open_argv(argv)
-        .map_err(|e| format!("failed to start debugger: {e}"))?;
+    let sess = R2Session::open_argv(argv).map_err(|e| format!("failed to start debugger: {e}"))?;
     Ok((sess, stdin))
+}
+#[cfg(windows)]
+pub fn spawn_debug_session(
+    _target: &Path,
+    _done: Arc<AtomicBool>,
+    _sink: impl FnMut(Vec<u8>) + Send + 'static,
+) -> Result<(R2Session, File), String> {
+    Err(WINDOWS_DEBUG_MSG.into())
 }
 
 /// Open the debuggee stdin FIFO. `O_RDWR` means we always count as the reader
 /// side, so opening never blocks; `O_NONBLOCK` makes subsequent writes fail
 /// with `WouldBlock` instead of stalling the whole app when the debuggee is
 /// not consuming input.
+#[cfg(unix)]
 pub fn open_stdin() -> Result<File, String> {
     OpenOptions::new()
         .read(true)
@@ -184,12 +240,17 @@ pub fn open_stdin() -> Result<File, String> {
         .open(&paths().stdin)
         .map_err(|e| format!("failed to open debugger stdin: {e}"))
 }
+#[cfg(windows)]
+pub fn open_stdin() -> Result<File, String> {
+    Err(WINDOWS_DEBUG_MSG.into())
+}
 
 /// Write bytes to the nonblocking FIFO with a bounded retry loop.
 ///
 /// Never blocks indefinitely: when the pipe buffer fills up (debuggee stopped
 /// at a breakpoint and not reading stdin) this returns an error after
 /// `timeout`, leaving the caller's locks healthy.
+#[cfg(unix)]
 pub fn write_stdin(file: &mut File, mut data: &[u8], timeout: Duration) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     while !data.is_empty() {
@@ -209,6 +270,10 @@ pub fn write_stdin(file: &mut File, mut data: &[u8], timeout: Duration) -> Resul
     }
     file.flush()
         .map_err(|e| format!("debugger stdin flush failed: {e}"))
+}
+#[cfg(windows)]
+pub fn write_stdin(_file: &mut File, _data: &[u8], _timeout: Duration) -> Result<(), String> {
+    Err(WINDOWS_DEBUG_MSG.into())
 }
 
 /// Shell-quote a single argument for r2's `ood` argv parser so arguments
@@ -316,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn prepare_profile_creates_private_fifo_and_profile() {
         let _g = PROFILE_LOCK.lock().unwrap();
         prepare_profile().expect("prepare");
@@ -340,6 +406,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn prepare_profile_is_idempotent() {
         let _g = PROFILE_LOCK.lock().unwrap();
         prepare_profile().unwrap();
@@ -348,6 +415,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn write_stdin_times_out_when_nobody_consumes() {
         let _g = PROFILE_LOCK.lock().unwrap();
         prepare_profile().unwrap();
@@ -368,6 +436,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn output_pump_streams_written_bytes() {
         let _g = PROFILE_LOCK.lock().unwrap();
         prepare_profile().unwrap();
@@ -393,7 +462,9 @@ mod tests {
         while Instant::now() < deadline {
             match rx.try_recv() {
                 Ok(c) => got.extend_from_slice(&c),
-                Err(std::sync::mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
                 Err(_) => break,
             }
             if got.windows(6).any(|w| w == b"prompt") {
@@ -410,6 +481,7 @@ mod tests {
     #[test]
     fn spawn_args_reference_dynamic_profile() {
         let args = spawn_args();
+        #[cfg(unix)]
         assert!(args
             .windows(2)
             .any(|w| w[0] == "-r" && w[1].contains("recurse-")));

@@ -131,11 +131,10 @@ pub fn wrap_r2_argv_with(
             // frequently reached THROUGH symlinks (e.g. /usr/local/bin/r2 ->
             // ~/radare2/binr/radare2/radare2), whose target must be visible
             // inside the namespace or exec fails with ENOENT.
-            let r2_link =
-                which("r2").ok_or_else(|| "radare2 not found on PATH".to_string())?;
-            let r2 = r2_link.canonicalize().map_err(|e| {
-                format!("cannot resolve radare2 binary {}: {e}", r2_link.display())
-            })?;
+            let r2_link = which("r2").ok_or_else(|| "radare2 not found on PATH".to_string())?;
+            let r2 = r2_link
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve radare2 binary {}: {e}", r2_link.display()))?;
             let mut argv: Vec<String> = Vec::with_capacity(36 + r2_args.len());
             argv.push(bwrap.to_string_lossy().into_owned());
             // Isolation knobs first.
@@ -301,11 +300,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let t = dir.join("recurse-e2e-target");
         std::fs::write(&t, b"elf").unwrap();
-        let argv = build(
-            &t,
-            &["-d".to_string()],
-            &dir.join("recurse-123"),
-        );
+        let argv = build(&t, &["-d".to_string()], &dir.join("recurse-123"));
         assert!(argv.windows(2).any(|w| w == ["--unshare-net", "--tmpfs"]));
         assert!(argv.contains(&"--".to_string()));
         let pos = argv.iter().position(|a| a == "--").unwrap();

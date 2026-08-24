@@ -185,8 +185,8 @@ fn open_binary_and_analysis_pipeline() {
         return;
     };
     let h = harness();
-    let _summary = commands::open_binary_impl(binary.to_string_lossy().into(), &h.state)
-        .expect("open_binary");
+    let _summary =
+        commands::open_binary_impl(binary.to_string_lossy().into(), &h.state).expect("open_binary");
 
     // Production flow runs `aaa` right after open; do the same, then counts
     // must be non-trivial.
@@ -386,7 +386,11 @@ fn stop_works_while_continue_is_blocked_forever() {
     );
 
     // Session gone; pending dc resolved with an error (killed pipe).
-    assert!(h.debug().lock().unwrap_or_else(|e| e.into_inner()).is_none());
+    assert!(h
+        .debug()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_none());
     let r = dc.join_with_deadline(WAIT);
     assert!(r.is_some(), "blocked dc thread must terminate after stop");
     if let Some(Err(_)) = r {
@@ -429,7 +433,10 @@ fn stdin_write_unblocks_continue_and_delivers_data() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let buf = String::from_utf8_lossy(
-            &h.state.debug_output.lock().unwrap_or_else(|e| e.into_inner()),
+            &h.state
+                .debug_output
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
         )
         .into_owned();
         if buf.contains("got:hello") {
@@ -477,7 +484,11 @@ fn open_binary_tears_down_blocked_debugger() {
     assert!(summary.is_object(), "summary shape: {summary}");
     assert_eq!(summary["path"], crackme.to_string_lossy().to_string());
 
-    assert!(h.debug().lock().unwrap_or_else(|e| e.into_inner()).is_none());
+    assert!(h
+        .debug()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_none());
     let _ = dc.join_with_deadline(WAIT);
 }
 
@@ -526,7 +537,10 @@ fn stdout_streams_into_console_buffer_during_blocked_continue() {
     let mut buf;
     loop {
         buf = String::from_utf8_lossy(
-            &h.state.debug_output.lock().unwrap_or_else(|e| e.into_inner()),
+            &h.state
+                .debug_output
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
         )
         .into_owned();
         if buf.contains("waiting") && buf.contains("got:hi") {
@@ -607,18 +621,12 @@ impl SpawnExt for std::thread::JoinHandle<Result<serde_json::Value, String>> {
 }
 
 trait DcExt {
-    fn join_with_deadline(
-        self,
-        d: Duration,
-    ) -> Option<Result<serde_json::Value, String>>;
+    fn join_with_deadline(self, d: Duration) -> Option<Result<serde_json::Value, String>>;
     fn join_result(self, d: Duration) -> Result<serde_json::Value, String>;
     fn assert_busy_within(&self, h: &Harness, d: Duration);
 }
 impl DcExt for std::thread::JoinHandle<Result<serde_json::Value, String>> {
-    fn join_with_deadline(
-        self,
-        d: Duration,
-    ) -> Option<Result<serde_json::Value, String>> {
+    fn join_with_deadline(self, d: Duration) -> Option<Result<serde_json::Value, String>> {
         let deadline = Instant::now() + d;
         loop {
             if self.is_finished() {
@@ -658,21 +666,27 @@ fn pc_of(regs: &serde_json::Value) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-
 #[test]
 fn zz_dc_probe() {
-    let Some(binary) = fixture("waiter", WAITER_C) else { return };
+    let Some(binary) = fixture("waiter", WAITER_C) else {
+        return;
+    };
     let h = harness();
     commands::open_binary_impl(binary.to_string_lossy().into(), &h.state).unwrap();
     commands::debug_start_impl(&h.state, None).unwrap();
     // What does ood/dc actually do here?
-    if let Ok(v) = h.cmd("ood") { println!("zz ood -> {v}"); }
+    if let Ok(v) = h.cmd("ood") {
+        println!("zz ood -> {v}");
+    }
     let dcer = h.cmd_async("dc");
     std::thread::sleep(Duration::from_secs(2));
     println!("zz busy={}", h.state.debug_busy.load(Ordering::SeqCst));
     let _ = commands::debug_stdin_impl(&h.state, "hi\n");
     match dcer.join_with_deadline(WAIT) {
-        Some(Ok(v)) => println!("zz dc -> {}", String::from_utf8_lossy(serde_json::to_string(&v).unwrap().as_bytes())),
+        Some(Ok(v)) => println!(
+            "zz dc -> {}",
+            String::from_utf8_lossy(serde_json::to_string(&v).unwrap().as_bytes())
+        ),
         Some(Err(e)) => println!("zz dc ERR {e}"),
         None => println!("zz dc still hung"),
     }
@@ -720,13 +734,12 @@ fn agent_tools_drive_real_debug_session() {
     assert!(!h.state.debug_pid.load(Ordering::SeqCst).eq(&0));
 
     // Breakpoint + continue via tools hits main like the UI path.
-    execute(&mk("debug_breakpoint", serde_json::json!({"addr": "0"})), &ctx)
-        .unwrap_err(); // bad addr rejected
     execute(
-        &mk("debug_registers", serde_json::json!({})),
+        &mk("debug_breakpoint", serde_json::json!({"addr": "0"})),
         &ctx,
     )
-    .expect("registers while stopped");
+    .unwrap_err(); // bad addr rejected
+    execute(&mk("debug_registers", serde_json::json!({})), &ctx).expect("registers while stopped");
 
     // Single-continue gate: second concurrent continue is refused.
     let busy2 = ctx.debug_busy.clone();
