@@ -14,7 +14,6 @@ use crate::memory;
 use crate::project::{self, Project};
 use crate::session::R2Session;
 use crate::sessions::{self, Session};
-use crate::tools::ToolContext;
 use crate::AppState;
 
 /// How long to wait after SIGINT before escalating to SIGKILL when stopping
@@ -386,12 +385,6 @@ pub async fn agent_chat(
         .map_err(|e| format!("llm lock poisoned: {e}"))?
         .clone();
     let agent = state.agent.clone();
-    let session = state.session.clone();
-    let debug = state.debug.clone();
-    let debug_stdin = state.debug_stdin.clone();
-    let debug_busy = state.debug_busy.clone();
-    let debug_pid = state.debug_pid.clone();
-    let debug_output_done = state.debug_output_done.clone();
     let project = current_project(&state)?;
     let project_storage = project.clone();
     let config_storage = config.clone();
@@ -400,19 +393,6 @@ pub async fn agent_chat(
     tauri::async_runtime::spawn_blocking(move || {
         let tools = crate::tools::schema();
         let memory = memory::summary_for(project.as_deref(), &message);
-        let ctx = ToolContext {
-            session,
-            debug,
-            debug_stdin,
-            debug_busy,
-            debug_pid,
-            debug_output_done,
-            action_first: true,
-            bash_used: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            bash_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            python_used: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            project,
-        };
 
         // Wrapped so any panic still surfaces an Error event to the frontend.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
@@ -420,7 +400,7 @@ pub async fn agent_chat(
                 let mut guard = agent
                     .lock()
                     .map_err(|_| "agent lock poisoned".to_string())?;
-                let mut exec = |tc: &ToolCall| crate::tools::execute(tc, &ctx);
+                let mut exec = |tc: &ToolCall| crate::tools::execute(tc);
                 let mut emit = |ev: AgentEvent| {
                     let _ = on_event.send(ev);
                 };

@@ -698,40 +698,20 @@ fn zz_dc_probe() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn agent_tools_drive_real_debug_session() {
-    use recurse_lib::tools::{execute, ToolContext};
+fn agent_tools_are_bash_read_write_edit_only() {
+    use recurse_lib::tools::execute;
 
-    let Some(binary) = fixture("crackme", CRACKME_C) else {
-        eprintln!("skipping: r2/cc unavailable");
-        return;
-    };
-    let h = harness();
-    commands::open_binary_impl(binary.to_string_lossy().into(), &h.state).unwrap();
-
-    let ctx = ToolContext {
-        session: h.state.session.clone(),
-        debug: h.state.debug.clone(),
-        debug_stdin: h.state.debug_stdin.clone(),
-        debug_busy: h.state.debug_busy.clone(),
-        debug_pid: h.state.debug_pid.clone(),
-        debug_output_done: h.state.debug_output_done.clone(),
-        action_first: false,
-        bash_used: Arc::new(AtomicBool::new(false)),
-        bash_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-        python_used: Arc::new(AtomicBool::new(false)),
-        project: None,
-    };
-    let mk = |name: &str, args: serde_json::Value| recurse_lib::agent::ToolCall {
+    let mk = |name: &str| recurse_lib::agent::ToolCall {
         id: format!("t-{name}"),
         call_type: "function".into(),
         function: recurse_lib::agent::ToolCallFn {
             name: name.into(),
-            arguments: args.to_string(),
+            arguments: "{}".into(),
         },
     };
 
     // The agent surface is bash/read/write/edit only — every native r2/debug
-    // tool must be refused as UI-only so the agent drives analysis via bash.
+    // tool must be refused so the agent drives analysis via bash.
     for native in [
         "functions",
         "debug_start",
@@ -740,23 +720,11 @@ fn agent_tools_drive_real_debug_session() {
         "debug_continue",
         "debug_stdin",
     ] {
-        let err = execute(&mk(native, serde_json::json!({})), &ctx)
+        let err = execute(&mk(native))
             .err()
             .unwrap_or_else(|| format!("{native}: expected rejection"));
         assert!(err.contains("unknown tool"), "{native}: {err}");
     }
-
-    // bash works over the live session's environment and marks bash_used.
-    assert!(!ctx.bash_used.load(Ordering::SeqCst));
-    let out = execute(
-        &mk("bash", serde_json::json!({"command": "echo agent-bash-ok"})),
-        &ctx,
-    )
-    .expect("agent bash");
-    assert!(out.contains("agent-bash-ok"), "{out}");
-    assert!(ctx.bash_used.load(Ordering::SeqCst));
-
-    commands::debug_stop_impl(&h.state).unwrap();
 }
 
 #[test]

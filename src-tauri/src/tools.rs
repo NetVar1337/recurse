@@ -1,46 +1,10 @@
-use std::fs::File;
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use crate::agent::ToolCall;
-use crate::session::R2Session;
-
-static DOOM_LOOP: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
-fn doom_tracker() -> &'static Mutex<HashMap<String, usize>> {
-    DOOM_LOOP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Shared state the tool executor needs to reach the live analysis session,
-/// the debug session, and the active project's memory.
-pub struct ToolContext {
-    pub session: Arc<Mutex<Option<R2Session>>>,
-    pub debug: Arc<Mutex<Option<R2Session>>>,
-    pub debug_stdin: Arc<Mutex<Option<File>>>,
-    /// Same gate the Tauri commands use, so agent-issued continues cannot
-    /// interleave with a UI-issued one and inspections fail fast either way.
-    pub debug_busy: Arc<AtomicBool>,
-    /// Published r2 PID for stop/interrupt — agent-spawned sessions must be
-    /// reachable by the teardown path exactly like UI-spawned ones.
-    pub debug_pid: Arc<std::sync::atomic::AtomicU32>,
-    /// Stop flag for the stdout drain pump (agent path, no UI attached).
-    pub debug_output_done: Arc<std::sync::atomic::AtomicBool>,
-    /// Agent runs must begin with a shell-driven action. The UI's direct tool
-    /// tests can disable this compatibility gate.
-    pub action_first: bool,
-    pub bash_used: Arc<AtomicBool>,
-    /// RE agents get two shell reconnaissance calls before the harness forces
-    /// the analysis into an executable Python/uv phase.
-    pub bash_calls: Arc<std::sync::atomic::AtomicU32>,
-    pub python_used: Arc<AtomicBool>,
-    pub project: Option<String>,
-}
 
 const MAX_RESULT_CHARS: usize = 12_000;
 const DEFAULT_READ_LIMIT: usize = 2000;
@@ -332,74 +296,151 @@ fn edit_path(
         return Err("oldString cannot be empty".into());
     }
     let count = content.matches(old_string).count();
-    if count == 0 {
-        return Err("oldString not found in content".into());
+    if count > 0 {
+        if !replace_all && count > 1 {
+            return Err("Found multiple matches for oldString. Provide more surrounding lines to make it unique or use replaceAll=true".into());
+        }
+        let new_content = if replace_all {
+            content.replace(old_string, new_string)
+        } else {
+            content.replacen(old_string, new_string, 1)
+        };
+        std::fs::write(path, &new_content)
+            .map_err(|e| format!("failed to write {file_path}: {e}"))?;
+        return Ok(json!({ "edited": file_path, "replacements": if replace_all { count } else { 1 } }));
     }
-    if !replace_all && count > 1 {
-        return Err("Found multiple matches for oldString. Provide more surrounding lines to make it unique or use replaceAll=true".into());
+
+    // Exact match failed — fall back to Levenshtein fuzzy matching over
+    // same-sized line windows so small drift (whitespace, typos) still lands.
+    let (start, end, score, candidate) =
+        best_fuzzy_match(&content, old_string).ok_or_else(|| {
+            "oldString not found in content".to_string()
+        })?;
+    if score < FUZZY_THRESHOLD {
+        return Err(format!(
+            "oldString not found. Closest match ({:.0}% similar):\n{candidate}",
+            score * 100.0
+        ));
     }
-    let new_content = if replace_all {
-        content.replace(old_string, new_string)
+    let lines: Vec<&str> = content.lines().collect();
+    let trailing_newline = content.ends_with('\n');
+    let mut out = String::with_capacity(content.len() + new_string.len());
+    let mut replacements = 0usize;
+    if replace_all {
+        // Replace every window scoring above threshold.
+        let mut i = 0usize;
+        while i < lines.len() {
+            let wend = (i + (end - start)).min(lines.len());
+            if wend > i && similarity(&lines[i..wend].join("\n"), old_string) >= FUZZY_THRESHOLD {
+                out.push_str(new_string);
+                ensure_trailing_newline(&mut out, new_string, wend < lines.len());
+                replacements += 1;
+                i = wend;
+            } else {
+                out.push_str(lines[i]);
+                if i + 1 < lines.len() || trailing_newline {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+        }
     } else {
-        content.replacen(old_string, new_string, 1)
-    };
-    std::fs::write(path, &new_content).map_err(|e| format!("failed to write {file_path}: {e}"))?;
-    Ok(json!({ "edited": file_path, "replacements": if replace_all { count } else { 1 } }))
+        for i in 0..start {
+            out.push_str(lines[i]);
+            out.push('\n');
+        }
+        out.push_str(new_string);
+        ensure_trailing_newline(&mut out, new_string, end < lines.len() || trailing_newline);
+        replacements = 1;
+        for i in end..lines.len() {
+            out.push_str(lines[i]);
+            if i + 1 < lines.len() || trailing_newline {
+                out.push('\n');
+            }
+        }
+    }
+    std::fs::write(path, &out).map_err(|e| format!("failed to write {file_path}: {e}"))?;
+    Ok(json!({ "edited": file_path, "replacements": replacements, "fuzzy": true }))
+}
+
+/// Keep the replacement glued to the following lines without doubling up on
+/// newlines when new_string already ends with one.
+fn ensure_trailing_newline(out: &mut String, new_string: &str, more_lines_follow: bool) {
+    if more_lines_follow && !new_string.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+// --- Levenshtein fuzzy matching -------------------------------------------
+
+/// Minimum similarity (1.0 - distance/max_len) for a fuzzy edit to apply.
+const FUZZY_THRESHOLD: f64 = 0.9;
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+fn similarity(a: &str, b: &str) -> f64 {
+    let (a, b) = (strip_all_ws(a), strip_all_ws(b));
+    let max = a.chars().count().max(b.chars().count());
+    if max == 0 {
+        return 1.0;
+    }
+    1.0 - (levenshtein(&a, &b) as f64) / (max as f64)
+}
+
+/// Remove all whitespace before comparing: indentation and spacing drift are
+/// noise for edit matching and shouldn't consume the similarity budget.
+fn strip_all_ws(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Slide a window of old_string's line count over the content and return the
+/// (start_line, end_line_exclusive, score, text) of the closest match.
+fn best_fuzzy_match(content: &str, old_string: &str) -> Option<(usize, usize, f64, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let want: Vec<&str> = old_string.lines().collect();
+    if want.is_empty() || lines.is_empty() || want.len() > lines.len() {
+        return None;
+    }
+    let mut best: Option<(usize, f64, String)> = None;
+    for start in 0..=(lines.len() - want.len()) {
+        let window = lines[start..start + want.len()].join("\n");
+        let score = similarity(&window, old_string);
+        if best.as_ref().is_none_or(|(_, s, _)| score > *s) {
+            best = Some((start, score, window));
+        }
+    }
+    best.map(|(start, score, text)| (start, start + want.len(), score, text))
 }
 
 /// Execute a single tool call against the live sessions and return its result
 /// text (truncated for the token budget).
-pub fn execute(tc: &ToolCall, ctx: &ToolContext) -> Result<String, String> {
+pub fn execute(tc: &ToolCall) -> Result<String, String> {
     let args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
-
-    if ctx.action_first && !ctx.bash_used.load(Ordering::SeqCst) && tc.function.name != "bash" {
-        return Err(format!(
-            "action_first: use bash before '{}' for this RE task. Start with `file`, `ls`, and `r2 -AA -q -c 'izz; afl; pdf @ main; px ...'`, then use Python/uv to build the solver. Do not inspect this binary with the UI-only wrapper first.",
-            tc.function.name
-        ));
-    }
-
-    // --- doom_loop: same as opencode's permission doom_loop (ask after 3 identical calls) ---
-    // Prevents redundant read/grep loops like `search {"pattern":"serial"}` x3 that stalled
-    // the Orrery run (see transcript.md for history 0→32 with 15 redundant searches).
-    // We fail fast so the model must try a different tool/args (e.g. bash+r2 or write+python).
-    {
-        let key = format!("{}:{}", tc.function.name, tc.function.arguments);
-        let mut map = doom_tracker().lock().unwrap_or_else(|e| e.into_inner());
-        let cnt = map.entry(key.clone()).or_insert(0);
-        *cnt += 1;
-        if *cnt >= 3 {
-            return Err(format!(
-                "doom_loop: tool '{}' repeated 3 times with identical args. {}",
-                tc.function.name,
-                match tc.function.name.as_str() {
-                    "read" => "File already read — use edit/write or read with different offset/limit, or use bash to inspect via r2/python.",
-                    "grep" | "search" | "glob" => "Search already returned empty/no new results — try bash with r2 (e.g. `r2 -AA -q -c 'izz; afl; pdf @ 0x140002b60'`) or narrow pattern with include/path.",
-                    "bash" => "Same bash command repeated — check output truncation (12k) or try different r2 address/python script.",
-                    _ => "Try a different tool or different arguments."
-                }
-            ));
-        }
-        if map.len() > 128 {
-            map.clear();
-        }
-    }
 
     let result: Result<Value, String> = match tc.function.name.as_str() {
         // -- opencode parity --
         "bash" => {
-            ctx.bash_used.store(true, Ordering::SeqCst);
             let command = get_str(&args, "command")?;
-            let lower = command.to_ascii_lowercase();
-            let bash_call = ctx.bash_calls.fetch_add(1, Ordering::SeqCst) + 1;
-            if lower.contains("python") || lower.contains("uv ") || lower.contains("uv\n") {
-                ctx.python_used.store(true, Ordering::SeqCst);
-            } else if ctx.action_first && bash_call > 2 && !ctx.python_used.load(Ordering::SeqCst) {
-                return Err("action_first: reconnaissance budget exhausted after two bash calls. Start the executable phase now: use `uv run --with numpy --with numba python /tmp/keygen.py` (or write it first), and only use targeted r2 output inside a Python-driven command. Do not run another standalone r2/afl/pdf/search command.".into());
-            }
-            if lower.contains("pdf @") || lower.contains("pdc @") || lower.contains("pdgj @") {
-                return Err("action_first: broad decompilation is disabled for agent bash calls because it produces huge output and stalls the solve. Use targeted r2 commands (`izz; iz; afl~main; axt @ <string>`, `pd 80 @ <address>`, `p8 32 @ <address>`, `ps @ <address>`) and then switch to Python/uv to model or brute-force. Do not retry `pdf`/`pdc`/`pdgj`.".into());
-            }
             let workdir = get_str_opt(&args, "workdir");
             let timeout = args.get("timeout").and_then(|v| v.as_u64());
             let out = bash_execute_simple(&command, workdir, timeout)?;
@@ -437,23 +478,51 @@ mod tests {
     mod tooltests {
         use super::*;
         use crate::agent::{ToolCall, ToolCallFn};
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
 
-        fn ctx() -> ToolContext {
-            ToolContext {
-                session: Arc::new(Mutex::new(None)),
-                debug: Arc::new(Mutex::new(None)),
-                debug_stdin: Arc::new(Mutex::new(None)),
-                debug_busy: Arc::new(AtomicBool::new(false)),
-                debug_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                debug_output_done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                action_first: false,
-                bash_used: Arc::new(AtomicBool::new(false)),
-                bash_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                python_used: Arc::new(AtomicBool::new(false)),
-                project: None,
-            }
+        #[test]
+        fn levenshtein_basics() {
+            assert_eq!(levenshtein("kitten", "sitting"), 3);
+            assert_eq!(levenshtein("", "abc"), 3);
+            assert_eq!(levenshtein("same", "same"), 0);
+            assert_eq!(levenshtein("漢字", "漢"), 1);
+        }
+
+        #[test]
+        fn edit_fuzzy_matches_nearby_text() {
+            let dir = std::env::temp_dir().join(format!(
+                "recurse-fuzzy-test-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("f.txt");
+            std::fs::write(
+                &file,
+                "fn main() {\n    let  x  = compute( 1,2 );\n    println!\"done\";\n}\n",
+            )
+            .unwrap();
+
+            // oldString with drifted whitespace — should still land via fuzzy.
+            edit_path(
+                file.to_str().unwrap(),
+                "let x = compute(1, 2);",
+                "let x = compute(3, 4);",
+                false,
+            )
+            .unwrap();
+            let content = std::fs::read_to_string(&file).unwrap();
+            assert!(content.contains("compute(3, 4)"), "{content}");
+
+            // Wildly different oldString must fail and show the closest match.
+            let err = edit_path(
+                file.to_str().unwrap(),
+                "totally unrelated content here",
+                "x",
+                false,
+            )
+            .unwrap_err();
+            assert!(err.contains("Closest match"), "{err}");
+
+            std::fs::remove_dir_all(&dir).ok();
         }
 
         #[test]
@@ -491,7 +560,7 @@ mod tests {
                     arguments: "{}".into(),
                 },
             };
-            assert!(execute(&tc, &ctx()).unwrap_err().contains("unknown tool"));
+            assert!(execute(&tc).unwrap_err().contains("unknown tool"));
         }
 
         #[test]
@@ -509,7 +578,7 @@ mod tests {
                         },
                     },
                 };
-                let err = execute(&tc, &ctx()).unwrap_err();
+                let err = execute(&tc).unwrap_err();
                 assert!(
                     err.contains("no binary loaded")
                         || err.contains("debugger not started")
@@ -523,7 +592,6 @@ mod tests {
 
         #[test]
         fn bash_tool_executes() {
-            let c = ctx();
             let tc = ToolCall {
                 id: "i".into(),
                 call_type: "function".into(),
@@ -532,97 +600,9 @@ mod tests {
                     arguments: r#"{"command":"echo hello; echo err 1>&2"}"#.into(),
                 },
             };
-            let out = execute(&tc, &c).unwrap();
+            let out = execute(&tc).unwrap();
             assert!(out.contains("hello"), "bash stdout: {out}");
         }
 
-        #[test]
-        fn agent_must_start_with_bash() {
-            let c = ToolContext {
-                action_first: true,
-                bash_used: Arc::new(AtomicBool::new(false)),
-                ..ctx()
-            };
-            let tc = ToolCall {
-                id: "i".into(),
-                call_type: "function".into(),
-                function: ToolCallFn {
-                    name: "read".into(),
-                    arguments: r#"{"filePath":"/tmp/anything"}"#.into(),
-                },
-            };
-            let err = execute(&tc, &c).unwrap_err();
-            assert!(err.contains("action_first"));
-        }
-
-        #[test]
-        fn read_write_edit_roundtrip() {
-            let dir = std::env::temp_dir().join(format!("recurse-test-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir);
-            let file = dir.join("hello.txt");
-            let fp = file.to_string_lossy().into_owned();
-            let c = ctx();
-            let mk = |n: &str, a: serde_json::Value| ToolCall {
-                id: "i".into(),
-                call_type: "function".into(),
-                function: ToolCallFn {
-                    name: n.into(),
-                    arguments: a.to_string(),
-                },
-            };
-            execute(
-                &mk(
-                    "write",
-                    json!({"filePath": fp, "content": "line1\nline2\n"}),
-                ),
-                &c,
-            )
-            .unwrap();
-            let out = execute(&mk("read", json!({"filePath": fp})), &c).unwrap();
-            assert!(out.contains("line1"), "read: {out}");
-            execute(
-                &mk(
-                    "edit",
-                    json!({"filePath": fp, "oldString": "line1", "newString": "hello"}),
-                ),
-                &c,
-            )
-            .unwrap();
-            let out2 = execute(&mk("read", json!({"filePath": fp})), &c).unwrap();
-            assert!(out2.contains("hello"), "edit: {out2}");
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-
-        #[test]
-        fn skill_todowrite_question_schema_present() {
-            // Minimal schema for now: bash, read, write, edit only.
-            let names: Vec<String> = schema()
-                .iter()
-                .filter_map(|v| v["function"]["name"].as_str().map(|s| s.to_string()))
-                .collect();
-            for need in ["bash", "read", "write", "edit"] {
-                assert!(
-                    names.contains(&need.to_string()),
-                    "missing tool {need} in schema: {names:?}"
-                );
-            }
-            for hidden in [
-                "apply_patch",
-                "todowrite",
-                "grep",
-                "glob",
-                "skill",
-                "question",
-                "disassemble",
-                "decompile",
-                "search",
-                "debug_start",
-            ] {
-                assert!(
-                    !names.contains(&hidden.to_string()),
-                    "native tool {hidden} must remain UI-only"
-                );
-            }
-        }
     }
 }

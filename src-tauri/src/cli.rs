@@ -24,7 +24,6 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -36,7 +35,6 @@ use crate::memory;
 use crate::project;
 use crate::session::R2Session;
 use crate::sessions;
-use crate::tools::ToolContext;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -802,11 +800,6 @@ fn run_one_turn(
     let _ = r2.analyze();
 
     let session = Arc::new(Mutex::new(Some(r2)));
-    let debug = Arc::new(Mutex::new(None::<R2Session>));
-    let debug_stdin: Arc<Mutex<Option<File>>> = Arc::new(Mutex::new(None));
-    let debug_busy = Arc::new(AtomicBool::new(false));
-    let debug_pid = Arc::new(AtomicU32::new(0));
-    let debug_output_done = Arc::new(AtomicBool::new(false));
     let memory_str = memory::summary_for(proj_name.as_deref(), &prompt);
     if !memory_str.is_empty() {
         eprintln!("[recurse-cli] memory: {} chars", memory_str.len());
@@ -882,20 +875,6 @@ fn run_one_turn(
     }
     let counters = Arc::new(Mutex::new(Counters::default()));
     let counters_clone = counters.clone();
-
-    let ctx = ToolContext {
-        session: session.clone(),
-        debug: debug.clone(),
-        debug_stdin: debug_stdin.clone(),
-        debug_busy: debug_busy.clone(),
-        debug_pid: debug_pid.clone(),
-        debug_output_done: debug_output_done.clone(),
-        action_first: true,
-        bash_used: Arc::new(AtomicBool::new(false)),
-        bash_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-        python_used: Arc::new(AtomicBool::new(false)),
-        project: proj_name.clone(),
-    };
 
     let cancel = agent.cancel.clone();
     let _ = ctrlc::set_handler(move || {
@@ -973,7 +952,7 @@ fn run_one_turn(
     };
 
     let mut emit_box: Box<dyn FnMut(AgentEvent)> = Box::new(emit);
-    let mut exec = |tc: &crate::agent::ToolCall| crate::tools::execute(tc, &ctx);
+    let mut exec = |tc: &crate::agent::ToolCall| crate::tools::execute(tc);
     let res = agent.run(
         &run_id,
         &cfg,
