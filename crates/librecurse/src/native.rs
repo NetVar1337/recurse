@@ -620,6 +620,32 @@ fn parse_number(token: &str) -> Option<u64> {
     }
 }
 
+/// Loose symbol-name match for [`Engine::resolve`]: ignores a C++ argument
+/// list, an r2 `sym.` prefix and trailing underscores, so `readInput` matches
+/// `readInput()`, `readInput__`, or the mangled `_Z9readInputv` once demangled.
+///
+/// ```
+/// use librecurse::native::name_matches;
+/// assert!(name_matches("readInput", "readInput()"));
+/// assert!(name_matches("success", "success()"));
+/// assert!(name_matches("main", "sym.main__"));
+/// assert!(!name_matches("success", "_Z7successv")); // demangle first (resolve does)
+/// assert!(!name_matches("main", "domain"));
+/// assert!(!name_matches("", "anything"));
+/// ```
+pub fn name_matches(query: &str, candidate: &str) -> bool {
+    let norm = |s: &str| -> String {
+        s.split('(')
+            .next()
+            .unwrap_or(s)
+            .trim_start_matches("sym.")
+            .trim_end_matches('_')
+            .to_string()
+    };
+    let q = norm(query);
+    !q.is_empty() && norm(candidate) == q
+}
+
 /// Render one Capstone instruction as `mnemonic operand, operand`.
 fn format_insn(insn: &capstone::Insn<'_>) -> String {
     let mnemonic = insn.mnemonic().unwrap_or("");
@@ -1037,14 +1063,19 @@ impl Engine for NativeEngine {
                 }
             }
         }
-        // A discovered function name (`main`, or a symbol name we kept).
+        // A discovered function name. Matched loosely so the model can drop the
+        // C++ argument list it saw in the list (`readInput()` -> `readInput`).
         self.discover()?;
         {
             let state = self
                 .state
                 .lock()
                 .map_err(|e| format!("native state poisoned: {e}"))?;
-            if let Some((_, f)) = state.functions.iter().find(|(_, f)| f.name == name) {
+            if let Some((_, f)) = state
+                .functions
+                .iter()
+                .find(|(_, f)| name_matches(name, &f.name))
+            {
                 return Ok(Some(f.addr));
             }
         }
@@ -1057,10 +1088,16 @@ impl Engine for NativeEngine {
             let Ok(sym_name) = sym.name() else {
                 continue;
             };
-            if sym_name == name {
+            // The mangled name or its demangled form (`_Z9readInputv` ->
+            // `readInput()`), either of which the model may type.
+            if name_matches(name, sym_name) || name_matches(name, &demangle(sym_name)) {
                 return Ok(Some(sym.address()));
             }
-            if sym_name.ends_with(name) && suffix.is_none() {
+            let stripped = sym_name.trim_start_matches("sym.").trim_end_matches('_');
+            if !name.is_empty()
+                && stripped.ends_with(name.trim_end_matches('_'))
+                && suffix.is_none()
+            {
                 suffix = Some(sym.address());
             }
         }
@@ -1271,6 +1308,15 @@ mod tests {
         assert!(is_unconditional_branch("ba"));
         assert!(!is_unconditional_branch("je"));
         assert!(!is_unconditional_branch("bne"));
+    }
+
+    #[test]
+    fn name_matches_is_loose() {
+        assert!(name_matches("readInput", "readInput()"));
+        assert!(name_matches("main", "sym.main__"));
+        assert!(name_matches("checkPassword", "checkPassword(int)"));
+        assert!(!name_matches("main", "domain"));
+        assert!(!name_matches("", "anything"));
     }
 
     #[test]

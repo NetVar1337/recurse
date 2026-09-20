@@ -194,7 +194,8 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                         .unwrap_or(serde_json::Value::Null);
                     store.execute_tool(&mem_project, &tc.function.name, &args)
                 }
-                librecurse::engine::TOOL_NAME => {
+                name if librecurse::engine::is_op(name) => {
+                    let name = name.to_string();
                     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::Value::Null);
                     match engine {
@@ -204,7 +205,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                                 let guard = engine
                                     .lock()
                                     .map_err(|e| format!("analysis engine poisoned: {e}"))?;
-                                librecurse::engine::execute_tool(guard.as_ref(), &args)
+                                librecurse::engine::execute_call(guard.as_ref(), &name, &args)
                             })
                             .await
                             .map_err(|e| format!("analysis task failed: {e}"))?

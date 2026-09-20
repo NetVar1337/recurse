@@ -346,8 +346,8 @@ pub async fn agent_chat(
                     // Backend-neutral analysis tool: serve it from the live
                     // engine the UI is already driving, so analysis state is
                     // shared and the result is projected/capped the same way
-                    // as in the harness.
-                    librecurse::engine::TOOL_NAME => {
+                    // as in the harness. Accept the op as the tool name too.
+                    name if librecurse::engine::is_op(name) => {
                         let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::Value::Null);
                         let guard = session_state
@@ -355,7 +355,7 @@ pub async fn agent_chat(
                             .map_err(|e| format!("session lock poisoned: {e}"))?;
                         match guard.as_ref() {
                             Some(engine) => {
-                                librecurse::engine::execute_tool(engine.as_ref(), &args)
+                                librecurse::engine::execute_call(engine.as_ref(), name, &args)
                             }
                             None => Err("no binary loaded".to_string()),
                         }

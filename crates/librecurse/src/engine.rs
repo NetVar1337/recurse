@@ -508,6 +508,117 @@ pub fn tool_schema(capabilities: Capabilities) -> Value {
 /// Hard ceiling on returned items, so a huge binary cannot blow the context.
 pub const MAX_LIMIT: usize = 500;
 
+/// Every operation the neutral tool understands. Kept explicit (not derived
+/// from capabilities) so hosts can recognise a tool call the model named after
+/// the op — a common mistake (`{"name":"disasm"}` instead of
+/// `{"name":"analyze","op":"disasm"}`) that would otherwise fail.
+pub const OPS: &[&str] = &[
+    "analyze",
+    "functions",
+    "disasm",
+    "graph",
+    "decompile",
+    "xrefs",
+    "strings",
+    "imports",
+    "info",
+    "raw",
+];
+
+/// True when `name` is one of the [`TOOL_NAME`] tool's `op` values.
+///
+/// ```
+/// use librecurse::engine::{is_op, TOOL_NAME};
+/// assert!(is_op("disasm"));
+/// assert!(is_op(TOOL_NAME));
+/// assert!(!is_op("bash"));
+/// ```
+pub fn is_op(name: &str) -> bool {
+    OPS.contains(&name)
+}
+
+/// Normalise a tool call whose `name` is either the tool (`analyze`) or one of
+/// its ops. Returns `args` with `op` filled in, or `None` when `name` is
+/// neither. This lets a host serve a call the model named after the op.
+///
+/// ```
+/// use librecurse::engine::op_args;
+/// use serde_json::json;
+/// assert_eq!(
+///     op_args("disasm", &json!({"addr": "main"})),
+///     Some(json!({"addr": "main", "op": "disasm"})),
+/// );
+/// // The tool's own name leaves args untouched.
+/// assert_eq!(op_args("analyze", &json!({"op": "info"})), Some(json!({"op": "info"})));
+/// assert_eq!(op_args("bash", &json!({})), None);
+/// ```
+pub fn op_args(name: &str, args: &Value) -> Option<Value> {
+    if name == TOOL_NAME {
+        return Some(args.clone());
+    }
+    if !is_op(name) {
+        return None;
+    }
+    let mut merged = match args {
+        Value::Object(map) => Value::Object(map.clone()),
+        _ => json!({}),
+    };
+    if let Value::Object(map) = &mut merged {
+        map.insert("op".to_string(), Value::String(name.to_string()));
+    }
+    Some(merged)
+}
+
+/// Execute a tool call by its wire `name`, accepting either the tool name or
+/// an op name. Hosts route every analysis call through this instead of
+/// matching on [`TOOL_NAME`] alone.
+///
+/// ```
+/// use librecurse::engine::{execute_call, BackendKind, Capabilities, Engine};
+/// use librecurse::engine::{Decompilation, Disassembly, FunctionGraph, FunctionInfo};
+/// use librecurse::engine::{Import, StringRef, Target, Xref, XrefDirection};
+/// use serde_json::{json, Value};
+/// use std::path::Path;
+///
+/// struct Stub;
+/// impl Engine for Stub {
+///     fn backend(&self) -> BackendKind { BackendKind::Native }
+///     fn capabilities(&self) -> Capabilities { Capabilities::none() }
+///     fn path(&self) -> &Path { Path::new("/bin/true") }
+///     fn analyze(&self) -> Result<(), String> { Ok(()) }
+///     fn summary(&self) -> Result<Value, String> { Ok(json!({})) }
+///     fn info(&self) -> Result<Value, String> { Ok(json!({})) }
+///     fn functions(&self) -> Result<Vec<FunctionInfo>, String> { Ok(vec![]) }
+///     fn function_at(&self, _a: u64) -> Result<Option<FunctionInfo>, String> { Ok(None) }
+///     fn disassemble(&self, _t: &Target, _c: Option<usize>) -> Result<Disassembly, String> {
+///         Ok(Disassembly { addr: 1, name: "f".into(), size: None, ops: vec![] })
+///     }
+///     fn function_disasm(&self, _a: u64) -> Result<Disassembly, String> {
+///         Ok(Disassembly { addr: 1, name: "f".into(), size: None, ops: vec![] })
+///     }
+///     fn function_graph(&self, _a: u64) -> Result<FunctionGraph, String> {
+///         Ok(FunctionGraph { addr: 1, name: "f".into(), blocks: vec![] })
+///     }
+///     fn strings(&self) -> Result<Vec<StringRef>, String> { Ok(vec![]) }
+///     fn imports(&self) -> Result<Vec<Import>, String> { Ok(vec![]) }
+///     fn xrefs(&self, _t: &Target, _d: XrefDirection) -> Result<Vec<Xref>, String> { Ok(vec![]) }
+///     fn decompile(&self, _a: u64) -> Result<Decompilation, String> { Err("no".into()) }
+///     fn raw(&self, _c: &str) -> Result<Value, String> { Err("no".into()) }
+///     fn resolve(&self, _n: &str) -> Result<Option<u64>, String> { Ok(None) }
+/// }
+///
+/// // The model named the op instead of the tool: still routed.
+/// let out = execute_call(&Stub, "disasm", &json!({"addr": 1})).unwrap();
+/// assert!(out.contains("\"op\":\"disasm\""));
+/// assert!(execute_call(&Stub, "bash", &json!({})).is_err());
+/// ```
+pub fn execute_call(engine: &dyn Engine, name: &str, args: &Value) -> Result<String, String> {
+    match op_args(name, args) {
+        Some(merged) => execute_tool(engine, &merged),
+        None => Err(format!("unknown tool: {name}")),
+    }
+}
+
 /// Default items per list, matching the historical r2 tool.
 pub const DEFAULT_LIMIT: usize = 60;
 

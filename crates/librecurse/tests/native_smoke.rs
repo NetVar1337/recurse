@@ -69,3 +69,27 @@ fn native_backend_reports_missing_decompiler_clearly() {
     let err = engine.decompile(0).expect_err("no decompiler");
     assert!(err.contains("no decompiler"));
 }
+
+#[test]
+fn native_resolves_demangled_cpp_names() {
+    // The eval corpus is gitignored, so skip when it isn't fetched.
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
+    if !bin.is_file() {
+        return;
+    }
+    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    engine.analyze().expect("analyze");
+    // The binary has `_Z9readInputv` etc.; the model types the base name it
+    // saw in the demangled function list, so resolve must be loose.
+    for name in ["main", "readInput", "success", "failed", "readInput()"] {
+        assert!(
+            engine.resolve(name).expect("resolve").is_some(),
+            "{name} should resolve"
+        );
+    }
+    assert_eq!(
+        engine.resolve("readInput").unwrap(),
+        engine.resolve("_Z9readInputv").unwrap()
+    );
+}

@@ -471,8 +471,9 @@ pub async fn execute(tc: &ToolCall) -> Result<String, String> {
             let replace_all = get_bool_opt(&args, "replaceAll", false);
             edit_path(&file_path, &old_string, &new_string, replace_all).await
         }
-        // Analysis is host-owned (it needs a live engine for the target).
-        crate::engine::TOOL_NAME => Err(format!(
+        // Analysis is host-owned (it needs a live engine for the target). The
+        // model sometimes names the op as the tool; recognise both.
+        name if crate::engine::is_op(name) => Err(format!(
             "the `{}` tool is served by the host, not this runtime",
             crate::engine::TOOL_NAME
         )),
