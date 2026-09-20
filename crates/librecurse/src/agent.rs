@@ -309,10 +309,33 @@ fn echo_reply(user: &str) -> String {
     )
 }
 
-fn build_system_prompt(path: &str, info: &Value, memory: &str) -> String {
-    let arch = info["bin"]["arch"].as_str().unwrap_or("?");
-    let bits = info["bin"]["bits"].as_u64().unwrap_or(0);
-    let kind = info["bin"]["type"].as_str().unwrap_or("?");
+/// Target description the system prompt is built from. Plain interface
+/// type: hosts fill it in from whatever binary metadata they hold, so the
+/// library never depends on the host's JSON shapes.
+#[derive(Clone, Debug)]
+pub struct PromptTarget {
+    /// Binary path, shown to the model verbatim.
+    pub path: String,
+    /// Architecture label (e.g. `"x86"`, `"?"` when unknown).
+    pub arch: String,
+    /// Address width in bits (0 when unknown).
+    pub bits: u64,
+    /// Binary type label (e.g. `"elf"`, `"pe"`).
+    pub kind: String,
+    /// Previously saved agent memory, appended verbatim when non-empty.
+    pub memory: String,
+}
+
+/// Build the system prompt for a run. Public library interface: hosts can
+/// preview or log the exact prompt a turn will use.
+pub fn system_prompt(target: &PromptTarget) -> String {
+    let PromptTarget {
+        path,
+        arch,
+        bits,
+        kind,
+        memory,
+    } = target;
     let mut prompt = format!(
         "You are Recurse, an expert reverse-engineering agent. Crack the target: recover the serial/key.\n\
          Target: {path} arch={arch} bits={bits} type={kind} ({})\n\
@@ -630,15 +653,13 @@ impl Agent {
         &mut self,
         run_id: &str,
         config: &LlmConfig,
-        path: &str,
-        info: &Value,
-        memory: &str,
+        target: &PromptTarget,
         user: &str,
         tools: &[Value],
         exec: &mut dyn FnMut(&ToolCall) -> Result<String, String>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<(), String> {
-        let system = build_system_prompt(path, info, memory);
+        let system = system_prompt(target);
         self.messages.push(ChatMessage::user(user));
 
         let configured = config
@@ -866,6 +887,16 @@ mod tests {
         format!("data: {obj}\n\ndata: [DONE]\n\n")
     }
 
+    fn test_target() -> PromptTarget {
+        PromptTarget {
+            path: "/tmp/b".into(),
+            arch: "x86".into(),
+            bits: 64,
+            kind: "elf".into(),
+            memory: String::new(),
+        }
+    }
+
     fn run_with(
         bodies: Vec<String>,
     ) -> (
@@ -881,16 +912,14 @@ mod tests {
             model: "m".into(),
         };
         let mut agent = Agent::new();
-        let info = serde_json::json!({"bin":{"arch":"x86","bits":64,"type":"elf"}});
+        let target = test_target();
         let mut events: Vec<AgentEvent> = Vec::new();
         let mut exec = |_tc: &ToolCall| -> Result<String, String> { Ok("rip=0x1234".into()) };
         let mut emit = |ev: AgentEvent| events.push(ev);
         let res = agent.run(
             "run-1",
             &config,
-            "/tmp/b",
-            &info,
-            "",
+            &target,
             "hello",
             &[],
             &mut exec,
@@ -904,6 +933,27 @@ mod tests {
             })
             .collect();
         (res, events, vec![content], agent.messages().to_vec())
+    }
+
+    #[test]
+    fn system_prompt_covers_target_and_memory() {
+        let target = PromptTarget {
+            memory: "prefers unicorn".into(),
+            ..test_target()
+        };
+        let prompt = system_prompt(&target);
+        assert!(prompt.contains("/tmp/b"), "prompt names the target");
+        assert!(prompt.contains("x86"), "prompt carries the arch");
+        assert!(
+            prompt.contains("Previously saved memory"),
+            "memory section header present"
+        );
+        assert!(prompt.contains("prefers unicorn"), "memory is appended");
+        let bare = system_prompt(&test_target());
+        assert!(
+            !bare.contains("Previously saved memory"),
+            "empty memory adds no section"
+        );
     }
 
     #[test]
@@ -990,9 +1040,7 @@ mod tests {
         let res = agent.run(
             "run-c",
             &config,
-            "/tmp/b",
-            &serde_json::json!({"bin":{"arch":"x86","bits":64,"type":"elf"}}),
-            "",
+            &test_target(),
             "go",
             &[],
             &mut exec,
@@ -1033,16 +1081,14 @@ mod tests {
             model: "m".into(),
         };
         let mut agent = Agent::new();
-        let info = serde_json::json!({"bin":{"arch":"x86","bits":64,"type":"elf"}});
+        let target = test_target();
         let mut events: Vec<AgentEvent> = Vec::new();
         let mut exec = |_tc: &ToolCall| -> Result<String, String> { Ok(String::new()) };
         let mut emit = |ev: AgentEvent| events.push(ev);
         let res = agent.run(
             "run-e",
             &config,
-            "/tmp/b",
-            &info,
-            "",
+            &target,
             "hello",
             &[],
             &mut exec,

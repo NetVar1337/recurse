@@ -266,6 +266,15 @@ pub async fn agent_chat(
     tauri::async_runtime::spawn_blocking(move || {
         let tools = librecurse::tools::schema();
         let memory = memory::summary_for(project.as_deref(), &message);
+        // r2's `ij` shape stays on the host side: the library only ever
+        // sees the normalized PromptTarget interface.
+        let target = librecurse::agent::PromptTarget {
+            path,
+            arch: info["bin"]["arch"].as_str().unwrap_or("?").to_string(),
+            bits: info["bin"]["bits"].as_u64().unwrap_or(0),
+            kind: info["bin"]["type"].as_str().unwrap_or("?").to_string(),
+            memory,
+        };
 
         // Wrapped so any panic still surfaces an Error event to the frontend.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
@@ -279,7 +288,7 @@ pub async fn agent_chat(
                 };
                 guard
                     .run(
-                        "run", &config, &path, &info, &memory, &message, &tools, &mut exec,
+                        "run", &config, &target, &message, &tools, &mut exec,
                         &mut emit,
                     )
                     .map(|_| guard.messages().to_vec())
