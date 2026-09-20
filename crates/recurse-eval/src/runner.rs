@@ -73,10 +73,10 @@ pub struct TaskOutcome {
 fn task_prompt(binary: &Path) -> String {
     format!(
         "Recover a valid serial/key for the binary at {}.\n\
-         Use r2 for static analysis (`r2 -q -c '...' <path>`) and Python for \
-         decoding/brute-force. When you have a serial that works, finish with \
-         a final message containing the exact serial on its own line prefixed \
-         with `FLAG:` (e.g. `FLAG: hunter2`).",
+         Use the `r2` tool for static analysis and Python for decoding/brute-force. \
+         You can run the binary to check a candidate key. When you have one that \
+         works, finish with a final message containing the exact serial on its own \
+         line prefixed with `FLAG:` (e.g. `FLAG: hunter2`).",
         binary.display()
     )
 }
@@ -108,18 +108,56 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     let mut tools = librecurse::tools::schema();
     tools.extend(librecurse::memory::memory_tool_schema());
 
+    // One analysed r2 session for the whole task, so `aaa` runs once and every
+    // later query is a cheap follow-up, and so results can be deduplicated.
+    let session = match librecurse::r2::Session::open(binary) {
+        Ok(mut s) => {
+            let _ = s.warm_up();
+            Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
+        }
+        Err(e) => {
+            eprintln!("[eval] r2 session unavailable ({e}); falling back to bash only");
+            None
+        }
+    };
+
     let mut agent = Agent::new();
     agent.set_debug(true);
     let mut exec = |tc: &ToolCall| {
         let tc = tc.clone();
         let mem_project = mem_project.clone();
         let store = store.clone();
+        let session = session.clone();
         async move {
             match tc.function.name.as_str() {
                 "memory_save" | "memory_load" | "memory_search" => {
                     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::Value::Null);
                     store.execute_tool(&mem_project, &tc.function.name, &args)
+                }
+                librecurse::r2::TOOL_NAME => {
+                    let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or(serde_json::Value::Null);
+                    let cmd = args
+                        .get("cmd")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let limit = args.get("limit").and_then(|v| v.as_u64());
+                    match session {
+                        Some(session) => {
+                            // Blocking process IO off the async runtime.
+                            tokio::task::spawn_blocking(move || {
+                                let mut guard = session
+                                    .lock()
+                                    .map_err(|e| format!("r2 session poisoned: {e}"))?;
+                                guard.call(&cmd, limit.map(|l| l as usize))
+                            })
+                            .await
+                            .map_err(|e| format!("r2 task failed: {e}"))?
+                        }
+                        None => Err("r2 session unavailable".to_string()),
+                    }
                 }
                 _ => librecurse::tools::execute(&tc).await,
             }

@@ -20,11 +20,16 @@ fn tool(name: &str, description: &str, params: Value) -> Value {
     })
 }
 
-/// Minimal agent schema for now: bash + read + write + edit.
-/// Native r2/memory/todo/skill/question remain UI-only to avoid the
-/// decompile/search loop; the agent drives all analysis through bash.
+/// Minimal agent schema: one binary-analysis tool (`r2`), a shell for scripts
+/// (`bash`), files (`read`/`write`/`edit`). Memory tools are appended by the
+/// host from [`crate::memory::memory_tool_schema`].
+///
+/// Analysis goes through `r2` rather than `bash` + `r2 -q -c`: the native tool
+/// keeps one analysed session, returns projected JSON instead of coloured text,
+/// and caps what it hands back.
 pub fn schema() -> Vec<Value> {
     vec![
+        crate::r2::tool_schema(),
         tool(
             "bash",
             "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures. Use workdir instead of cd.",
@@ -440,7 +445,9 @@ pub async fn execute(tc: &ToolCall) -> Result<String, String> {
             let workdir = get_str_opt(&args, "workdir");
             let timeout = args.get("timeout").and_then(|v| v.as_u64());
             let out = bash_execute_simple(&command, workdir, timeout).await?;
-            Ok(Value::String(out))
+            // Colour escapes and runaway dumps cost tokens on every later turn,
+            // exactly like r2 output: filter shell results the same way.
+            Ok(Value::String(crate::r2::normalize_bash(&out)))
         }
         "read" => {
             let file_path = get_str(&args, "filePath")?;
@@ -460,6 +467,11 @@ pub async fn execute(tc: &ToolCall) -> Result<String, String> {
             let replace_all = get_bool_opt(&args, "replaceAll", false);
             edit_path(&file_path, &old_string, &new_string, replace_all).await
         }
+        // Analysis is host-owned (it needs a live r2 process for the target).
+        "r2" => Err(format!(
+            "the `{}` tool is served by the host, not this runtime",
+            crate::r2::TOOL_NAME
+        )),
         other => Err(format!("unknown tool: {other}")),
     };
 

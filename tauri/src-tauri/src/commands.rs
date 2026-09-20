@@ -259,6 +259,9 @@ pub async fn agent_chat(
         .map_err(|e| format!("llm lock poisoned: {e}"))?
         .clone();
     let agent = state.agent.clone();
+    // Arc clone: the worker task can't hold `State`, but it needs the live r2
+    // session to serve the `r2` tool from the UI's own analysis state.
+    let session_state = state.session.clone();
     let project = current_project(&state)?;
     let project_storage = project.clone();
     let config_storage = config.clone();
@@ -296,6 +299,9 @@ pub async fn agent_chat(
         let mut exec = |tc: &ToolCall| {
             let tc = tc.clone();
             let mem_project = mem_project.clone();
+            // Clone per call: the closure must stay `FnMut`, so it can't move
+            // the Arc into the first future it produces.
+            let session_state = session_state.clone();
             async move {
                 match tc.function.name.as_str() {
                     "memory_save" | "memory_load" | "memory_search" => {
@@ -303,6 +309,37 @@ pub async fn agent_chat(
                             .unwrap_or(serde_json::Value::Null);
                         crate::db::memory_store()
                             .and_then(|s| s.execute_tool(&mem_project, &tc.function.name, &args))
+                    }
+                    // Native analysis tool: serve it from the live session the
+                    // UI is already driving, so analysis state is shared and the
+                    // result is projected/capped the same way as in the harness.
+                    librecurse::r2::TOOL_NAME => {
+                        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        let cmd = args
+                            .get("cmd")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let limit = args
+                            .get("limit")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize)
+                            .unwrap_or(60);
+                        let guard = session_state
+                            .lock()
+                            .map_err(|e| format!("session lock poisoned: {e}"))?;
+                        match guard.as_ref() {
+                            Some(sess) => {
+                                let raw = sess.run(&cmd)?;
+                                let text = match raw {
+                                    serde_json::Value::String(s) => s,
+                                    other => other.to_string(),
+                                };
+                                Ok(librecurse::r2::normalize(&cmd, &text, limit))
+                            }
+                            None => Err("no binary loaded".to_string()),
+                        }
                     }
                     _ => librecurse::tools::execute(&tc).await,
                 }
