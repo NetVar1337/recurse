@@ -18,6 +18,7 @@
 //!   seed: 7
 //! run:
 //!   model: deepseek/deepseek-v4.1-flash
+//!   backend: r2              # or native (env EVAL_BACKEND wins)
 //!   max_turns: 40
 //!   timeout_secs: 480
 //! ```
@@ -25,6 +26,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use librecurse::engine::BackendKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,6 +94,10 @@ impl Default for SelectConfig {
 pub struct RunConfig {
     /// Empty = app default (`RECURSE_LLM_MODEL` / OpenRouter auto).
     pub model: String,
+    /// Analysis backend for this tier: `r2` or `native`. `None` falls back to
+    /// `RECURSE_BACKEND` (or the app default, `r2`). `EVAL_BACKEND` overrides
+    /// this per run.
+    pub backend: Option<BackendKind>,
     pub max_turns: usize,
     pub timeout_secs: u64,
 }
@@ -100,6 +106,7 @@ impl Default for RunConfig {
     fn default() -> Self {
         Self {
             model: String::new(),
+            backend: None,
             max_turns: 40,
             timeout_secs: 480,
         }

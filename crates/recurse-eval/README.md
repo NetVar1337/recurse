@@ -23,6 +23,7 @@ select:
   seed: 7                # deterministic sampling
 run:
   model: ""              # empty = app default
+  backend: r2            # or native; EVAL_BACKEND overrides per run
   max_turns: 40
   timeout_secs: 480
 ```
@@ -31,6 +32,28 @@ run:
 then add `medium.yaml` with filters — same schema, zero code changes. Every
 selected task keeps its distribution metadata (difficulty, platform, arch,
 tags) so tier skew is always visible.
+
+### Analysis backend
+
+A tier runs against either backend; the agent tool and grading are identical,
+so results are directly comparable. Precedence:
+
+1. `EVAL_BACKEND` environment variable (per run),
+2. `run.backend` in the tier YAML,
+3. `RECURSE_BACKEND`,
+4. `r2` (default).
+
+```bash
+EVAL_BACKEND=native just eval-run   # pure Rust, no radare2 required
+EVAL_BACKEND=r2 just eval-run       # radare2 (full features, r2ghidra)
+just eval-run-native                # the same, as a recipe
+just eval-run-r2
+```
+
+radare2 is only required when the **r2** backend is selected; the native
+backend is in-process. The resolved backend is recorded in the run header and
+on every task line in `run.log`, and the task prompt drops the `decompile` op
+when the backend cannot serve it.
 
 ## Use
 
@@ -53,14 +76,15 @@ Equivalent npm scripts live in `tauri/` (`npm run eval:run`, …).
 ### Logs
 
 Everything `eval-run` prints is also written to
-`<traces>/<tier>/run.log` — the full run narrative: resolved config, model,
-knobs, the selected task list, every fetch, one line per task with turns,
-tokens, cost and error, plus the totals. Traces default under the workspace
-target dir, so both live at `target/eval-traces/<tier>/`.
+`<traces>/<tier>/<backend>/run.log` — the full run narrative: resolved config,
+backend, model, knobs, the selected task list, every fetch, one line per task
+with turns, tokens, cost and error, plus the totals. Traces default under the
+workspace target dir, so both live at `target/eval-traces/<tier>/<backend>/`.
 
-Next to it, one `target/eval-traces/<tier>/<hexid>.json` per task holds the full
-conversation with per-turn detail: exact request messages, reasoning, content,
-tool calls and tool results.
+Next to it, one `target/eval-traces/<tier>/<backend>/<hexid>.json` per task holds
+the full conversation with per-turn detail: exact request messages, reasoning,
+content, tool calls and tool results. The backend in the path means a native run
+and an r2 run of the same tier never overwrite each other.
 
 ### Trace layout
 

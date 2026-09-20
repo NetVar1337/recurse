@@ -17,6 +17,9 @@ pub struct EvalOpts {
     pub model: String,
     pub endpoint: String,
     pub api_key: String,
+    /// Analysis backend the agent drives: `r2` or `native`. Resolved from
+    /// `EVAL_BACKEND`, then `RECURSE_BACKEND`, then the app default (`r2`).
+    pub backend: BackendKind,
     pub max_turns: usize,
     pub timeout_secs: u64,
     pub corpus_dir: PathBuf,
@@ -38,6 +41,7 @@ impl EvalOpts {
             model: env_string("EVAL_MODEL").unwrap_or(fallback.model),
             endpoint: env_string("EVAL_ENDPOINT").unwrap_or(fallback.endpoint),
             api_key,
+            backend: resolve_backend(None),
             max_turns: env_string("EVAL_MAX_TURNS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(40),
@@ -48,6 +52,29 @@ impl EvalOpts {
             trace_dir,
         })
     }
+}
+
+/// Resolve the backend with the eval's precedence: `EVAL_BACKEND` > the tier
+/// YAML's `run.backend` (`yaml`) > `RECURSE_BACKEND` > `r2`. An unknown env
+/// value is ignored rather than fatal.
+///
+/// ```
+/// use librecurse::engine::BackendKind;
+/// use recurse_eval::runner::resolve_backend;
+/// std::env::remove_var("EVAL_BACKEND");
+/// std::env::remove_var("RECURSE_BACKEND");
+/// // YAML wins when the env override is absent.
+/// assert_eq!(resolve_backend(Some(BackendKind::Native)), BackendKind::Native);
+/// // Env wins over YAML when set.
+/// std::env::set_var("EVAL_BACKEND", "r2");
+/// assert_eq!(resolve_backend(Some(BackendKind::Native)), BackendKind::R2);
+/// std::env::remove_var("EVAL_BACKEND");
+/// ```
+pub fn resolve_backend(yaml: Option<BackendKind>) -> BackendKind {
+    env_string("EVAL_BACKEND")
+        .and_then(|v| BackendKind::parse(&v))
+        .or(yaml)
+        .unwrap_or_else(BackendKind::from_env)
 }
 
 /// What happened on one task.
@@ -65,16 +92,25 @@ pub struct TaskOutcome {
     /// Empty when the endpoint didn't report one. With a router this is the
     /// only way to know what answered.
     pub models: Vec<String>,
+    /// Analysis backend this task ran against.
+    pub backend: BackendKind,
     pub error: Option<String>,
     pub trace_path: PathBuf,
     /// Kept workdir (temp task dir) for post-mortems.
     pub workdir: PathBuf,
 }
 
-fn task_prompt(binary: &Path) -> String {
+/// The task prompt, phrased for the active backend's capabilities: the native
+/// backend has no decompiler, so asking for `decompile` there just wastes a
+/// turn on an error the model then has to recover from.
+fn task_prompt(binary: &Path, backend: BackendKind) -> String {
+    let ops = match backend {
+        BackendKind::R2 => "functions, disasm, decompile, xrefs, strings, imports",
+        BackendKind::Native => "functions, disasm, xrefs, strings, imports",
+    };
     format!(
         "Recover a valid serial/key for the binary at {}.\n\
-         Use the `analyze` tool for static analysis (ops: functions, disasm, decompile, xrefs, strings, imports) and Python for decoding/brute-force. \
+         Use the `analyze` tool for static analysis (ops: {ops}) and Python for decoding/brute-force. \
          You can run the binary to check a candidate key. When you have one that \
          works, finish with a final message containing the exact serial on its own \
          line prefixed with `FLAG:` (e.g. `FLAG: hunter2`).",
@@ -110,29 +146,28 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     tools.extend(librecurse::memory::memory_tool_schema());
 
     // One analysed backend for the whole task, so discovery runs once and
-    // every later query is a cheap follow-up. The backend is chosen from
-    // `RECURSE_BACKEND` (default r2).
-    let engine: Option<std::sync::Arc<std::sync::Mutex<Box<dyn Engine>>>> =
-        match BackendKind::from_env() {
-            BackendKind::R2 => match librecurse::r2_backend::R2Engine::open(binary) {
-                Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
-                    Box::new(e) as Box<dyn Engine>
-                ))),
-                Err(e) => {
-                    eprintln!("[eval] r2 backend unavailable ({e}); falling back to bash only");
-                    None
-                }
-            },
-            BackendKind::Native => match librecurse::native::NativeEngine::open(binary) {
-                Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
-                    Box::new(e) as Box<dyn Engine>
-                ))),
-                Err(e) => {
-                    eprintln!("[eval] native backend unavailable ({e}); falling back to bash only");
-                    None
-                }
-            },
-        };
+    // every later query is a cheap follow-up. The backend is `opts.backend`
+    // (`EVAL_BACKEND` / the tier YAML / `RECURSE_BACKEND`).
+    let engine: Option<std::sync::Arc<std::sync::Mutex<Box<dyn Engine>>>> = match opts.backend {
+        BackendKind::R2 => match librecurse::r2_backend::R2Engine::open(binary) {
+            Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
+                Box::new(e) as Box<dyn Engine>
+            ))),
+            Err(e) => {
+                eprintln!("[eval] r2 backend unavailable ({e}); falling back to bash only");
+                None
+            }
+        },
+        BackendKind::Native => match librecurse::native::NativeEngine::open(binary) {
+            Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
+                Box::new(e) as Box<dyn Engine>
+            ))),
+            Err(e) => {
+                eprintln!("[eval] native backend unavailable ({e}); falling back to bash only");
+                None
+            }
+        },
+    };
     if let Some(e) = engine.as_ref() {
         if let Ok(g) = e.lock() {
             let _ = g.analyze();
@@ -178,7 +213,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     let mut emit = |_: AgentEvent| {};
 
     let run_id = format!("eval-{}", task.hexid);
-    let task_msg = task_prompt(binary);
+    let task_msg = task_prompt(binary, opts.backend);
     let timeout = Duration::from_secs(opts.timeout_secs);
     let run = agent.run_limited(
         &run_id,
@@ -244,6 +279,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         est_out_tokens,
         cost_usd: cost_usd(&opts.model, est_in_tokens, est_out_tokens),
         models,
+        backend: opts.backend,
         error,
         trace_path,
         workdir,

@@ -56,7 +56,22 @@ run:
     assert!(cfg.select.require_flag, "flag grading on by default");
     assert_eq!(cfg.run.max_turns, 20);
     assert_eq!(cfg.run.timeout_secs, 480, "run default kept");
+    assert!(
+        cfg.run.backend.is_none(),
+        "backend defaults to unset (env/app)"
+    );
     assert!(cfg.dataset.jsonl_url.contains("crackmes_dataset.jsonl"));
+}
+
+#[test]
+fn run_backend_parses_from_yaml() {
+    use librecurse::engine::BackendKind;
+    let native: EvalConfig = serde_yaml::from_str("run:\n  backend: native\n").expect("parse");
+    assert_eq!(native.run.backend, Some(BackendKind::Native));
+    let r2: EvalConfig = serde_yaml::from_str("run:\n  backend: r2\n").expect("parse");
+    assert_eq!(r2.run.backend, Some(BackendKind::R2));
+    // Unknown values are a parse error, not a silent fallback.
+    assert!(serde_yaml::from_str::<EvalConfig>("run:\n  backend: ida\n").is_err());
 }
 
 #[test]
@@ -65,6 +80,8 @@ fn shipped_easy_config_selects_current_ten() {
     let cfg = EvalConfig::load(&path).expect("load easy.yaml");
     assert_eq!(cfg.select.hexids.len(), 10);
     assert_eq!(cfg.binaries.len(), 10);
+    // The shipped tier does not pin a backend; env/app default applies.
+    assert!(cfg.run.backend.is_none());
     // Every binary hint points at a tier hexid (no stale entries).
     let ids: std::collections::HashSet<&str> =
         cfg.select.hexids.iter().map(|s| s.as_str()).collect();

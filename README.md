@@ -212,8 +212,9 @@ just eval-run     # run the tier — the only way to execute an eval YAML
 
 `eval-run` is a binary, not a test, so `cargo test` never spends money or time on
 the agent. Endpoint + key go in `crates/recurse-eval/.env` (copy `.env.example`).
-Each run writes `target/eval-traces/<tier>/run.log` (the full narrative) plus one
-`<hexid>.json` per task with the complete per-turn conversation.
+Each run writes `target/eval-traces/<tier>/<backend>/run.log` (the full narrative)
+plus one `<hexid>.json` per task with the complete per-turn conversation. The
+backend (`r2` or `native`) is selectable per run — see the eval README.
 
 ## Agent LLM
 

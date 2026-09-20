@@ -52,8 +52,16 @@ eval-test:
     cargo test -p recurse-eval --test unit
 
 # The only way to run an eval YAML (a paid agent run, never part of `cargo test`).
-# Logs + per-turn traces land in target/eval-traces/<tier>/.
+# Logs + per-turn traces land in target/eval-traces/<tier>/<backend>/.
+# Backend: EVAL_BACKEND=native|r2 (also `run.backend` in the YAML).
 eval-run:
     cargo run -p recurse-eval --bin eval-run
+
+# Backend-pinned eval runs: pure-Rust native (no radare2) or radare2.
+eval-run-native:
+    EVAL_BACKEND=native cargo run -p recurse-eval --bin eval-run
+
+eval-run-r2:
+    EVAL_BACKEND=r2 cargo run -p recurse-eval --bin eval-run
 
 eval: eval-fetch eval-test
