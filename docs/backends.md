@@ -24,8 +24,11 @@ engine never touches the agent loop, the storefront, or the eval harness.
 - The backend-neutral agent tool (`analyze`) and its dispatcher,
   `execute_tool(&dyn Engine, args)`. Its `op` vocabulary is
   `analyze | functions | disasm | graph | decompile | xrefs | strings | imports
-  | info | raw`. `raw` is the documented escape hatch for backend consoles
-  (radare2 syntax when the r2 backend is active).
+  | info | raw`. The vocabulary is filtered by `Engine::capabilities()`: a
+  backend with no decompiler or console (native) never advertises those ops in
+  the schema or the system prompt, and `execute_tool` rejects them up front.
+  `raw` is the documented escape hatch for backend consoles (radare2 syntax
+  when the r2 backend is active).
 
 Hosts own the concrete engine (it needs a target path, and r2 needs a child
 process) and box it as `Box<dyn Engine>` (see `tauri/src-tauri/src/engine.rs`).

@@ -143,6 +143,24 @@ impl Capabilities {
             xrefs_from: false,
         }
     }
+
+    /// Every optional feature available. The r2 backend advertises this, and
+    /// it is the permissive default for callers that have not built an engine
+    /// yet (e.g. schema previews and tests).
+    ///
+    /// ```
+    /// use librecurse::engine::Capabilities;
+    /// let c = Capabilities::all();
+    /// assert!(c.decompile && c.raw && c.graph && c.xrefs_from);
+    /// ```
+    pub fn all() -> Self {
+        Self {
+            decompile: true,
+            raw: true,
+            graph: true,
+            xrefs_from: true,
+        }
+    }
 }
 
 /// An analysis target: a concrete address or a symbol to resolve first. The
@@ -401,34 +419,59 @@ pub trait Engine: Send + Sync {
 ///
 /// One tool with a structured `op` keeps the schema small (it is re-sent with
 /// every request) while staying independent of any backend's command syntax.
-/// `op:"raw"` is the documented escape hatch for backend-specific consoles.
+/// The `op` enum and description are filtered by `capabilities`, so a backend
+/// that cannot serve an op never advertises it — the model is not tempted to
+/// waste turns on `decompile`/`raw` against the native backend.
 ///
 /// ```
-/// use librecurse::engine::tool_schema;
-/// let schema = tool_schema();
+/// use librecurse::engine::{tool_schema, Capabilities};
+/// let schema = tool_schema(Capabilities::all());
 /// assert_eq!(schema["function"]["name"], "analyze");
-/// assert!(schema["function"]["parameters"]["properties"]["op"].is_object());
+///
+/// // A backend with no decompiler or console drops those ops entirely.
+/// let native = Capabilities { decompile: false, raw: false, graph: true, xrefs_from: true };
+/// let ops = tool_schema(native)["function"]["parameters"]["properties"]["op"]["enum"]
+///     .as_array()
+///     .unwrap()
+///     .clone();
+/// assert!(!ops.iter().any(|v| v == "decompile"));
+/// assert!(!ops.iter().any(|v| v == "raw"));
 /// ```
-pub fn tool_schema() -> Value {
+pub fn tool_schema(capabilities: Capabilities) -> Value {
+    let mut ops: Vec<&str> = vec!["analyze", "functions", "disasm"];
+    if capabilities.graph {
+        ops.push("graph");
+    }
+    if capabilities.decompile {
+        ops.push("decompile");
+    }
+    ops.extend(["xrefs", "strings", "imports", "info"]);
+    if capabilities.raw {
+        ops.push("raw");
+    }
+    let mut description = format!(
+        "Inspect the loaded binary through the active analysis backend. \
+         This is the primary way to examine the target: prefer it over shelling out. \
+         Analysis state persists, so call `analyze` once and then query. \
+         Ops: {}. `addr` accepts a number, `0x` hex, or a symbol name. Results are compact JSON.",
+        ops.join(", ")
+    );
+    if capabilities.raw {
+        description.push_str(
+            " `raw` runs a backend console command (radare2 syntax when the r2 backend is active).",
+        );
+    }
     json!({
         "type": "function",
         "function": {
             "name": TOOL_NAME,
-            "description": "Inspect the loaded binary through the active analysis backend. \
-                This is the primary way to examine the target: prefer it over shelling out. \
-                Analysis state persists, so call `analyze` once and then query. \
-                Ops: `analyze` run analysis; `functions` list functions; \
-                `disasm` disassemble (give `addr` and optional `count`); \
-                `graph` control-flow graph of a function; `decompile` pseudocode of a function; \
-                `xrefs` cross-references (`direction` \"to\" or \"from\"); `strings`; \
-                `imports`; `info` binary metadata; `raw` a backend console command (radare2 syntax when the r2 backend is active). \
-                `addr` accepts a number, `0x` hex, or a symbol name. Results are compact JSON.",
+            "description": description,
             "parameters": {
                 "type": "object",
                 "properties": {
                     "op": {
                         "type": "string",
-                        "enum": ["analyze", "functions", "disasm", "graph", "decompile", "xrefs", "strings", "imports", "info", "raw"]
+                        "enum": ops
                     },
                     "addr": {
                         "type": ["string", "integer"],
@@ -707,6 +750,12 @@ pub fn execute_tool(engine: &dyn Engine, args: &Value) -> Result<String, String>
             )))
         }
         "raw" => {
+            if !engine.capabilities().raw {
+                return Err(format!(
+                    "the {} backend has no console; use the r2 backend for raw commands",
+                    engine.backend().as_str()
+                ));
+            }
             let cmd = args
                 .get("cmd")
                 .and_then(Value::as_str)
@@ -778,7 +827,7 @@ mod tests {
 
     #[test]
     fn schema_is_one_neutral_tool() {
-        let schema = tool_schema();
+        let schema = tool_schema(Capabilities::all());
         assert_eq!(schema["function"]["name"], TOOL_NAME);
         let variants = schema["function"]["parameters"]["properties"]["op"]["enum"]
             .as_array()
@@ -786,5 +835,28 @@ mod tests {
         for op in ["decompile", "xrefs", "functions", "raw"] {
             assert!(variants.iter().any(|v| v == op), "{op} missing");
         }
+    }
+
+    #[test]
+    fn schema_hides_unsupported_ops() {
+        let native = Capabilities {
+            decompile: false,
+            raw: false,
+            graph: true,
+            xrefs_from: true,
+        };
+        let schema = tool_schema(native);
+        let ops = schema["function"]["parameters"]["properties"]["op"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(
+            !ops.iter().any(|v| v == "decompile"),
+            "no decompiler -> no op"
+        );
+        assert!(!ops.iter().any(|v| v == "raw"), "no console -> no op");
+        assert!(ops.iter().any(|v| v == "disasm"));
+        let desc = schema["function"]["description"].as_str().unwrap();
+        assert!(!desc.contains("decompile"));
+        assert!(!desc.contains("raw"));
     }
 }

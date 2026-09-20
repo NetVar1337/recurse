@@ -26,12 +26,14 @@ fn tool(name: &str, description: &str, params: Value) -> Value {
 /// host from [`crate::memory::memory_tool_schema`].
 ///
 /// Analysis goes through the `analyze` tool rather than `bash`: the host
-/// serves it from the selected engine (radare2 or the native backend), keeps
-/// one analysed session, returns projected JSON instead of coloured text, and
-/// caps what it hands back. The tool vocabulary itself is backend-independent.
-pub fn schema() -> Vec<Value> {
+/// serves it from the selected engine (native or radare2), keeps one analysed
+/// session, returns projected JSON instead of coloured text, and caps what it
+/// hands back. The tool vocabulary itself is backend-independent, and
+/// `capabilities` filters out ops the backend cannot serve (e.g. `decompile`
+/// and `raw` on the native backend) so the model never sees them.
+pub fn schema(capabilities: crate::engine::Capabilities) -> Vec<Value> {
     vec![
-        crate::engine::tool_schema(),
+        crate::engine::tool_schema(capabilities),
         tool(
             "bash",
             "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures. Use workdir instead of cd.",

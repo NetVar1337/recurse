@@ -271,7 +271,7 @@ pub async fn agent_chat(
     on_event: tauri::ipc::Channel<AgentEvent>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (path, info) = {
+    let (path, info, capabilities) = {
         let guard = state
             .session
             .lock()
@@ -279,7 +279,11 @@ pub async fn agent_chat(
         let sess = guard
             .as_ref()
             .ok_or_else(|| "no binary loaded".to_string())?;
-        (sess.path().to_string_lossy().to_string(), sess.info()?)
+        (
+            sess.path().to_string_lossy().to_string(),
+            sess.info()?,
+            sess.capabilities(),
+        )
     };
     let config = state
         .llm
@@ -299,7 +303,7 @@ pub async fn agent_chat(
     // a panicking worker still reports through this clone.
     let panic_channel = on_event.clone();
     let worker = tauri::async_runtime::spawn(async move {
-        let mut tools = librecurse::tools::schema();
+        let mut tools = librecurse::tools::schema(capabilities);
         tools.extend(librecurse::memory::memory_tool_schema());
         // Memory is owned by librecurse (SQLite + BM25); the host only
         // resolves which project the turn belongs to.
@@ -315,6 +319,7 @@ pub async fn agent_chat(
             bits: info["bin"]["bits"].as_u64().unwrap_or(0),
             kind: info["bin"]["type"].as_str().unwrap_or("?").to_string(),
             memory,
+            capabilities,
         };
 
         // The async mutex is held across the whole turn; cancel/reset wait

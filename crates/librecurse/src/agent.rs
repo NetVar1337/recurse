@@ -3,6 +3,8 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::engine::Capabilities;
+
 const OPENROUTER_MODELS: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL: &str = "openrouter/auto";
 
@@ -326,6 +328,10 @@ pub struct PromptTarget {
     pub kind: String,
     /// Previously saved agent memory, appended verbatim when non-empty.
     pub memory: String,
+    /// What the active backend can do. The prompt only advertises ops the
+    /// tool can actually serve, so the model does not spend turns on
+    /// `decompile`/`raw` against a backend that lacks them.
+    pub capabilities: Capabilities,
 }
 
 /// Build the system prompt for a run. Public library interface: hosts can
@@ -337,14 +343,32 @@ pub fn system_prompt(target: &PromptTarget) -> String {
         bits,
         kind,
         memory,
+        capabilities,
     } = target;
+    let mut ops: Vec<&str> = vec!["`analyze`", "`functions`", "`disasm`"];
+    if capabilities.graph {
+        ops.push("`graph`");
+    }
+    if capabilities.decompile {
+        ops.push("`decompile`");
+    }
+    ops.extend(["`xrefs`", "`strings`", "`imports`", "`info`"]);
+    if capabilities.raw {
+        ops.push("`raw` (backend console)");
+    }
+    let decompile_step = if capabilities.decompile {
+        ", `decompile` for pseudocode"
+    } else {
+        ""
+    };
     let mut prompt = format!(
         "You are Recurse, an expert reverse-engineering agent. Crack the target: recover the serial/key.\n\
          Target: {path} arch={arch} bits={bits} type={kind} ({})\n\
-         Tooling: use the `analyze` tool for ALL binary inspection — never shell out to a disassembler. Ops: `analyze`, `functions`, `disasm`, `graph`, `decompile`, `xrefs`, `strings`, `imports`, `info`, and `raw` for backend console commands (radare2 syntax when the r2 backend is active). Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
-         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG, `decompile` for pseudocode. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
+         Tooling: use the `analyze` tool for ALL binary inspection — never shell out to a disassembler. Ops: {}. Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
+         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG{decompile_step}. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
          Efficiency (measured and expected of you): never repeat an identical analyze call; keep queries narrow (`disasm` a window, not a whole huge function). Keep prose under 4 lines.",
-        if kind.contains("pe") || kind.contains("mach0") { "PE/Mach-O — static analysis on Linux" } else { "" }
+        if kind.contains("pe") || kind.contains("mach0") { "PE/Mach-O — static analysis on Linux" } else { "" },
+        ops.join(", ")
     );
     if !memory.is_empty() {
         prompt.push_str("\n\nPreviously saved memory (from earlier sessions):\n");

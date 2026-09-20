@@ -57,7 +57,8 @@ engine is a choice, not a hard dependency:
 Pick with the settings menu, the `RECURSE_BACKEND` environment variable
 (`r2` | `native`), or the stored config. The agent gets one backend-neutral `analyze` tool
 (`functions`, `disasm`, `graph`, `decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw`
-for the backend console), and the UI consumes canonical result types rather than r2 JSON.
+for the backend console) — filtered to the ops the active backend actually supports, so native
+never advertises `decompile`/`raw`. The UI consumes canonical result types rather than r2 JSON.
 See [docs/backends.md](docs/backends.md) for the trait, the crate choices, and the licensing
 rationale.
 

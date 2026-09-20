@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use librecurse::agent::{Agent, AgentEvent, LlmConfig, PromptTarget, ToolCall};
-use librecurse::engine::{BackendKind, Engine};
+use librecurse::engine::{BackendKind, Capabilities, Engine};
 use librecurse::memory::MemoryStore;
 
 use crate::{contains_token, cost_usd, env_string, grade_flag, prompt_target_for, Task};
@@ -132,7 +132,6 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     ));
     std::fs::create_dir_all(&workdir).map_err(|e| format!("workdir: {e}"))?;
 
-    let target: PromptTarget = prompt_target_for(task, &binary.to_string_lossy());
     let config = LlmConfig::new(
         opts.endpoint.clone(),
         Some(opts.api_key.clone()),
@@ -141,9 +140,6 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     let mem_project = format!("eval-{}", task.hexid);
     // Fresh memory DB per task; `open` creates tables idempotently.
     let store = MemoryStore::open(workdir.join("memory.db"))?;
-
-    let mut tools = librecurse::tools::schema();
-    tools.extend(librecurse::memory::memory_tool_schema());
 
     // One analysed backend for the whole task, so discovery runs once and
     // every later query is a cheap follow-up. The backend is `opts.backend`
@@ -173,6 +169,16 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
             let _ = g.analyze();
         }
     }
+
+    // Capabilities drive both the tool schema and the prompt, so the model
+    // never sees ops this backend cannot serve (decompile/raw on native).
+    let capabilities = engine
+        .as_ref()
+        .and_then(|e| e.lock().ok().map(|g| g.capabilities()))
+        .unwrap_or_else(Capabilities::none);
+    let target: PromptTarget = prompt_target_for(task, &binary.to_string_lossy(), capabilities);
+    let mut tools = librecurse::tools::schema(capabilities);
+    tools.extend(librecurse::memory::memory_tool_schema());
 
     let mut agent = Agent::new();
     agent.set_debug(true);
