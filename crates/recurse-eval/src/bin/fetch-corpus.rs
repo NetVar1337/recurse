@@ -2,56 +2,33 @@
 //! selected task's binary. Rust only.
 //!
 //! Usage: `cargo run -p recurse-eval --bin fetch-corpus [-- tier.yaml]`
-//! (`EVAL_CONFIG` / `EVAL_CORPUS` also respected). Paths resolve against the
-//! crate dir unless absolute, so this works from the repo root and the crate
-//! dir alike.
+//! (`EVAL_CONFIG` / `EVAL_CORPUS` also respected, plus a repo-root `.env`).
+//! Relative paths resolve against the crate dir, so this behaves the same
+//! from the repo root, `tauri/`, or the crate dir.
 
 use std::path::PathBuf;
 
 use recurse_eval::config::EvalConfig;
 use recurse_eval::corpus::{ensure_dataset_jsonl, ensure_task_binary};
 use recurse_eval::select::{load_records, select_tasks};
-
-fn crate_relative(p: PathBuf) -> PathBuf {
-    if p.is_absolute() || p.exists() {
-        p
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(p)
-    }
-}
+use recurse_eval::{crate_relative, env_path, load_dotenv};
 
 #[tokio::main]
 async fn main() {
-    let config_path = crate_relative(
-        std::env::args()
-            .nth(1)
-            .map(PathBuf::from)
-            .or_else(|| std::env::var("EVAL_CONFIG").ok().map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("evals/easy.yaml")),
-    );
+    load_dotenv();
+    let config_path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("EVAL_CONFIG").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("evals/easy.yaml"));
+    let config_path = crate_relative(config_path);
     let cfg = EvalConfig::load(&config_path).unwrap_or_else(|e| {
         eprintln!("config load failed: {e}");
         std::process::exit(2);
     });
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let corpus_dir = std::env::var("EVAL_CORPUS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let p = PathBuf::from(cfg.corpus_dir.as_deref().unwrap_or("corpus"));
-            if p.is_absolute() {
-                p
-            } else {
-                here.join(p)
-            }
-        });
-    let jsonl_cache = {
-        let p = PathBuf::from(cfg.dataset.jsonl_cache.clone());
-        if p.is_absolute() {
-            p
-        } else {
-            here.join(p)
-        }
-    };
+    let corpus_dir = env_path("EVAL_CORPUS")
+        .unwrap_or_else(|| crate_relative(cfg.corpus_dir.as_deref().unwrap_or("corpus")));
+    let jsonl_cache = crate_relative(&cfg.dataset.jsonl_cache);
 
     ensure_dataset_jsonl(&jsonl_cache, &cfg.dataset.jsonl_url)
         .await

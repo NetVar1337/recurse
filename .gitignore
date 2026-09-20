@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Secrets / local config (see .env.example)
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -25,3 +30,4 @@ dist-ssr
 .gitnexus
 
 target
+corpus

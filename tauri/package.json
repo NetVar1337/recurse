@@ -19,7 +19,7 @@
     "test:rs": "cargo test -p librecurse --lib && cargo test -p recurse --lib",
     "eval:fetch": "cargo run -p recurse-eval --bin fetch-corpus",
     "eval:test": "cargo test -p recurse-eval --test unit",
-    "eval:run": "cargo test -p recurse-eval --test tier -- --nocapture",
+    "eval:run": "cargo run -p recurse-eval --bin eval-run",
     "eval": "npm run eval:fetch && npm run eval:test"
   },
   "dependencies": {

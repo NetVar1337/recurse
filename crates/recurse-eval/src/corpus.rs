@@ -85,6 +85,7 @@ pub async fn ensure_task_binary(corpus_dir: &Path, task: &Task) -> Result<PathBu
 
     if manifest_path.is_file() {
         let _ = std::fs::write(task_dir.join(".fetched"), "ok");
+        make_executable(&manifest_path);
         return Ok(manifest_path);
     }
     // Manifest path missed (renamed upstream?) — fall back to magic-byte
@@ -96,7 +97,29 @@ pub async fn ensure_task_binary(corpus_dir: &Path, task: &Task) -> Result<PathBu
         )
     })?;
     let _ = std::fs::write(task_dir.join(".fetched"), "ok");
+    make_executable(&picked);
     Ok(picked)
+}
+
+/// Ensure the target binary is runnable. Archive extraction writes plain
+/// files (no mode preservation), so without this the agent could analyze a
+/// crackme but never execute it — i.e. the task couldn't be verified by
+/// running it. Best-effort: a read-only filesystem is not fatal.
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            // rwxr-xr-x, plus whatever was already set (e.g. group/other write).
+            perms.set_mode(perms.mode() | 0o755);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 /// Reject archive-slip paths: no absolute paths, no `..`, no empty segments.

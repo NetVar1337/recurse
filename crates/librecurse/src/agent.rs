@@ -112,10 +112,12 @@ pub struct LlmConfig {
 }
 
 impl LlmConfig {
-    /// Explicit construction from resolved values.
+    /// Explicit construction from resolved values. `endpoint` may be a base
+    /// URL (`https://host/v1`) or a full completions URL — see
+    /// [`normalize_endpoint`].
     pub fn new(endpoint: String, api_key: Option<String>, model: String) -> Self {
         Self {
-            endpoint,
+            endpoint: normalize_endpoint(&endpoint),
             api_key,
             model,
         }
@@ -142,6 +144,22 @@ impl Default for LlmConfig {
             model,
         }
     }
+}
+
+/// OpenAI-compatible endpoint normalization. Accepts a bare base URL
+/// (`https://openrouter.ai/api/v1`, the usual "base URL" you copy from a
+/// provider) or a full route; `/chat/completions` is appended only when the
+/// path doesn't already name a completions route. Empty falls back to the
+/// built-in default so a blank config value can't produce a relative URL.
+pub fn normalize_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return OPENROUTER_MODELS.to_string();
+    }
+    if trimmed.ends_with("/chat/completions") || trimmed.ends_with("/completions") {
+        return trimmed.to_string();
+    }
+    format!("{trimmed}/chat/completions")
 }
 
 /// A model entry returned by OpenRouter's `/models` endpoint.
@@ -946,5 +964,50 @@ impl Agent {
             );
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn normalize_endpoint_accepts_base_url_or_full_route() {
+        // The common case: a provider's base URL, as copied from its docs.
+        assert_eq!(
+            normalize_endpoint("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_endpoint("https://api.openai.com/v1/"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        // Already a completions route: untouched, no doubled suffix.
+        assert_eq!(
+            normalize_endpoint("https://openrouter.ai/api/v1/chat/completions"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        // Surrounding whitespace (a `.env` value with trailing spaces) is noise.
+        assert_eq!(
+            normalize_endpoint("  https://host/v1  "),
+            "https://host/v1/chat/completions"
+        );
+        // Empty must never yield a relative URL.
+        assert_eq!(normalize_endpoint(""), OPENROUTER_MODELS);
+        assert_eq!(normalize_endpoint("   "), OPENROUTER_MODELS);
+    }
+
+    #[test]
+    fn llm_config_normalizes_endpoint() {
+        let cfg = LlmConfig::new(
+            "https://openrouter.ai/api/v1".into(),
+            Some("k".into()),
+            "m".into(),
+        );
+        assert_eq!(
+            cfg.endpoint,
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
     }
 }

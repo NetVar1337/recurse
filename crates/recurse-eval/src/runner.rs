@@ -8,7 +8,7 @@ use std::time::Duration;
 use librecurse::agent::{Agent, AgentEvent, LlmConfig, PromptTarget, ToolCall};
 use librecurse::memory::MemoryStore;
 
-use crate::{contains_token, cost_usd, grade_flag, prompt_target_for, Task};
+use crate::{contains_token, cost_usd, env_string, grade_flag, prompt_target_for, Task};
 
 /// Eval-wide knobs. Everything a tier swap or nightly matrix would vary.
 #[derive(Clone, Debug)]
@@ -25,21 +25,22 @@ pub struct EvalOpts {
 impl EvalOpts {
     /// Resolve from the environment (`RECURSE_LLM_*`, `EVAL_*`), with the
     /// same defaults as the app. Missing API key is an error, not a panic.
+    /// Resolve from `crates/recurse-eval/.env` + the environment (`EVAL_*`,
+    /// `RECURSE_LLM_*`), with the same defaults as the app. Empty values count
+    /// as unset. A missing API key is an error, not a panic.
     pub fn from_env(corpus_dir: PathBuf, trace_dir: PathBuf) -> Result<Self, String> {
         let fallback = LlmConfig::default();
         let api_key = fallback.api_key.filter(|k| !k.is_empty()).ok_or_else(|| {
-            "no API key: set RECURSE_LLM_API_KEY or OPENROUTER_API_KEY".to_string()
+            "no API key: set RECURSE_LLM_API_KEY in crates/recurse-eval/.env".to_string()
         })?;
         Ok(Self {
-            model: std::env::var("EVAL_MODEL").unwrap_or(fallback.model),
-            endpoint: std::env::var("EVAL_ENDPOINT").unwrap_or(fallback.endpoint),
+            model: env_string("EVAL_MODEL").unwrap_or(fallback.model),
+            endpoint: env_string("EVAL_ENDPOINT").unwrap_or(fallback.endpoint),
             api_key,
-            max_turns: std::env::var("EVAL_MAX_TURNS")
-                .ok()
+            max_turns: env_string("EVAL_MAX_TURNS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(40),
-            timeout_secs: std::env::var("EVAL_TIMEOUT_SECS")
-                .ok()
+            timeout_secs: env_string("EVAL_TIMEOUT_SECS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(480),
             corpus_dir,

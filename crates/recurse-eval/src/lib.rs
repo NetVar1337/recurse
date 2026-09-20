@@ -13,7 +13,96 @@ pub mod corpus;
 pub mod runner;
 pub mod select;
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
+
+/// Load `.env` from the crate dir or any ancestor (so a repo-root `.env`
+/// works). Existing environment variables always win — `just`, CI, or an
+/// explicit `export` are never overridden by the file.
+///
+/// Called by the eval entry points so `.env` works no matter how the
+/// harness is started (`just`, npm, or a bare `cargo test`).
+/// Environment variables and `.env` are the only config sources: API keys
+/// are not read from any other file.
+pub fn load_dotenv() {
+    let start = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for dir in start.ancestors() {
+        let candidate = dir.join(".env");
+        if !candidate.is_file() {
+            continue;
+        }
+        // Parse and apply manually so pre-set variables win deterministically
+        // rather than depending on the loader's override policy. Empty values
+        // are skipped entirely: `RECURSE_LLM_API_KEY=` means "not set", not
+        // "set to empty" (which would look like a configured key downstream).
+        if let Ok(iter) = dotenvy::from_path_iter(&candidate) {
+            for (key, value) in iter.flatten() {
+                if value.trim().is_empty() || std::env::var_os(&key).is_some() {
+                    continue;
+                }
+                // SAFETY: eval entry points are single-threaded at this stage,
+                // before any worker threads are spawned.
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+        return;
+    }
+}
+
+/// Repo root: the nearest ancestor whose `Cargo.toml` declares a workspace.
+/// Falls back to the crate dir when the crate is built standalone.
+pub fn workspace_root() -> PathBuf {
+    let start = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for dir in start.ancestors() {
+        let manifest = dir.join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            if text.contains("[workspace]") {
+                return dir.to_path_buf();
+            }
+        }
+    }
+    start.to_path_buf()
+}
+
+/// Build directory for the workspace (honours `CARGO_TARGET_DIR`).
+pub fn target_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root().join("target"))
+}
+
+/// Default trace directory: `<target>/eval-traces`.
+pub fn default_trace_dir() -> PathBuf {
+    target_dir().join("eval-traces")
+}
+
+/// Resolve a configured path: absolute paths pass through, relative ones are
+/// taken against the crate dir. Keeps `EVAL_CONFIG` / `EVAL_CORPUS` /
+/// `EVAL_TRACES` behaving identically from the repo root, `tauri/`, or the
+/// crate dir.
+pub fn crate_relative(p: impl AsRef<Path>) -> PathBuf {
+    let p = p.as_ref();
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(p)
+    }
+}
+
+/// Environment variable (`EVAL_*` / LLM) override. Empty values count as
+/// unset, so `RECURSE_LLM_API_KEY=` in `.env` doesn't masquerade as a key.
+pub fn env_string(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// [`env_string`] resolved as a path (crate-relative when relative).
+pub fn env_path(key: &str) -> Option<PathBuf> {
+    env_string(key).map(crate_relative)
+}
 
 /// One eval task. Mirrors the crackmes-re-dataset record fields we grade on.
 #[derive(Clone, Debug, Serialize, Deserialize)]

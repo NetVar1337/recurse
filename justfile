@@ -3,7 +3,9 @@
 # Layout: `tauri/` = desktop app (frontend + Rust backend),
 # `crates/` = shared Rust crates, root `Cargo.toml` = workspace.
 # `just` is the single entry point for both halves.
-
+#
+# Evals read `crates/recurse-eval/.env` themselves (see its `.env.example`),
+# so `just eval-run` needs no shell exports.
 default:
     @just --list
 
@@ -49,7 +51,9 @@ eval-fetch:
 eval-test:
     cargo test -p recurse-eval --test unit
 
+# The only way to run an eval YAML (a paid agent run, never part of `cargo test`).
+# Logs + per-turn traces land in target/eval-traces/<tier>/.
 eval-run:
-    cargo test -p recurse-eval --test tier -- --nocapture
+    cargo run -p recurse-eval --bin eval-run
 
 eval: eval-fetch eval-test

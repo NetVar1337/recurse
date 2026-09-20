@@ -182,12 +182,14 @@ selection filters over the dataset, or a frozen hexid list, plus run knobs.
 
 ```bash
 just eval-fetch   # download the tier's binaries
-just eval-test    # fast self-tests (no API key needed)
-just eval-run     # run the tier (needs a key + r2)
+just eval-test    # harness self-tests (no API key needed, no LLM calls)
+just eval-run     # run the tier — the only way to execute an eval YAML
 ```
 
-The same recipes are npm scripts inside `tauri/` (`npm run eval:run`, …). Per-turn
-traces land in `target/eval-traces/<tier>/<hexid>.json`.
+`eval-run` is a binary, not a test, so `cargo test` never spends money or time on
+the agent. Endpoint + key go in `crates/recurse-eval/.env` (copy `.env.example`).
+Each run writes `target/eval-traces/<tier>/run.log` (the full narrative) plus one
+`<hexid>.json` per task with the complete per-turn conversation.
 
 ## Agent LLM
 

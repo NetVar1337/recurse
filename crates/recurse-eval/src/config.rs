@@ -140,7 +140,9 @@ impl Default for EvalConfig {
 
 impl EvalConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("read eval config: {e}"))?;
-        serde_yaml::from_str(&text).map_err(|e| format!("parse eval config: {e}"))
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("read eval config {}: {e}", path.display()))?;
+        serde_yaml::from_str(&text)
+            .map_err(|e| format!("parse eval config {}: {e}", path.display()))
     }
 }
