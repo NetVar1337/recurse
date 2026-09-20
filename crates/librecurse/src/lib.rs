@@ -1,5 +1,6 @@
 //! librecurse: independent agent framework — the LLM run loop ([agent]),
-//! its tool runtime ([tools]), and the agent's file-backed memory ([memory]).
+//! its tool runtime ([tools]), and the agent's SQLite-backed memory ([memory]
+//! with FTS5/BM25 retrieval).
 //!
 //! The library is storage-agnostic: it never resolves project paths or reads
 //! configuration storage itself. Hosts pass everything in through plain

@@ -1,13 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-/// A single reverse-engineering project. Backed by a directory at
-/// `~/.recurse/<name>/` containing `project.json` (this metadata) plus any
-/// files the project accumulates over time (reasoning graphs, chat history,
-/// notes, extracted artifacts, etc.).
+use crate::db;
+
+/// A single reverse-engineering project. Metadata lives in the `projects`
+/// SQLite table; the directory at `~/.recurse/<name>/` holds only
+/// LLM-written project code (read/written via `read_file` / `write_file`).
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
@@ -25,15 +27,13 @@ pub fn project_dir(name: &str) -> Result<PathBuf, String> {
     Ok(root()?.join(name))
 }
 
-fn meta_path(name: &str) -> Result<PathBuf, String> {
-    Ok(project_dir(name)?.join("project.json"))
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+fn row_to_project(name: String, binary_path: String, created_at: i64, updated_at: i64) -> Project {
+    Project {
+        name,
+        binary_path,
+        created_at: created_at.max(0) as u64,
+        updated_at: updated_at.max(0) as u64,
+    }
 }
 
 /// Project names become directory names, so they must be a single safe path
@@ -55,68 +55,118 @@ pub fn create(name: &str, binary_path: &str) -> Result<Project, String> {
     if binary_path.trim().is_empty() {
         return Err("binary path is empty".into());
     }
+    let ts = db::now();
+    let conn = db::connect()?;
+    conn.execute(
+        "INSERT INTO projects (name, binary_path, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT (name) DO UPDATE SET binary_path = excluded.binary_path,
+                                          updated_at = excluded.updated_at",
+        params![name, binary_path, ts],
+    )
+    .map_err(|e| e.to_string())?;
+    // Ensure the filesystem dir exists for LLM-written project files.
     let dir = project_dir(&name)?;
     fs::create_dir_all(&dir).map_err(|e| format!("create project dir: {e}"))?;
-    let ts = now();
-    let p = Project {
-        name,
-        binary_path: binary_path.to_string(),
-        created_at: ts,
-        updated_at: ts,
-    };
-    write_meta(&p)?;
-    Ok(p)
-}
-
-fn write_meta(p: &Project) -> Result<(), String> {
-    let path = meta_path(&p.name)?;
-    let s = serde_json::to_string_pretty(p).map_err(|e| e.to_string())?;
-    fs::write(&path, s).map_err(|e| e.to_string())
-}
-
-fn read_meta(name: &str) -> Result<Project, String> {
-    let path = meta_path(name)?;
-    let s = fs::read_to_string(&path).map_err(|e| format!("read project.json: {e}"))?;
-    serde_json::from_str(&s).map_err(|e| format!("parse project.json: {e}"))
+    Ok(row_to_project(name, binary_path.to_string(), ts, ts))
 }
 
 /// All projects, most recently opened first.
 pub fn list() -> Result<Vec<Project>, String> {
-    let root = root()?;
+    let conn = db::connect()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, binary_path, created_at, updated_at FROM projects
+             ORDER BY updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(&root) else {
-        return Ok(out); // ~/.recurse doesn't exist yet
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if let Ok(p) = read_meta(name) {
-                out.push(p);
+    for row in rows {
+        match row {
+            Ok((name, binary_path, created_at, updated_at)) => {
+                out.push(row_to_project(name, binary_path, created_at, updated_at));
             }
+            Err(e) => return Err(e.to_string()),
         }
     }
-    out.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
     Ok(out)
 }
 
 pub fn get(name: &str) -> Result<Project, String> {
-    read_meta(name)
+    let conn = db::connect()?;
+    conn.query_row(
+        "SELECT name, binary_path, created_at, updated_at FROM projects WHERE name = ?1",
+        params![name],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    )
+    .map(|(name, binary_path, created_at, updated_at)| {
+        row_to_project(name, binary_path, created_at, updated_at)
+    })
+    .map_err(|_| format!("project not found: {name}"))
 }
 
 /// Bump `updated_at` (called when a project is opened).
 pub fn touch(name: &str) -> Result<(), String> {
-    let mut p = read_meta(name)?;
-    p.updated_at = now();
-    write_meta(&p)
+    let conn = db::connect()?;
+    let n = conn
+        .execute(
+            "UPDATE projects SET updated_at = ?1 WHERE name = ?2",
+            params![db::now(), name],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("project not found: {name}"));
+    }
+    Ok(())
 }
 
 pub fn remove(name: &str) -> Result<(), String> {
+    let conn = db::connect()?;
+    // Manual cascade: sessions + memories (both tables, incl. FTS).
+    conn.execute("DELETE FROM sessions WHERE project_name = ?1", params![name])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM memories WHERE project_name = ?1", params![name])
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM memories_fts WHERE project_name = ?1",
+        params![name],
+    )
+    .map_err(|e| e.to_string())?;
+    let n = conn
+        .execute("DELETE FROM projects WHERE name = ?1", params![name])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("project not found: {name}"));
+    }
+    // Filesystem: LLM-written project files only.
     let dir = project_dir(name)?;
-    fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Project files (filesystem — the only filesystem use outside the DB file).
+// LLM-written code lives here; everything else is SQLite.
+// ---------------------------------------------------------------------------
 
 /// Validate and normalize a project-relative path.
 ///

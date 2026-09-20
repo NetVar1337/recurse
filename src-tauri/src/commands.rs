@@ -268,15 +268,14 @@ pub async fn agent_chat(
     // a panicking worker still reports through this clone.
     let panic_channel = on_event.clone();
     let worker = tauri::async_runtime::spawn(async move {
-        let tools = librecurse::tools::schema();
-        // Memory is a plain directory to the library: project resolution
-        // (including the no-project default) stays on the host side.
-        let memory = {
-            let dir = project::project_dir(project.as_deref().unwrap_or("default"))
-                .map(|dir| dir.join("memory"))
-                .unwrap_or_default();
-            librecurse::memory::summary(&dir).await
-        };
+        let mut tools = librecurse::tools::schema();
+        tools.extend(librecurse::memory::memory_tool_schema());
+        // Memory is owned by librecurse (SQLite + BM25); the host only
+        // resolves which project the turn belongs to.
+        let mem_project = project.clone().unwrap_or_else(|| "default".to_string());
+        let memory = crate::db::memory_store()
+            .and_then(|s| s.summary(&mem_project, 4000))
+            .unwrap_or_default();
         // r2's `ij` shape stays on the host side: the library only ever
         // sees the normalized PromptTarget interface.
         let target = librecurse::agent::PromptTarget {
@@ -292,9 +291,25 @@ pub async fn agent_chat(
         let mut guard = agent.lock().await;
         // Clone per call so the returned future owns its data (the run
         // loop is generic over the future, no boxing needed).
+        // Memory tools are owned by librecurse and served from SQLite;
+        // everything else falls through to the base tool runtime.
         let mut exec = |tc: &ToolCall| {
             let tc = tc.clone();
-            async move { librecurse::tools::execute(&tc).await }
+            let mem_project = mem_project.clone();
+            async move {
+                match tc.function.name.as_str() {
+                    "memory_save" | "memory_load" | "memory_search" => {
+                        let args: serde_json::Value = serde_json::from_str(
+                            &tc.function.arguments,
+                        )
+                        .unwrap_or(serde_json::Value::Null);
+                        crate::db::memory_store().and_then(|s| {
+                            s.execute_tool(&mem_project, &tc.function.name, &args)
+                        })
+                    }
+                    _ => librecurse::tools::execute(&tc).await,
+                }
+            }
         };
         let mut emit = |ev: AgentEvent| {
             let _ = on_event.send(ev);
@@ -605,7 +620,7 @@ fn fetch_models() -> Result<Vec<ModelInfo>, String> {
         .into_json()
         .map_err(|e| format!("models parse failed: {e}"))?;
 
-    let models = resp
+    let models: Vec<ModelInfo> = resp
         .data
         .into_iter()
         .filter(is_text_model)
@@ -624,20 +639,99 @@ fn fetch_models() -> Result<Vec<ModelInfo>, String> {
             }
         })
         .collect();
+    cache_models(&models);
     Ok(models)
+}
+
+/// Model catalog cache in SQLite (`models` table, 24h TTL). Best-effort:
+/// cache failures never fail the fetch itself.
+fn cache_models(models: &[ModelInfo]) {
+    let Ok(conn) = crate::db::connect() else {
+        return;
+    };
+    let ts = crate::db::now();
+    for m in models {
+        let _ = conn.execute(
+            "INSERT INTO models (id, name, context_length, prompt_price, is_free, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name,
+                                              context_length = excluded.context_length,
+                                              prompt_price = excluded.prompt_price,
+                                              is_free = excluded.is_free,
+                                              fetched_at = excluded.fetched_at",
+            rusqlite::params![
+                m.id,
+                m.name,
+                m.context_length as i64,
+                m.prompt_price,
+                i64::from(m.free),
+                ts
+            ],
+        );
+    }
+}
+
+fn cached_models(max_age_secs: i64) -> Option<Vec<ModelInfo>> {
+    let conn = crate::db::connect().ok()?;
+    let cutoff = crate::db::now() - max_age_secs;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, context_length, prompt_price, is_free FROM models
+             WHERE fetched_at > ?1",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map(rusqlite::params![cutoff], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .ok()?;
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            Ok((id, name, context_length, prompt_price, is_free)) => out.push(ModelInfo {
+                id,
+                name,
+                context_length: context_length.max(0) as u64,
+                prompt_price,
+                free: is_free != 0,
+            }),
+            Err(_) => return None,
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 #[tauri::command]
 pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<ModelInfo>, String> {
-    {
-        let guard = state
-            .models
-            .lock()
-            .map_err(|e| format!("models lock poisoned: {e}"))?;
-        if !refresh {
+    const CACHE_TTL_SECS: i64 = 24 * 60 * 60;
+    if !refresh {
+        {
+            let guard = state
+                .models
+                .lock()
+                .map_err(|e| format!("models lock poisoned: {e}"))?;
             if let Some(cached) = guard.as_ref() {
                 return Ok(cached.clone());
             }
+        }
+        // SQLite cache survives restarts; in-memory cache is per-launch.
+        if let Some(cached) = cached_models(CACHE_TTL_SECS) {
+            let mut guard = state
+                .models
+                .lock()
+                .map_err(|e| format!("models lock poisoned: {e}"))?;
+            *guard = Some(cached.clone());
+            return Ok(cached);
         }
     }
     let models = fetch_models()?;
@@ -647,6 +741,60 @@ pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<Mode
         .map_err(|e| format!("models lock poisoned: {e}"))?;
     *guard = Some(models.clone());
     Ok(models)
+}
+
+// ---------------------------------------------------------------------------
+// Memories (owned by librecurse, stored in SQLite + FTS5/BM25)
+// ---------------------------------------------------------------------------
+
+fn mem_project(project: Option<&str>) -> String {
+    project.unwrap_or("default").to_string()
+}
+
+#[tauri::command]
+pub fn memories_list(project: String) -> Result<Vec<String>, String> {
+    crate::db::memory_store()?.list(&mem_project(Some(&project)))
+}
+
+#[tauri::command]
+pub fn memory_get(project: String, key: String) -> Result<String, String> {
+    crate::db::memory_store()?.load(&mem_project(Some(&project)), &key)
+}
+
+#[tauri::command]
+pub fn memory_save(project: String, key: String, content: String) -> Result<(), String> {
+    crate::db::memory_store()?.save(&mem_project(Some(&project)), &key, &content)
+}
+
+#[tauri::command]
+pub fn memory_remove(project: String, key: String) -> Result<(), String> {
+    crate::db::memory_store()?.remove(&mem_project(Some(&project)), &key)
+}
+
+#[derive(serde::Serialize)]
+pub struct MemoryHit {
+    pub key: String,
+    pub snippet: String,
+}
+
+#[tauri::command]
+pub fn memory_search(
+    project: String,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<MemoryHit>, String> {
+    let hits = crate::db::memory_store()?.search(
+        &mem_project(Some(&project)),
+        &query,
+        limit.unwrap_or(5),
+    )?;
+    Ok(hits
+        .into_iter()
+        .map(|(key, content, _rank)| MemoryHit {
+            key,
+            snippet: content.chars().take(1200).collect(),
+        })
+        .collect())
 }
 
 #[tauri::command]

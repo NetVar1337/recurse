@@ -1,25 +1,15 @@
-use std::fs;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use crate::project;
+use crate::db;
 
-/// Storage layout per project:
-///
-/// ```text
-/// ~/.recurse/<project>/
-///   project.json
-///   memory/<key>.md              # shared by every session of the project
-///   sessions/<id>/
-///     session.json               # id, name, model, timestamps
-///     chat.json                  # that session's conversation history
-/// ```
+/// One agent conversation session. Rows in the `sessions` table;
+/// conversation history is the `chat_json` column (no `chat.json` files).
 const DEFAULT_PROJECT: &str = "default";
 const DEFAULT_NAME: &str = "New session";
 
-/// One agent conversation session.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -31,18 +21,6 @@ pub struct Session {
 
 fn effective_project(project: Option<&str>) -> &str {
     project.unwrap_or(DEFAULT_PROJECT)
-}
-
-fn sessions_dir(project: Option<&str>) -> Result<PathBuf, String> {
-    Ok(project::project_dir(effective_project(project))?.join("sessions"))
-}
-
-pub fn session_dir(project: Option<&str>, id: &str) -> Result<PathBuf, String> {
-    Ok(sessions_dir(project)?.join(id))
-}
-
-fn meta_path(project: Option<&str>, id: &str) -> Result<PathBuf, String> {
-    Ok(session_dir(project, id)?.join("session.json"))
 }
 
 fn now() -> u64 {
@@ -65,123 +43,182 @@ fn new_id() -> String {
     format!("s-{nanos:x}-{seq:x}")
 }
 
-pub fn create(project: Option<&str>, model: &str) -> Result<Session, String> {
-    let id = new_id();
-    let ts = now();
-    let s = Session {
-        id: id.clone(),
-        name: DEFAULT_NAME.to_string(),
-        model: model.to_string(),
-        created_at: ts,
-        updated_at: ts,
-    };
-    let dir = session_dir(project, &id)?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    write_meta(project, &s)?;
-    Ok(s)
+fn row_to_session(
+    id: String,
+    name: String,
+    model: String,
+    created_at: i64,
+    updated_at: i64,
+) -> Session {
+    Session {
+        id,
+        name,
+        model,
+        created_at: created_at.max(0) as u64,
+        updated_at: updated_at.max(0) as u64,
+    }
 }
 
-fn write_meta(project: Option<&str>, s: &Session) -> Result<(), String> {
-    let path = meta_path(project, &s.id)?;
-    let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    fs::write(&path, json).map_err(|e| e.to_string())
+pub fn create(project: Option<&str>, model: &str) -> Result<Session, String> {
+    let id = new_id();
+    let ts = now() as i64;
+    let conn = db::connect()?;
+    conn.execute(
+        "INSERT INTO sessions (id, project_name, name, model, created_at, updated_at, chat_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5, '[]')",
+        params![
+            id,
+            effective_project(project),
+            DEFAULT_NAME,
+            model,
+            ts
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(row_to_session(
+        id,
+        DEFAULT_NAME.to_string(),
+        model.to_string(),
+        ts,
+        ts,
+    ))
 }
 
 pub fn get(project: Option<&str>, id: &str) -> Result<Session, String> {
-    let path = meta_path(project, id)?;
-    let s = fs::read_to_string(&path).map_err(|e| format!("read session: {e}"))?;
-    serde_json::from_str(&s).map_err(|e| format!("parse session: {e}"))
+    let conn = db::connect()?;
+    conn.query_row(
+        "SELECT id, name, model, created_at, updated_at FROM sessions
+         WHERE id = ?1 AND project_name = ?2",
+        params![id, effective_project(project)],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    )
+    .map(|(id, name, model, created_at, updated_at)| {
+        row_to_session(id, name, model, created_at, updated_at)
+    })
+    .map_err(|_| format!("session not found: {id}"))
 }
 
 /// All sessions, most recently used first.
 pub fn list(project: Option<&str>) -> Result<Vec<Session>, String> {
-    let dir = sessions_dir(project)?;
+    let conn = db::connect()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, model, created_at, updated_at FROM sessions
+             WHERE project_name = ?1 ORDER BY updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![effective_project(project)], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    if dir.is_dir() {
-        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
+    for row in rows {
+        match row {
+            Ok((id, name, model, created_at, updated_at)) => {
+                out.push(row_to_session(id, name, model, created_at, updated_at));
             }
-            if let Some(id) = path.file_name().and_then(|n| n.to_str()) {
-                if let Ok(s) = get(project, id) {
-                    out.push(s);
-                }
-            }
+            Err(e) => return Err(e.to_string()),
         }
     }
-    out.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(out)
 }
 
 pub fn set_name(project: Option<&str>, id: &str, name: &str) -> Result<(), String> {
-    let mut s = get(project, id)?;
     let name = name.trim();
-    if !name.is_empty() {
-        s.name = name.to_string();
-    }
-    s.updated_at = now();
-    write_meta(project, &s)
-}
-
-pub fn set_model(project: Option<&str>, id: &str, model: &str) -> Result<(), String> {
-    let mut s = get(project, id)?;
-    if !model.is_empty() {
-        s.model = model.to_string();
-    }
-    write_meta(project, &s)
-}
-
-pub fn touch(project: Option<&str>, id: &str) -> Result<(), String> {
-    let mut s = get(project, id)?;
-    s.updated_at = now();
-    write_meta(project, &s)
-}
-
-pub fn remove(project: Option<&str>, id: &str) -> Result<(), String> {
-    let dir = session_dir(project, id)?;
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    let conn = db::connect()?;
+    let n = if name.is_empty() {
+        conn.execute(
+            "UPDATE sessions SET updated_at = ?1 WHERE id = ?2 AND project_name = ?3",
+            params![now() as i64, id, effective_project(project)],
+        )
+        .map_err(|e| e.to_string())?
+    } else {
+        conn.execute(
+            "UPDATE sessions SET name = ?1, updated_at = ?2
+             WHERE id = ?3 AND project_name = ?4",
+            params![name, now() as i64, id, effective_project(project)],
+        )
+        .map_err(|e| e.to_string())?
+    };
+    if n == 0 {
+        return Err(format!("session not found: {id}"));
     }
     Ok(())
 }
 
+pub fn set_model(project: Option<&str>, id: &str, model: &str) -> Result<(), String> {
+    if model.is_empty() {
+        return Ok(());
+    }
+    let conn = db::connect()?;
+    conn.execute(
+        "UPDATE sessions SET model = ?1 WHERE id = ?2 AND project_name = ?3",
+        params![model, id, effective_project(project)],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn touch(project: Option<&str>, id: &str) -> Result<(), String> {
+    let conn = db::connect()?;
+    conn.execute(
+        "UPDATE sessions SET updated_at = ?1 WHERE id = ?2 AND project_name = ?3",
+        params![now() as i64, id, effective_project(project)],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn remove(project: Option<&str>, id: &str) -> Result<(), String> {
+    let conn = db::connect()?;
+    conn.execute(
+        "DELETE FROM sessions WHERE id = ?1 AND project_name = ?2",
+        params![id, effective_project(project)],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn save_history(project: Option<&str>, id: &str, json: &str) -> Result<(), String> {
-    let path = session_dir(project, id)?.join("chat.json");
-    fs::write(&path, json).map_err(|e| e.to_string())
+    let conn = db::connect()?;
+    conn.execute(
+        "UPDATE sessions SET chat_json = ?1 WHERE id = ?2 AND project_name = ?3",
+        params![json, id, effective_project(project)],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn load_history(project: Option<&str>, id: &str) -> Option<String> {
-    let path = session_dir(project, id).ok()?.join("chat.json");
-    fs::read_to_string(path).ok()
+    let conn = db::connect().ok()?;
+    conn.query_row(
+        "SELECT chat_json FROM sessions WHERE id = ?1 AND project_name = ?2",
+        params![id, effective_project(project)],
+        |row| row.get(0),
+    )
+    .ok()
 }
 
-/// Remove the obsolete `<project>/history` directories that predate sessions.
-/// Only directories owned by this app are touched; the config (API key) is kept.
+/// Remove pre-SQLite filesystem metadata. No migration: stale
+/// `project.json` / `sessions/` / `memory/*.md` / `history/` dirs and the
+/// top-level `config.json` are deleted; LLM-written project files are kept.
 pub fn cleanup_legacy() {
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let root = home.join(".recurse");
-    if !root.is_dir() {
-        return;
-    }
-    if let Ok(entries) = fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let legacy = path.join("history");
-            if legacy.exists() {
-                let _ = fs::remove_dir_all(&legacy);
-            }
-            // Drop a stray empty "default" project (no-project leftovers).
-            if path.file_name().and_then(|n| n.to_str()) == Some(DEFAULT_PROJECT) {
-                let _ = fs::remove_dir_all(&path);
-            }
-        }
-    }
+    db::cleanup_legacy_filesystem();
 }
 
 #[cfg(test)]
@@ -205,7 +242,7 @@ mod tests {
             assert_eq!(s.model, "model-a");
             set_name(Some("p"), &s.id, "  renamed  ").unwrap();
             assert_eq!(get(Some("p"), &s.id).unwrap().name, "renamed");
-            // Empty/whitespace names are ignored.
+            // Empty/whitespace names bump recency but keep the name.
             set_name(Some("p"), &s.id, "   ").unwrap();
             assert_eq!(get(Some("p"), &s.id).unwrap().name, "renamed");
             set_model(Some("p"), &s.id, "model-b").unwrap();

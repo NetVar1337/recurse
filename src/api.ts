@@ -78,6 +78,20 @@ export const api = {
 		invoke<void>("project_write_file", { name, path, content }),
 	projectListFiles: (name: string) =>
 		invoke<string[]>("project_list_files", { name }),
+	memoriesList: (project: string) =>
+		invoke<string[]>("memories_list", { project }),
+	memoryGet: (project: string, key: string) =>
+		invoke<string>("memory_get", { project, key }),
+	memorySave: (project: string, key: string, content: string) =>
+		invoke<void>("memory_save", { project, key, content }),
+	memoryRemove: (project: string, key: string) =>
+		invoke<void>("memory_remove", { project, key }),
+	memorySearch: (project: string, query: string, limit?: number) =>
+		invoke<{ key: string; snippet: string }[]>("memory_search", {
+			project,
+			query,
+			limit,
+		}),
 	shellSpawn: () => invoke<ShellInfo>("shell_spawn"),
 	shellWrite: (id: number, data: string) =>
 		invoke<void>("shell_write", { id, data }),

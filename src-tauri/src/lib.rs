@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config;
+pub mod db;
 pub mod engine;
 pub mod process;
 pub mod project;
@@ -122,6 +123,11 @@ pub fn run() {
             commands::set_model,
             commands::save_api_key,
             commands::list_models,
+            commands::memories_list,
+            commands::memory_get,
+            commands::memory_save,
+            commands::memory_remove,
+            commands::memory_search,
             commands::list_projects,
             commands::create_project,
             commands::open_project,

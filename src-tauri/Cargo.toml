@@ -33,6 +33,7 @@ serde_json = "1"
 libc = "0.2"
 ureq = { version = "2", features = ["tls", "json"] }
 dirs = "6"
+rusqlite = { version = "0.32", features = ["bundled"] }
 portable-pty = "0.8"
 glob = "0.3"
 regex = "1"

@@ -1,11 +1,11 @@
-use std::fs;
-use std::path::PathBuf;
-
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use librecurse::agent::LlmConfig;
 
-/// Persisted user configuration at `~/.recurse/config.json`.
+use crate::db;
+
+/// Persisted user configuration, stored in the `config` table.
 /// Only fields the user sets explicitly are written; everything else is
 /// preserved across updates.
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -18,50 +18,59 @@ pub struct ConfigFile {
     pub endpoint: Option<String>,
 }
 
-fn config_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "could not determine home directory".to_string())?;
-    Ok(home.join(".recurse").join("config.json"))
+fn get_key(key: &str) -> Option<String> {
+    let conn = db::connect().ok()?;
+    conn.query_row(
+        "SELECT value FROM config WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .ok()
 }
 
-/// Load the config file; returns an empty config if the file is missing or
-/// unreadable (never errors — config is best-effort).
+/// Load the config; returns an empty config when nothing is stored
+/// (never errors — config is best-effort).
 pub fn load() -> ConfigFile {
-    config_path()
-        .ok()
-        .and_then(|p| fs::read_to_string(&p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    ConfigFile {
+        openrouter_api_key: get_key("openrouter_api_key"),
+        model: get_key("model"),
+        endpoint: get_key("endpoint"),
+    }
 }
 
-fn write(cfg: &ConfigFile) -> Result<(), String> {
-    let p = config_path()?;
-    if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+fn set_key(key: &str, value: Option<String>) -> Result<(), String> {
+    let conn = db::connect()?;
+    match value {
+        Some(v) => {
+            conn.execute(
+                "INSERT INTO config (key, value) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                params![key, v],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        None => {
+            conn.execute("DELETE FROM config WHERE key = ?1", params![key])
+                .map_err(|e| e.to_string())?;
+        }
     }
-    let s = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    fs::write(&p, s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn update<F>(f: F) -> Result<(), String>
-where
-    F: FnOnce(&mut ConfigFile),
-{
-    let mut cfg = load();
-    f(&mut cfg);
-    write(&cfg)
-}
-
 pub fn set_api_key(key: Option<String>) -> Result<(), String> {
-    update(|c| c.openrouter_api_key = key)
+    set_key("openrouter_api_key", key)
 }
 
 pub fn set_model(model: String) -> Result<(), String> {
-    update(|c| c.model = Some(model))
+    set_key("model", Some(model))
+}
+
+pub fn set_endpoint(endpoint: String) -> Result<(), String> {
+    set_key("endpoint", Some(endpoint))
 }
 
 /// Resolve the runtime LLM config the agent loop consumes.
-/// Precedence: config file > environment > built-in defaults (the last two
+/// Precedence: config table > environment > built-in defaults (the last two
 /// come from [`LlmConfig::default`]).
 pub fn llm_config() -> LlmConfig {
     let file = load();
