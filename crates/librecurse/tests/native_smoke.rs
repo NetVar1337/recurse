@@ -29,6 +29,25 @@ fn native_backend_parses_discovers_and_disassembles() {
         "instructions are formatted"
     );
 
+    // Names the tool itself emits must resolve back to an address, even when
+    // they are not ELF symbols (`fcn_1080`), or the model's follow-up calls
+    // fail with "could not resolve symbol".
+    for f in funcs.iter().take(5) {
+        assert_eq!(
+            engine.resolve(&f.name).expect("resolve"),
+            Some(f.addr),
+            "discovered name {} resolves to {:#x}",
+            f.name,
+            f.addr
+        );
+    }
+    assert_eq!(
+        engine
+            .resolve(&format!("fcn_{:x}", entry))
+            .expect("resolve hex"),
+        Some(entry)
+    );
+
     // Xrefs must be answerable in both directions without erroring.
     engine
         .xrefs(&Target::Addr(entry), XrefDirection::To)

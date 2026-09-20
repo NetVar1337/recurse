@@ -40,6 +40,9 @@ const MAX_FUNCTIONS: usize = 4096;
 const MAX_BLOCKS: usize = 2048;
 /// Maximum instructions decoded per block.
 const MAX_BLOCK_INSNS: usize = 4096;
+/// Linear-sweep budget for call-target seeding on stripped binaries. Decoding
+/// a whole huge `.text` is bounded so `analyze` stays predictable.
+const SWEEP_MAX_INSNS: usize = 1_000_000;
 /// Minimum run length for a string.
 const MIN_STRING_LEN: usize = 4;
 
@@ -292,6 +295,20 @@ impl NativeEngine {
         }
         if entry != 0 && Self::in_text(&file, entry) {
             queue.push_back(entry);
+            // Stripped binaries often expose only `_start`, and they pass
+            // `main` to libc as a pointer rather than calling it directly.
+            // Recover it from the entry's argument setup (x86/x86-64).
+            if let Some(main) = entry_main_seed(&file, &cs, entry) {
+                names.entry(main).or_insert_with(|| "main".to_string());
+                queue.push_back(main);
+            }
+        }
+        // A linear sweep adds every direct call target as a candidate. This is
+        // what finds internal functions when the entry only calls through the
+        // PLT (the common stripped-binary case), where recursive descent from
+        // symbols alone yields just `_start`.
+        for target in sweep_call_targets(&file, &cs, SWEEP_MAX_INSNS) {
+            queue.push_back(target);
         }
 
         let mut discovered: BTreeMap<u64, FunctionInfo> = BTreeMap::new();
@@ -488,6 +505,119 @@ fn decode_blocks(
     }
     blocks.sort_by_key(|b| b.addr);
     Ok(blocks)
+}
+
+/// Decode the executable sections linearly and collect every direct call
+/// target. A bounded, cheap complement to recursive descent: it finds internal
+/// functions whose only reference is an indirect call through the PLT.
+fn sweep_call_targets(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut budget = max_insns;
+    for section in file.sections() {
+        if budget == 0 {
+            break;
+        }
+        if section.kind() != SectionKind::Text {
+            continue;
+        }
+        let Ok(data) = section.data() else {
+            continue;
+        };
+        if data.is_empty() {
+            continue;
+        }
+        let ops = decode_with(cs, data, section.address(), budget, false);
+        budget = budget.saturating_sub(ops.len().max(1));
+        for op in &ops {
+            if op.kind.as_deref() == Some("call") {
+                if let Some(target) = op.jump {
+                    if NativeEngine::in_text(file, target) {
+                        out.push(target);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Recover `main` from a glibc `_start` prologue on x86/x86-64: the entry
+/// loads `main`'s address into the first argument register and only *then*
+/// calls `__libc_start_main`. Recognises both the PIE `lea rdi, [rip + X]`
+/// form and the absolute `mov rdi, X` form.
+fn entry_main_seed(file: &object::File<'_>, cs: &Capstone, entry: u64) -> Option<u64> {
+    if !matches!(
+        file.architecture(),
+        Architecture::X86_64 | Architecture::X86_64_X32 | Architecture::I386
+    ) {
+        return None;
+    }
+    let section = NativeEngine::text_section(file, entry)?;
+    let data = section.data().ok()?;
+    let offset = entry.saturating_sub(section.address()) as usize;
+    if offset >= data.len() {
+        return None;
+    }
+    let reg = if file.is_64() { "rdi" } else { "edi" };
+    let insns = cs.disasm_count(&data[offset..], entry, 64).ok()?;
+    for insn in insns.iter() {
+        let mnemonic = insn.mnemonic().unwrap_or("");
+        let operands = insn.op_str().unwrap_or("");
+        let next = insn.address().wrapping_add(insn.bytes().len() as u64);
+        let prefix = format!("{reg}, ");
+        if mnemonic == "lea" && operands.starts_with(&format!("{reg}, [rip")) {
+            if let Some(disp) = rip_displacement(operands) {
+                let target = next.wrapping_add(disp as u64);
+                if NativeEngine::in_text(file, target) {
+                    return Some(target);
+                }
+            }
+        } else if (mnemonic == "mov" || mnemonic == "movabs") && operands.starts_with(&prefix) {
+            let imm = operands[prefix.len()..]
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim();
+            if let Some(value) = parse_number(imm) {
+                if NativeEngine::in_text(file, value) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse the displacement in an x86 `[rip + X]` / `[rip - X]` operand.
+fn rip_displacement(operands: &str) -> Option<i64> {
+    let after_rip = operands
+        .split("rip")
+        .nth(1)?
+        .split(']')
+        .next()
+        .unwrap_or("");
+    let compact = after_rip.replace(' ', "");
+    let (sign, rest) = match compact.chars().next() {
+        Some('+') => (1i64, &compact[1..]),
+        Some('-') => (-1i64, &compact[1..]),
+        _ => (1i64, compact.as_str()),
+    };
+    let magnitude = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()?
+    } else {
+        rest.parse::<i64>().ok()?
+    };
+    Some(sign * magnitude)
+}
+
+/// Parse a decimal or `0x` hex number as printed in an operand.
+fn parse_number(token: &str) -> Option<u64> {
+    let t = token.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        t.parse::<u64>().ok()
+    }
 }
 
 /// Render one Capstone instruction as `mnemonic operand, operand`.
@@ -897,6 +1027,27 @@ impl Engine for NativeEngine {
     }
 
     fn resolve(&self, name: &str) -> Result<Option<u64>, String> {
+        // Names the tool itself emits (`fcn_1080`, `sub_1080`, `loc_1080`) are
+        // not ELF symbols, but the model will ask for them verbatim, so parse
+        // the hex form before falling back to the symbol table.
+        for prefix in ["fcn_", "sub_", "loc_"] {
+            if let Some(hex) = name.strip_prefix(prefix) {
+                if let Ok(addr) = u64::from_str_radix(hex.trim_start_matches("0x"), 16) {
+                    return Ok(Some(addr));
+                }
+            }
+        }
+        // A discovered function name (`main`, or a symbol name we kept).
+        self.discover()?;
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            if let Some((_, f)) = state.functions.iter().find(|(_, f)| f.name == name) {
+                return Ok(Some(f.addr));
+            }
+        }
         let file = self.parse()?;
         let mut suffix: Option<u64> = None;
         for sym in file.symbols().chain(file.dynamic_symbols()) {
@@ -1102,6 +1253,15 @@ mod tests {
         assert_eq!(parse_branch_target("ra, 0x1234"), Some(0x1234));
         assert_eq!(parse_branch_target("rax"), None);
         assert_eq!(parse_branch_target("qword ptr [rip + 0x10]"), None);
+    }
+
+    #[test]
+    fn parses_rip_displacements_and_numbers() {
+        assert_eq!(parse_number("0x401000"), Some(0x401000));
+        assert_eq!(parse_number("4437"), Some(4437));
+        assert_eq!(rip_displacement("rdi, [rip + 0x11e]"), Some(0x11e));
+        assert_eq!(rip_displacement("rdi, [rip - 0x10]"), Some(-16));
+        assert_eq!(rip_displacement("rax, rbx"), None);
     }
 
     #[test]
