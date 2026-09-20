@@ -5,10 +5,16 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 Third-party components are used under their own licenses; the exact set and
 versions are recorded in Cargo.lock and tauri/package-lock.json. Note in
-particular that the reverse-engineering engine is not bundled:
+particular that the reverse-engineering engine is pluggable (see
+docs/backends.md):
 
-  radare2 and the optional r2ghidra plugin are separate programs, invoked at
-  runtime and licensed independently of this project.
+  * The native backend (default build) links only permissively licensed Rust
+    crates (object, iced-x86, rustc-demangle, cpp_demangle, libc) and contains
+    no copyleft component.
+
+  * radare2 and the optional r2ghidra plugin are separate programs, invoked at
+    runtime only when the r2 backend is selected, and are licensed
+    independently of this project (LGPL-3.0). They are not linked or bundled.
 
 Crackme binaries fetched by crates/recurse-eval come from crackmes.one and are
 not distributed with this repository; they remain the property of their

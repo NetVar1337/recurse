@@ -12,12 +12,27 @@ edition = "2021"
 name = "librecurse"
 crate-type = ["rlib"]
 
+[features]
+# Backend implementations. `r2` shells out to the radare2 executable and has
+# no crate dependencies; `native` is the pure-Rust in-process backend. Both
+# are on by default, and the host selects one at runtime (RECURSE_BACKEND).
+default = ["native"]
+native = ["dep:object", "dep:iced-x86", "dep:rustc-demangle", "dep:cpp_demangle"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "process", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Native backend (feature `native`): ELF/PE/Mach-O parsing + x86 disassembly.
+object = { version = "0.36", optional = true }
+iced-x86 = { version = "1.21", optional = true }
+rustc-demangle = { version = "0.1", optional = true }
+cpp_demangle = { version = "0.4", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

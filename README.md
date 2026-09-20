@@ -2,8 +2,10 @@
 
 Agentic reverse engineering environment — a Ghidra-class desktop app in the spirit of
 "Cursor for reverse engineering". Built with **Tauri 2** (React + TypeScript frontend) on top
-of an existing RE toolchain: **[radare2](https://rada.re/n/)** does all parsing, analysis,
-disassembly, xrefs, strings and imports; **r2ghidra** (optional) provides decompilation.
+of a **pluggable analysis backend**: **[radare2](https://rada.re/n/)** (default, full feature
+set including optional **r2ghidra** decompilation) or a **pure-Rust native engine** with no
+external process and no copyleft dependency. The agent tool and the UI are backend-agnostic —
+see [docs/backends.md](docs/backends.md).
 
 ![Recurse demo](tauri/public/recurse_demo.png)
 
@@ -41,6 +43,24 @@ drives it headlessly. All three are workspace members, so one `Cargo.lock` and o
   model picker; drives the session directly (disasm, xrefs, strings, imports, decompile)
 - Dark-first UI built with Tailwind CSS v4 + shadcn/ui
 
+## Analysis backends
+
+Analysis goes through a single `Engine` trait (`crates/librecurse/src/engine.rs`), so the
+engine is a choice, not a hard dependency:
+
+- **`r2`** (default) — drives the radare2 executable over its `-q0` pipe. Everything,
+  including r2ghidra decompilation.
+- **`native`** — pure-Rust ELF/PE/Mach-O parsing and x86/x86-64 disassembly
+  (`object` + `iced-x86`). No child process, no external tool, no LGPL in the build.
+  No decompiler; non-x86 code is reported, not disassembled.
+
+Pick with the settings menu, the `RECURSE_BACKEND` environment variable
+(`r2` | `native`), or the stored config. The agent gets one backend-neutral `analyze` tool
+(`functions`, `disasm`, `graph`, `decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw`
+for the backend console), and the UI consumes canonical result types rather than r2 JSON.
+See [docs/backends.md](docs/backends.md) for the trait, the crate choices, and the licensing
+rationale.
+
 ## Why not just MCP-to-IDA / yolo it in Claude Code?
 
 Stapling an MCP server onto IDA/Ghidra, or pasting `r2` output into a CLI agent,
@@ -55,9 +75,9 @@ purpose-built environment, not a chatbot wrapper:
   instantly, so a human confirms or rejects in one click.
 - **Built for scale.** Real malware is 10k functions. Demand-driven tools +
   persistent memory beat dumping full decompiles until context OOMs.
-- **Agentable engine.** IDA is single-threaded, license-locked and headless-hostile.
-  radare2 is free, scriptable and pipeable — agents can run 100 turns, fork,
-  reset and diff. And you can actually ship it.
+- **Agentable engine.** radare2 is free, scriptable and pipeable — agents can run 100 turns, fork,
+  reset and diff. And you can actually ship it. If you would rather not depend on it at all, the
+  native backend does the same job in-process with permissive crates.
 - **Malware-safe by default.** Local-first, BYO-key/OpenRouter routing, and a path
   to offline models — no forced exfil of samples to a cloud chatbot.
 
@@ -153,6 +173,10 @@ The bundle lands in `target/release/bundle/` (workspace target):
 
 - `.deb` / `.rpm` / `.AppImage` for Linux
 - standalone binary at `target/release/recurse`
+
+On Arch and other rolling distros the AppImage step needs a one-time local fix
+(upstream `linuxdeploy` lags the distro toolchain) — see
+[docs/linux-appimage-build.md](docs/linux-appimage-build.md).
 
 ### Just the frontend (no desktop shell)
 

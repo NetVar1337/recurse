@@ -2,9 +2,7 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod engine;
-pub mod process;
 pub mod project;
-pub mod session;
 pub mod sessions;
 pub mod shell;
 /// Test-only helpers (HOME isolation) for the storage modules' unit tests.
@@ -46,7 +44,9 @@ fn disable_pinch_zoom(app: &tauri::App) {
 fn disable_pinch_zoom(_app: &tauri::App) {}
 
 pub struct AppState {
-    pub session: Arc<Mutex<Option<session::R2Session>>>,
+    /// The selected analysis backend (radare2 or native), owned behind one
+    /// lock. Commands and the agent tool both route through the trait.
+    pub session: Arc<Mutex<Option<Box<dyn librecurse::engine::Engine>>>>,
     /// Async mutex: turns hold it across `.await` points, which a std
     /// mutex must never do.
     pub agent: Arc<tokio::sync::Mutex<Agent>>,
@@ -109,6 +109,8 @@ pub fn run() {
             commands::xrefs_to,
             commands::decompile,
             commands::raw,
+            commands::get_backend,
+            commands::set_backend,
             commands::set_zoom,
             commands::agent_chat,
             commands::agent_cancel_run,

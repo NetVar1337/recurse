@@ -20,8 +20,9 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
-    /* Path alias */
-    "baseUrl": ".",
+    /* Path alias.
+     * `paths` resolves relative to this file, so the deprecated `baseUrl`
+     * (removed in TypeScript 7) is unnecessary. */
     "paths": {
       "@/*": ["./src/*"]
     }

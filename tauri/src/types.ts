@@ -93,6 +93,9 @@ export interface LlmStatus {
 	model: string;
 }
 
+/** Analysis backend implementations selectable at runtime. */
+export type Backend = "r2" | "native";
+
 export interface Project {
 	name: string;
 	binary_path: string;

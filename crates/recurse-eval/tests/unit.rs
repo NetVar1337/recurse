@@ -607,40 +607,66 @@ async fn empty_tool_result_is_replaced_not_sent_verbatim() {
 }
 
 #[tokio::test]
-async fn r2_is_one_tool_and_the_runtime_refuses_to_fake_it() {
-    // Analysis must go through the native tool, not bash. The base runtime has
-    // no r2 process, so it must say so rather than silently "succeed".
+async fn analyze_is_one_tool_and_the_runtime_refuses_to_fake_it() {
+    // Analysis must go through the backend-neutral tool, not bash. The base
+    // runtime has no engine attached, so it must say so rather than silently
+    // "succeed".
     let tools = librecurse::tools::schema();
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
-    assert!(names.contains(&librecurse::r2::TOOL_NAME));
+    assert!(names.contains(&librecurse::engine::TOOL_NAME));
     // One analysis tool, not a family of r2_disasm/r2_xref/... tools.
     assert_eq!(
-        names.iter().filter(|n| n.starts_with("r2")).count(),
+        names
+            .iter()
+            .filter(|n| **n == librecurse::engine::TOOL_NAME)
+            .count(),
         1,
-        "exactly one r2 tool: {names:?}"
+        "exactly one analysis tool: {names:?}"
     );
     let desc = tools
         .iter()
-        .find(|t| t["function"]["name"] == librecurse::r2::TOOL_NAME)
+        .find(|t| t["function"]["name"] == librecurse::engine::TOOL_NAME)
         .and_then(|t| t["function"]["description"].as_str())
-        .expect("r2 tool described");
-    assert!(desc.contains("do NOT call r2 through bash"));
+        .expect("analysis tool described");
+    assert!(
+        desc.contains("backend"),
+        "description names the backend: {desc}"
+    );
+    assert!(desc.contains("decompile"), "description lists ops: {desc}");
 
     let tc = ToolCall {
         id: "x".into(),
         call_type: "function".into(),
         function: librecurse::agent::ToolCallFn {
-            name: librecurse::r2::TOOL_NAME.into(),
-            arguments: r#"{"cmd":"afl"}"#.into(),
+            name: librecurse::engine::TOOL_NAME.into(),
+            arguments: r#"{"op":"functions"}"#.into(),
         },
     };
     let err = librecurse::tools::execute(&tc)
         .await
-        .expect_err("base runtime cannot serve r2");
+        .expect_err("base runtime cannot serve analysis");
     assert!(err.contains("served by the host"), "got: {err}");
+}
+
+#[test]
+fn native_engine_serves_the_neutral_tool_end_to_end() {
+    // The whole seam: a concrete backend + the neutral tool dispatcher.
+    use librecurse::engine::{execute_tool, Engine};
+    let exe = std::env::current_exe().expect("test exe");
+    let engine = librecurse::native::NativeEngine::open(&exe).expect("open native engine");
+    engine.analyze().expect("analyze");
+    let out = execute_tool(&engine, &serde_json::json!({"op": "functions", "limit": 5}))
+        .expect("functions op");
+    let env: serde_json::Value = serde_json::from_str(&out).expect("envelope");
+    assert_eq!(env["op"], "functions");
+    assert!(env["count"].as_u64().is_some());
+    // The native backend advertises no decompiler and says so precisely.
+    let err = execute_tool(&engine, &serde_json::json!({"op": "decompile", "addr": 0}))
+        .expect_err("native has no decompiler");
+    assert!(err.contains("no decompiler"), "got: {err}");
 }
 
 #[tokio::test]

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { MessageSquare, Settings, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,13 @@ export function Header() {
 	const zoomIn = useSettingsStore((s) => s.zoomIn);
 	const zoomOut = useSettingsStore((s) => s.zoomOut);
 	const resetZoom = useSettingsStore((s) => s.resetZoom);
+	const backend = useSettingsStore((s) => s.backend);
+	const setBackend = useSettingsStore((s) => s.setBackend);
+	const initBackend = useSettingsStore((s) => s.initBackend);
+
+	useEffect(() => {
+		void initBackend();
+	}, [initBackend]);
 
 	const bin = binary?.info?.bin;
 	const file = binary?.path.split(/[\\/]/).pop();
@@ -65,6 +73,9 @@ export function Header() {
 					</Badge>
 					<Badge variant="secondary">{funcs.length} funcs</Badge>
 					<Badge variant="secondary">{strings.length} strings</Badge>
+					<Badge variant="outline" className="font-mono">
+						{backend}
+					</Badge>
 				</div>
 			)}
 
@@ -102,6 +113,18 @@ export function Header() {
 						</DropdownMenuItem>
 						<DropdownMenuItem onClick={zoomOut}>
 							Zoom out (Ctrl −)
+						</DropdownMenuItem>
+						<DropdownMenuSeparator />
+						<DropdownMenuLabel>
+							Analysis backend · {backend}
+						</DropdownMenuLabel>
+						<DropdownMenuItem onClick={() => void setBackend("r2")}>
+							{backend === "r2" ? "● " : "○ "}radare2 (r2)
+						</DropdownMenuItem>
+						<DropdownMenuItem
+							onClick={() => void setBackend("native")}
+						>
+							{backend === "native" ? "● " : "○ "}native (no r2)
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuItem onClick={resetZoom}>

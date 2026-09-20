@@ -4,6 +4,7 @@ import type {
 	AgentEvent,
 	AsmInsn,
 	AsmResult,
+	Backend,
 	BinaryInfo,
 	ChatMessage,
 	DecompileResult,
@@ -44,6 +45,8 @@ export const api = {
 	xrefsTo: (addr: number) => invoke<Xref[]>("xrefs_to", { addr }),
 	decompile: (addr: number) => invoke<DecompileResult>("decompile", { addr }),
 	raw: (cmd: string) => invoke<unknown>("raw", { cmd }),
+	getBackend: () => invoke<{ backend: Backend }>("get_backend"),
+	setBackend: (backend: string) => invoke<void>("set_backend", { backend }),
 	setZoom: (scale: number) => invoke<void>("set_zoom", { scale }),
 	agentChat: (
 		message: string,

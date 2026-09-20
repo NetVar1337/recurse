@@ -1,8 +1,10 @@
 import { create } from "zustand";
 
 import { api } from "../api";
+import type { Backend } from "../types";
 
 const KEY = "recurse.zoomLevel";
+const BACKEND_KEY = "recurse.backend";
 const MIN = -5;
 const MAX = 8;
 
@@ -12,10 +14,18 @@ function scaleFor(level: number): number {
 
 interface SettingsState {
 	zoomLevel: number;
+	backend: Backend;
 	initZoom: () => Promise<void>;
 	zoomIn: () => Promise<void>;
 	zoomOut: () => Promise<void>;
 	resetZoom: () => Promise<void>;
+	initBackend: () => Promise<void>;
+	setBackend: (backend: Backend) => Promise<void>;
+}
+
+function readInitialBackend(): Backend {
+	const v = localStorage.getItem(BACKEND_KEY);
+	return v === "native" ? "native" : "r2";
 }
 
 function readInitial(): number {
@@ -26,6 +36,7 @@ function readInitial(): number {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
 	zoomLevel: readInitial(),
+	backend: readInitialBackend(),
 
 	initZoom: async () => {
 		try {
@@ -64,6 +75,26 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 			await api.setZoom(1);
 		} catch {
 			/* non-fatal */
+		}
+	},
+
+	initBackend: async () => {
+		try {
+			const { backend } = await api.getBackend();
+			set({ backend });
+			localStorage.setItem(BACKEND_KEY, backend);
+		} catch {
+			/* non-fatal: keep the local value */
+		}
+	},
+
+	setBackend: async (backend: Backend) => {
+		set({ backend });
+		localStorage.setItem(BACKEND_KEY, backend);
+		try {
+			await api.setBackend(backend);
+		} catch {
+			/* non-fatal: takes effect on next launch */
 		}
 	},
 }));

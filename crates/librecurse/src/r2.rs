@@ -697,13 +697,23 @@ impl Session {
     /// assert!(session.pid() > 0);
     /// ```
     pub fn open(path: &Path) -> Result<Self, String> {
-        let mut child = Command::new("r2")
+        let mut command = Command::new("r2");
+        command
             .arg("-q0")
             .args(["-e", "scr.color=0"])
             .args(["-e", "scr.utf8=false"])
             .args(["-e", "scr.interactive=false"])
             .args(["-e", "bin.cache=true"])
-            .arg(path)
+            .arg(path);
+        // Own process group: lets interrupt/teardown signal r2 and any
+        // children it spawns without touching unrelated processes. The group
+        // id equals the child's pid on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

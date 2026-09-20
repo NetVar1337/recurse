@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use librecurse::agent::{Agent, AgentEvent, LlmConfig, PromptTarget, ToolCall};
+use librecurse::engine::{BackendKind, Engine};
 use librecurse::memory::MemoryStore;
 
 use crate::{contains_token, cost_usd, env_string, grade_flag, prompt_target_for, Task};
@@ -73,7 +74,7 @@ pub struct TaskOutcome {
 fn task_prompt(binary: &Path) -> String {
     format!(
         "Recover a valid serial/key for the binary at {}.\n\
-         Use the `r2` tool for static analysis and Python for decoding/brute-force. \
+         Use the `analyze` tool for static analysis (ops: functions, disasm, decompile, xrefs, strings, imports) and Python for decoding/brute-force. \
          You can run the binary to check a candidate key. When you have one that \
          works, finish with a final message containing the exact serial on its own \
          line prefixed with `FLAG:` (e.g. `FLAG: hunter2`).",
@@ -108,18 +109,35 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     let mut tools = librecurse::tools::schema();
     tools.extend(librecurse::memory::memory_tool_schema());
 
-    // One analysed r2 session for the whole task, so `aaa` runs once and every
-    // later query is a cheap follow-up, and so results can be deduplicated.
-    let session = match librecurse::r2::Session::open(binary) {
-        Ok(mut s) => {
-            let _ = s.warm_up();
-            Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
+    // One analysed backend for the whole task, so discovery runs once and
+    // every later query is a cheap follow-up. The backend is chosen from
+    // `RECURSE_BACKEND` (default r2).
+    let engine: Option<std::sync::Arc<std::sync::Mutex<Box<dyn Engine>>>> =
+        match BackendKind::from_env() {
+            BackendKind::R2 => match librecurse::r2_backend::R2Engine::open(binary) {
+                Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
+                    Box::new(e) as Box<dyn Engine>
+                ))),
+                Err(e) => {
+                    eprintln!("[eval] r2 backend unavailable ({e}); falling back to bash only");
+                    None
+                }
+            },
+            BackendKind::Native => match librecurse::native::NativeEngine::open(binary) {
+                Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
+                    Box::new(e) as Box<dyn Engine>
+                ))),
+                Err(e) => {
+                    eprintln!("[eval] native backend unavailable ({e}); falling back to bash only");
+                    None
+                }
+            },
+        };
+    if let Some(e) = engine.as_ref() {
+        if let Ok(g) = e.lock() {
+            let _ = g.analyze();
         }
-        Err(e) => {
-            eprintln!("[eval] r2 session unavailable ({e}); falling back to bash only");
-            None
-        }
-    };
+    }
 
     let mut agent = Agent::new();
     agent.set_debug(true);
@@ -127,7 +145,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         let tc = tc.clone();
         let mem_project = mem_project.clone();
         let store = store.clone();
-        let session = session.clone();
+        let engine = engine.clone();
         async move {
             match tc.function.name.as_str() {
                 "memory_save" | "memory_load" | "memory_search" => {
@@ -135,28 +153,22 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                         .unwrap_or(serde_json::Value::Null);
                     store.execute_tool(&mem_project, &tc.function.name, &args)
                 }
-                librecurse::r2::TOOL_NAME => {
+                librecurse::engine::TOOL_NAME => {
                     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::Value::Null);
-                    let cmd = args
-                        .get("cmd")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let limit = args.get("limit").and_then(|v| v.as_u64());
-                    match session {
-                        Some(session) => {
-                            // Blocking process IO off the async runtime.
+                    match engine {
+                        Some(engine) => {
+                            // Blocking analysis IO off the async runtime.
                             tokio::task::spawn_blocking(move || {
-                                let mut guard = session
+                                let guard = engine
                                     .lock()
-                                    .map_err(|e| format!("r2 session poisoned: {e}"))?;
-                                guard.call(&cmd, limit.map(|l| l as usize))
+                                    .map_err(|e| format!("analysis engine poisoned: {e}"))?;
+                                librecurse::engine::execute_tool(guard.as_ref(), &args)
                             })
                             .await
-                            .map_err(|e| format!("r2 task failed: {e}"))?
+                            .map_err(|e| format!("analysis task failed: {e}"))?
                         }
-                        None => Err("r2 session unavailable".to_string()),
+                        None => Err("analysis backend unavailable".to_string()),
                     }
                 }
                 _ => librecurse::tools::execute(&tc).await,

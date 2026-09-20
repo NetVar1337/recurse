@@ -341,9 +341,9 @@ pub fn system_prompt(target: &PromptTarget) -> String {
     let mut prompt = format!(
         "You are Recurse, an expert reverse-engineering agent. Crack the target: recover the serial/key.\n\
          Target: {path} arch={arch} bits={bits} type={kind} ({})\n\
-         Tooling: use the `r2` tool for ALL binary inspection — never run r2 through bash. Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
-         Workflow: 1) r2 `aaa` once to analyse. 2) r2 `afl` for the function list, `pdf @ <fn>` to read a function, `axt @ <addr>` for xrefs, `izz` for strings, `iij` for imports. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
-         Efficiency (measured and expected of you): never repeat an identical r2 call; chain related commands in ONE call (`aaa; afl; izz`); do not re-dump data you already have; keep queries narrow (`pd 40 @ main`, not a whole huge function). Keep prose under 4 lines.",
+         Tooling: use the `analyze` tool for ALL binary inspection — never shell out to a disassembler. Ops: `analyze`, `functions`, `disasm`, `graph`, `decompile`, `xrefs`, `strings`, `imports`, `info`, and `raw` for backend console commands (radare2 syntax when the r2 backend is active). Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
+         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG, `decompile` for pseudocode. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
+         Efficiency (measured and expected of you): never repeat an identical analyze call; keep queries narrow (`disasm` a window, not a whole huge function). Keep prose under 4 lines.",
         if kind.contains("pe") || kind.contains("mach0") { "PE/Mach-O — static analysis on Linux" } else { "" }
     );
     if !memory.is_empty() {
@@ -1121,7 +1121,7 @@ impl Agent {
                     Vec::new(),
                 );
                 continuation_nudge = Some(ChatMessage::user(
-                    "Continue the task. Do not finish with an empty answer. Use the next highest-value action now; for reverse engineering, run bash with targeted r2/Python and write or verify the solver.",
+                    "Continue the task. Do not finish with an empty answer. Use the next highest-value action now; for reverse engineering, inspect the binary with the `analyze` tool and write or verify the solver.",
                 ));
                 continue;
             }
