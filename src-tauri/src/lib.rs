@@ -46,7 +46,9 @@ fn disable_pinch_zoom(_app: &tauri::App) {}
 
 pub struct AppState {
     pub session: Arc<Mutex<Option<session::R2Session>>>,
-    pub agent: Arc<Mutex<Agent>>,
+    /// Async mutex: turns hold it across `.await` points, which a std
+    /// mutex must never do.
+    pub agent: Arc<tokio::sync::Mutex<Agent>>,
     pub llm: Mutex<LlmConfig>,
     pub models: Mutex<Option<Vec<ModelInfo>>>,
     pub project: Mutex<Option<crate::project::Project>>,
@@ -84,7 +86,7 @@ pub fn run() {
         })
         .manage(AppState {
             session: Arc::new(Mutex::new(None)),
-            agent: Arc::new(Mutex::new(Agent::new())),
+            agent: Arc::new(tokio::sync::Mutex::new(Agent::new())),
             llm: Mutex::new(crate::config::llm_config()),
             models: Mutex::new(None),
             project: Mutex::new(None),

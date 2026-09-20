@@ -4,9 +4,8 @@
 //!
 //! Storage-agnostic like the rest of the library: the host resolves and owns
 //! the directory (e.g. `<project>/memory`) and passes it in — this module
-//! only reads and writes files by name.
+//! only reads and writes files by name. Async throughout (tokio fs).
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Sanitize a memory key into a safe single file-name component.
@@ -34,39 +33,50 @@ fn key_path(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{}.md", sanitize_key(key)))
 }
 
-pub fn save(dir: &Path, key: &str, value: &str) -> Result<(), String> {
+pub async fn save(dir: &Path, key: &str, value: &str) -> Result<(), String> {
     let path = key_path(dir, key);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     let content = format!("# {key}\n\n{value}\n");
-    fs::write(&path, content).map_err(|e| e.to_string())
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|e| e.to_string())
 }
 
-pub fn load(dir: &Path, key: &str) -> Result<String, String> {
+pub async fn load(dir: &Path, key: &str) -> Result<String, String> {
     let path = key_path(dir, key);
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
-pub fn remove(dir: &Path, key: &str) -> Result<(), String> {
+pub async fn remove(dir: &Path, key: &str) -> Result<(), String> {
     let path = key_path(dir, key);
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        tokio::fs::remove_file(&path)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 /// List memory keys (file stems, without `.md`), sorted.
-pub fn list(dir: &Path) -> Result<Vec<String>, String> {
+pub async fn list(dir: &Path) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
-    if dir.is_dir() {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "md").unwrap_or(false) {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        out.push(stem.to_string());
-                    }
+    if tokio::fs::metadata(dir)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| e.to_string())?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+            let path = entry.path();
+            if path.extension().map(|e| e == "md").unwrap_or(false) {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    out.push(stem.to_string());
                 }
             }
         }
@@ -78,10 +88,10 @@ pub fn list(dir: &Path) -> Result<Vec<String>, String> {
 /// Concatenated memory, used to seed the system prompt on session start.
 /// Missing or unreadable entries are skipped silently.
 #[must_use]
-pub fn summary(dir: &Path) -> String {
+pub async fn summary(dir: &Path) -> String {
     let mut out = String::new();
-    for key in list(dir).unwrap_or_default() {
-        if let Ok(content) = load(dir, &key) {
+    for key in list(dir).await.unwrap_or_default() {
+        if let Ok(content) = load(dir, &key).await {
             out.push_str(&content);
             out.push('\n');
         }

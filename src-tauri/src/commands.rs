@@ -2,13 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
-use librecurse::agent::{self, AgentEvent, ModelInfo, ToolCall};
 use crate::config;
 use crate::engine;
 use crate::project::{self, Project};
 use crate::session::R2Session;
 use crate::sessions::{self, Session};
 use crate::AppState;
+use librecurse::agent::{self, AgentEvent, ModelInfo, ToolCall};
 
 fn session_of(state: &AppState) -> Result<std::sync::MutexGuard<'_, Option<R2Session>>, String> {
     state
@@ -107,7 +107,9 @@ pub fn analyze(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Core of [`analyze`]; see [`open_binary_impl`].
 pub fn analyze_impl(state: &AppState) -> Result<(), String> {
-    eprintln!("[recurse] analyze: starting `aa; aac` (run `aaa` in the r2 console for deep analysis)");
+    eprintln!(
+        "[recurse] analyze: starting `aa; aac` (run `aaa` in the r2 console for deep analysis)"
+    );
     let guard = session_of(state)?;
     with_sess(&guard)?.analyze()?;
     eprintln!("[recurse] analyze: done");
@@ -232,8 +234,8 @@ pub fn set_zoom(scale: f64, window: tauri::WebviewWindow) -> Result<(), String> 
 // ---------------------------------------------------------------------------
 
 /// Start an agent turn in the given session. Returns immediately; progress
-/// streams over the `agent-event` channel. The blocking loop (LLM streaming +
-/// r2 tool calls) runs on the Tauri blocking pool.
+/// streams over the `agent-event` channel. The async turn loop (LLM
+/// streaming + tool calls) runs on the Tauri async runtime.
 #[tauri::command]
 pub async fn agent_chat(
     message: String,
@@ -262,13 +264,19 @@ pub async fn agent_chat(
     let config_storage = config.clone();
     let sid = session_id.clone();
 
-    tauri::async_runtime::spawn_blocking(move || {
+    // The panic channel stays outside: the worker task owns `on_event`, so
+    // a panicking worker still reports through this clone.
+    let panic_channel = on_event.clone();
+    let worker = tauri::async_runtime::spawn(async move {
         let tools = librecurse::tools::schema();
         // Memory is a plain directory to the library: project resolution
         // (including the no-project default) stays on the host side.
-        let memory = project::project_dir(project.as_deref().unwrap_or("default"))
-            .map(|dir| librecurse::memory::summary(&dir.join("memory")))
-            .unwrap_or_default();
+        let memory = {
+            let dir = project::project_dir(project.as_deref().unwrap_or("default"))
+                .map(|dir| dir.join("memory"))
+                .unwrap_or_default();
+            librecurse::memory::summary(&dir).await
+        };
         // r2's `ij` shape stays on the host side: the library only ever
         // sees the normalized PromptTarget interface.
         let target = librecurse::agent::PromptTarget {
@@ -279,39 +287,35 @@ pub async fn agent_chat(
             memory,
         };
 
-        // Wrapped so any panic still surfaces an Error event to the frontend.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-            || -> Result<Vec<agent::ChatMessage>, String> {
-                let mut guard = agent
-                    .lock()
-                    .map_err(|_| "agent lock poisoned".to_string())?;
-                let mut exec = |tc: &ToolCall| librecurse::tools::execute(tc);
-                let mut emit = |ev: AgentEvent| {
-                    let _ = on_event.send(ev);
-                };
-                guard
-                    .run(
-                        "run", &config, &target, &message, &tools, &mut exec,
-                        &mut emit,
-                    )
-                    .map(|_| guard.messages().to_vec())
-            },
-        ));
-
+        // The async mutex is held across the whole turn; cancel/reset wait
+        // on it instead of wedging a thread.
+        let mut guard = agent.lock().await;
+        // Clone per call so the returned future owns its data (the run
+        // loop is generic over the future, no boxing needed).
+        let mut exec = |tc: &ToolCall| {
+            let tc = tc.clone();
+            async move { librecurse::tools::execute(&tc).await }
+        };
+        let mut emit = |ev: AgentEvent| {
+            let _ = on_event.send(ev);
+        };
+        let outcome = guard
+            .run(
+                "run", &config, &target, &message, &tools, &mut exec, &mut emit,
+            )
+            .await
+            .map(|_| guard.messages().to_vec());
+        // Release the agent before session bookkeeping so a concurrent
+        // cancel/reset lands promptly instead of waiting on file IO.
+        drop(guard);
         match outcome {
-            Ok(Ok(messages)) => {
+            Ok(messages) => {
                 persist_history(project_storage.as_deref(), &sid, &messages);
             }
-            Ok(Err(e)) => {
+            Err(message) => {
                 let _ = on_event.send(AgentEvent::Error {
                     run_id: "run".into(),
-                    message: e,
-                });
-            }
-            Err(_) => {
-                let _ = on_event.send(AgentEvent::Error {
-                    run_id: "run".into(),
-                    message: "agent worker panicked".into(),
+                    message,
                 });
             }
         }
@@ -319,7 +323,17 @@ pub async fn agent_chat(
         // Remember the model + bump the recency, and title a brand-new session.
         let _ = sessions::set_model(project_storage.as_deref(), &sid, &config_storage.model);
         let _ = sessions::touch(project_storage.as_deref(), &sid);
-        ensure_session_name(project_storage.as_deref(), &sid, &config_storage, &message);
+        ensure_session_name(project_storage.as_deref(), &sid, &config_storage, &message).await;
+    });
+    // Supervisor: the command returns immediately, but a panicking worker
+    // must still surface an Error event instead of hanging the frontend.
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = worker.await {
+            let _ = panic_channel.send(AgentEvent::Error {
+                run_id: "run".into(),
+                message: format!("agent worker panicked: {e}"),
+            });
+        }
     });
 
     Ok(())
@@ -327,7 +341,7 @@ pub async fn agent_chat(
 
 /// If this is a brand-new session (still named "New session"), ask the model
 /// to title it from the first user message. Falls back to a truncated message.
-fn ensure_session_name(
+async fn ensure_session_name(
     project: Option<&str>,
     session_id: &str,
     config: &agent::LlmConfig,
@@ -335,7 +349,7 @@ fn ensure_session_name(
 ) {
     if let Ok(s) = sessions::get(project, session_id) {
         if s.name.is_empty() || s.name == "New session" {
-            let name = agent::generate_title(config, message);
+            let name = agent::generate_title(config, message).await;
             let _ = sessions::set_name(project, session_id, &name);
         }
     }
@@ -345,23 +359,15 @@ fn ensure_session_name(
 /// iterations; the run then emits an Error("run cancelled") event like any
 /// other failure so the frontend resets uniformly.
 #[tauri::command]
-pub fn agent_cancel_run(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .agent
-        .lock()
-        .map_err(|e| format!("agent lock poisoned: {e}"))?
-        .request_cancel();
+pub async fn agent_cancel_run(state: State<'_, AppState>) -> Result<(), String> {
+    state.agent.lock().await.request_cancel();
     Ok(())
 }
 
 #[tauri::command]
-pub fn agent_reset(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn agent_reset(state: State<'_, AppState>) -> Result<(), String> {
     {
-        let mut agent = state
-            .agent
-            .lock()
-            .map_err(|e| format!("agent lock poisoned: {e}"))?;
-        agent.reset();
+        state.agent.lock().await.reset();
     }
     let project = current_project_of(&state)?;
     if let Some(sid) = current_session_id_of(&state)? {
@@ -373,13 +379,10 @@ pub fn agent_reset(state: State<'_, AppState>) -> Result<(), String> {
 /// Restore the active session's persisted conversation into the agent and
 /// return the messages (used by the frontend to render on load / reload).
 #[tauri::command]
-pub fn agent_history(state: State<'_, AppState>) -> Result<Vec<agent::ChatMessage>, String> {
+pub async fn agent_history(state: State<'_, AppState>) -> Result<Vec<agent::ChatMessage>, String> {
     let project = current_project(&state)?;
     let sid = current_session_id(&state)?;
-    let mut agent = state
-        .agent
-        .lock()
-        .map_err(|e| format!("agent lock poisoned: {e}"))?;
+    let mut agent = state.agent.lock().await;
     if let Some(sid) = sid {
         if let Some(json) = sessions::load_history(project.as_deref(), &sid) {
             if let Ok(msgs) = serde_json::from_str::<Vec<agent::ChatMessage>>(&json) {
@@ -403,7 +406,7 @@ pub fn sessions_list(project: String) -> Result<Vec<Session>, String> {
 
 /// Create a new session for the active project and make it current.
 /// Core of [`sessions_create`]; see [`open_binary_impl`].
-pub fn sessions_create_impl(state: &AppState) -> Result<Session, String> {
+pub async fn sessions_create_impl(state: &AppState) -> Result<Session, String> {
     let project = current_project_of(state)?;
     let model = state
         .llm
@@ -412,11 +415,7 @@ pub fn sessions_create_impl(state: &AppState) -> Result<Session, String> {
         .model
         .clone();
     let s = sessions::create(project.as_deref(), &model)?;
-    state
-        .agent
-        .lock()
-        .map_err(|e| format!("agent lock poisoned: {e}"))?
-        .reset();
+    state.agent.lock().await.reset();
     *state
         .current_session
         .lock()
@@ -425,20 +424,17 @@ pub fn sessions_create_impl(state: &AppState) -> Result<Session, String> {
 }
 
 #[tauri::command]
-pub fn sessions_create(state: State<'_, AppState>) -> Result<Session, String> {
-    sessions_create_impl(&state)
+pub async fn sessions_create(state: State<'_, AppState>) -> Result<Session, String> {
+    sessions_create_impl(&state).await
 }
 
 /// Switch to a session: load its history into the agent and restore its model.
 /// Core of [`sessions_select`]; see [`open_binary_impl`].
-pub fn sessions_select_impl(state: &AppState, session_id: &str) -> Result<Session, String> {
+pub async fn sessions_select_impl(state: &AppState, session_id: &str) -> Result<Session, String> {
     let project = current_project_of(state)?;
     let s = sessions::get(project.as_deref(), session_id)?;
     {
-        let mut agent = state
-            .agent
-            .lock()
-            .map_err(|e| format!("agent lock poisoned: {e}"))?;
+        let mut agent = state.agent.lock().await;
         match sessions::load_history(project.as_deref(), session_id) {
             Some(json) => match serde_json::from_str::<Vec<agent::ChatMessage>>(&json) {
                 Ok(msgs) => agent.load(msgs),
@@ -464,8 +460,11 @@ pub fn sessions_select_impl(state: &AppState, session_id: &str) -> Result<Sessio
 }
 
 #[tauri::command]
-pub fn sessions_select(session_id: String, state: State<'_, AppState>) -> Result<Session, String> {
-    sessions_select_impl(&state, &session_id)
+pub async fn sessions_select(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Session, String> {
+    sessions_select_impl(&state, &session_id).await
 }
 
 #[tauri::command]

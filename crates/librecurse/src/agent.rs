@@ -1,10 +1,16 @@
-use std::io::BufRead;
+use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const OPENROUTER_MODELS: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL: &str = "openrouter/auto";
+
+/// Shared HTTP client (connection pooling across turns).
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 /// One tool call emitted by the model.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -330,12 +336,12 @@ fn parse_delta(data: &str, acc: &mut ToolCallAccumulator) -> DeltaChunk {
 
 /// Stream a chat completion, emitting tokens and returning the accumulated
 /// content + any requested tool calls.
-fn stream_http(
+async fn stream_http(
     run_id: &str,
     config: &LlmConfig,
     messages: &[ChatMessage],
     tools: &[Value],
-    emit: &mut dyn FnMut(AgentEvent),
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Result<StreamOutcome, String> {
     let model = if config.model.is_empty() {
         DEFAULT_MODEL
@@ -352,65 +358,72 @@ fn stream_http(
     }
 
     let key = config.api_key.as_deref().unwrap_or("");
-    // Transient network errors get exactly one retry; HTTP-status errors do
-    // not (a 401 will not fix itself), and we never retry mid-stream.
-    #[allow(clippy::result_large_err)] // ureq's error type; retried once
-    let resp = {
-        let send = || {
-            ureq::post(&config.endpoint)
-                .set("Authorization", &format!("Bearer {key}"))
-                .set("X-Title", "Recurse")
-                .send_json(&body)
-        };
-        match send() {
-            Ok(r) => r,
-            Err(ureq::Error::Transport(_)) => {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                send().map_err(map_http_error)?
-            }
-            Err(e) => return Err(map_http_error(e)),
-        }
+    // Transient connect/timeout errors get exactly one retry; HTTP-status
+    // errors do not (a 401 will not fix itself), and we never retry mid-stream.
+    let send = || {
+        http_client()
+            .post(&config.endpoint)
+            .bearer_auth(key)
+            .header("X-Title", "Recurse")
+            .json(&body)
+            .send()
     };
+    let mut resp = match send().await {
+        Ok(r) => r,
+        Err(e) if e.is_connect() || e.is_timeout() => {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            send()
+                .await
+                .map_err(|e| format!("llm request failed: {e}"))?
+        }
+        Err(e) => return Err(format!("llm request failed: {e}")),
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(300).collect();
+        return Err(format!(
+            "llm request failed with status {code}: {snippet}",
+            code = status.as_u16()
+        ));
+    }
 
-    let reader = resp.into_reader();
-    let mut buf = std::io::BufReader::new(reader);
-    let mut line = String::new();
+    // Chunk framing mirrors the old blocking line reader exactly: complete
+    // `\n`-terminated lines are processed in order, a trailing partial line
+    // is processed at EOF, and undecodable bytes end the stream.
+    let mut pending: Vec<u8> = Vec::new();
     let mut acc = ToolCallAccumulator::default();
     let mut content = String::new();
     let mut reasoning = String::new();
 
     loop {
-        line.clear();
-        match buf.read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        match resp.chunk().await {
+            Ok(Some(bytes)) => pending.extend_from_slice(&bytes),
+            // EOF, or a mid-stream read error (the old reader treated both
+            // as end-of-stream).
+            Ok(None) | Err(_) => break,
         }
-        let l = line.trim();
-        let Some(data) = l.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data == "[DONE]" {
+        let mut done = false;
+        while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
+            let raw: Vec<u8> = pending.drain(..=pos).collect();
+            if handle_stream_line(&raw, run_id, &mut acc, &mut content, &mut reasoning, emit) {
+                done = true;
+                break;
+            }
+        }
+        if done {
             break;
         }
-        if data.is_empty() {
-            continue;
-        }
-        let chunk = parse_delta(data, &mut acc);
-        for r in chunk.reasoning {
-            reasoning.push_str(&r);
-            emit(AgentEvent::Reasoning {
-                run_id: run_id.to_string(),
-                delta: r,
-            });
-        }
-        if !chunk.content.is_empty() {
-            emit(AgentEvent::Token {
-                run_id: run_id.to_string(),
-                delta: chunk.content.clone(),
-            });
-            content.push_str(&chunk.content);
-        }
+    }
+    if !pending.is_empty() {
+        handle_stream_line(
+            &pending,
+            run_id,
+            &mut acc,
+            &mut content,
+            &mut reasoning,
+            emit,
+        );
     }
 
     Ok(StreamOutcome {
@@ -418,6 +431,48 @@ fn stream_http(
         reasoning,
         tool_calls: acc.calls,
     })
+}
+
+/// Process one raw stream line. Returns true when the stream is complete
+/// (`[DONE]` or undecodable bytes, mirroring the old blocking reader).
+fn handle_stream_line(
+    raw: &[u8],
+    run_id: &str,
+    acc: &mut ToolCallAccumulator,
+    content: &mut String,
+    reasoning: &mut String,
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
+) -> bool {
+    let Ok(line) = std::str::from_utf8(raw) else {
+        return true;
+    };
+    let l = line.trim();
+    let Some(data) = l.strip_prefix("data:") else {
+        return false;
+    };
+    let data = data.trim();
+    if data == "[DONE]" {
+        return true;
+    }
+    if data.is_empty() {
+        return false;
+    }
+    let chunk = parse_delta(data, acc);
+    for r in chunk.reasoning {
+        reasoning.push_str(&r);
+        emit(AgentEvent::Reasoning {
+            run_id: run_id.to_string(),
+            delta: r,
+        });
+    }
+    if !chunk.content.is_empty() {
+        emit(AgentEvent::Token {
+            run_id: run_id.to_string(),
+            delta: chunk.content.clone(),
+        });
+        content.push_str(&chunk.content);
+    }
+    false
 }
 
 /// Per-message wire budget for model context. Old tool results are the
@@ -447,7 +502,7 @@ fn compact_for_model(m: &ChatMessage) -> ChatMessage {
 }
 
 /// One-shot, non-streaming chat completion (used to generate session titles).
-pub fn complete_http(
+pub async fn complete_http(
     endpoint: &str,
     api_key: &str,
     model: &str,
@@ -462,12 +517,24 @@ pub fn complete_http(
         "model": model,
         "messages": messages,
     });
-    let resp = ureq::post(endpoint)
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("X-Title", "Recurse")
-        .send_json(&body)
-        .map_err(map_http_error)?;
-    let value: Value = resp.into_json().map_err(|e| e.to_string())?;
+    let resp = http_client()
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .header("X-Title", "Recurse")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("llm request failed: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(300).collect();
+        return Err(format!(
+            "llm request failed with status {code}: {snippet}",
+            code = status.as_u16()
+        ));
+    }
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
     value["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
@@ -477,7 +544,7 @@ pub fn complete_http(
 /// Generate a short, descriptive session title from the user's request (like
 /// ChatGPT). Falls back to a truncated version of the message when the LLM is
 /// unavailable.
-pub fn generate_title(config: &LlmConfig, user: &str) -> String {
+pub async fn generate_title(config: &LlmConfig, user: &str) -> String {
     let fallback = |u: &str| -> String {
         let joined: String = u.split_whitespace().collect::<Vec<_>>().join(" ");
         let t: String = joined.chars().take(48).collect();
@@ -498,7 +565,7 @@ pub fn generate_title(config: &LlmConfig, user: &str) -> String {
         ),
         ChatMessage::user(user),
     ];
-    match complete_http(&config.endpoint, key, &config.model, &messages) {
+    match complete_http(&config.endpoint, key, &config.model, &messages).await {
         Ok(t) => {
             let t = t.trim().trim_matches('"').trim();
             if t.is_empty() {
@@ -508,17 +575,6 @@ pub fn generate_title(config: &LlmConfig, user: &str) -> String {
             }
         }
         Err(_) => fallback(user),
-    }
-}
-
-fn map_http_error(e: ureq::Error) -> String {
-    match e {
-        ureq::Error::Status(code, resp) => {
-            let body = resp.into_string().unwrap_or_default();
-            let snippet: String = body.chars().take(300).collect();
-            format!("llm request failed with status {code}: {snippet}")
-        }
-        other => format!("llm request failed: {other}"),
     }
 }
 
@@ -570,18 +626,24 @@ impl Agent {
     /// is stopped via the cooperative cancel flag (`request_cancel`).
     ///
     /// `exec` runs a tool call (name + JSON arguments) against the live tool
-    /// backends and returns its result text.
+    /// backends and returns its result text. It is generic over the returned
+    /// future so hosts can pass `async` closures without boxing; the future
+    /// must be `Send` because turns run on the async runtime.
     #[allow(clippy::too_many_arguments)] // one cohesive run context
-    pub fn run(
+    pub async fn run<E, F>(
         &mut self,
         run_id: &str,
         config: &LlmConfig,
         target: &PromptTarget,
         user: &str,
         tools: &[Value],
-        exec: &mut dyn FnMut(&ToolCall) -> Result<String, String>,
-        emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<(), String> {
+        exec: &mut E,
+        emit: &mut (dyn FnMut(AgentEvent) + Send),
+    ) -> Result<(), String>
+    where
+        E: FnMut(&ToolCall) -> F + Send,
+        F: Future<Output = Result<String, String>> + Send,
+    {
         let system = system_prompt(target);
         self.messages.push(ChatMessage::user(user));
 
@@ -625,7 +687,7 @@ impl Agent {
                 full.push(nudge);
             }
 
-            let outcome = stream_http(run_id, config, &full, tools, emit)?;
+            let outcome = stream_http(run_id, config, &full, tools, emit).await?;
 
             if !outcome.tool_calls.is_empty() {
                 // Persist the assistant's tool request, then run each tool.
@@ -665,7 +727,9 @@ impl Agent {
                         name: tc.function.name.clone(),
                         arguments: tc.function.arguments.clone(),
                     });
-                    let result = exec(tc).unwrap_or_else(|e| format!("tool error: {e}"));
+                    let result = exec(tc)
+                        .await
+                        .unwrap_or_else(|e| format!("tool error: {e}"));
                     emit(AgentEvent::ToolResult {
                         run_id: run_id.to_string(),
                         id: tc.id.clone(),
@@ -705,4 +769,3 @@ impl Agent {
         }
     }
 }
-

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -126,73 +125,70 @@ fn truncate(s: &str) -> String {
 // opencode-parity helpers (bash, read, write, edit)
 // ---------------------------------------------------------------------------
 
-fn bash_execute_simple(
+async fn bash_execute_simple(
     command: &str,
     workdir: Option<String>,
     timeout: Option<u64>,
 ) -> Result<String, String> {
-    // Simpler path using Command::output with manual timeout thread – more reliable stdout capture.
+    // tokio timeout around wait_with_output. kill_on_drop means a timeout
+    // kills the child instead of leaking it (the old thread-based version
+    // left timed-out processes running); the error text is unchanged.
     let workdir = workdir.unwrap_or_else(|| ".".to_string());
-    let cmd_str = command.to_string();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let workdir_clone = workdir.clone();
-    std::thread::spawn(move || {
-        let out = Command::new("bash")
-            .arg("-lc")
-            .arg(&cmd_str)
-            .current_dir(&workdir_clone)
-            .output();
-        let _ = tx.send(out);
-    });
     let dur = Duration::from_millis(timeout.unwrap_or(120_000));
-    match rx.recv_timeout(dur) {
-        Ok(Ok(out)) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-            let combined = if stdout.is_empty() {
-                stderr
-            } else if stderr.is_empty() {
-                stdout
-            } else {
-                format!("{stdout}\n{stderr}")
-            };
-            // opencode includes exit handling but returns combined; we just return combined
-            if !out.status.success() && combined.is_empty() {
-                Ok(format!(
-                    "exit {} (no output)",
-                    out.status.code().unwrap_or(-1)
-                ))
-            } else {
-                Ok(combined)
-            }
-        }
-        Ok(Err(e)) => Err(format!("bash spawn failed: {e}")),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
-            "command timed out after {}ms: {command}",
-            dur.as_millis()
-        )),
-        Err(e) => Err(format!("bash channel error: {e}")),
+    let child = tokio::process::Command::new("bash")
+        .arg("-lc")
+        .arg(command)
+        .current_dir(&workdir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("bash spawn failed: {e}"))?;
+    let out = tokio::time::timeout(dur, child.wait_with_output())
+        .await
+        .map_err(|_| format!("command timed out after {}ms: {command}", dur.as_millis()))?
+        .map_err(|e| format!("bash wait failed: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let combined = if stdout.is_empty() {
+        stderr
+    } else if stderr.is_empty() {
+        stdout
+    } else {
+        format!("{stdout}\n{stderr}")
+    };
+    // opencode includes exit handling but returns combined; we just return combined
+    if !out.status.success() && combined.is_empty() {
+        Ok(format!(
+            "exit {} (no output)",
+            out.status.code().unwrap_or(-1)
+        ))
+    } else {
+        Ok(combined)
     }
 }
 
-fn read_path(file_path: &str, offset: Option<u64>, limit: Option<u64>) -> Result<Value, String> {
+async fn read_path(
+    file_path: &str,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> Result<Value, String> {
     let path = Path::new(file_path);
-    if !path.exists() {
-        return Err(format!("File not found: {file_path}"));
-    }
-    if path.is_dir() {
-        let mut entries = std::fs::read_dir(path)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-            .map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if e.path().is_dir() {
-                    format!("{name}/")
-                } else {
-                    name
-                }
-            })
-            .collect::<Vec<_>>();
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|_| format!("File not found: {file_path}"))?;
+    if meta.is_dir() {
+        let mut dir = tokio::fs::read_dir(path).await.map_err(|e| e.to_string())?;
+        let mut entries = Vec::new();
+        while let Some(entry) = dir.next_entry().await.map_err(|e| e.to_string())? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                entries.push(format!("{name}/"));
+            } else {
+                entries.push(name);
+            }
+        }
         entries.sort();
         let total = entries.len();
         // opencode returns directory listing with trailing / for dirs
@@ -206,8 +202,9 @@ fn read_path(file_path: &str, offset: Option<u64>, limit: Option<u64>) -> Result
         }));
     }
     // file
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("failed to read {file_path}: {e}"))?;
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| format!("failed to read {file_path}: {e}"))?;
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let off = offset.unwrap_or(1).saturating_sub(1) as usize;
@@ -250,19 +247,22 @@ fn read_path(file_path: &str, offset: Option<u64>, limit: Option<u64>) -> Result
     Ok(Value::String(out))
 }
 
-fn write_path(file_path: &str, content: &str) -> Result<Value, String> {
+async fn write_path(file_path: &str, content: &str) -> Result<Value, String> {
     let path = Path::new(file_path);
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|e| format!("failed to create dirs for {file_path}: {e}"))?;
         }
     }
-    std::fs::write(path, content).map_err(|e| format!("failed to write {file_path}: {e}"))?;
+    tokio::fs::write(path, content)
+        .await
+        .map_err(|e| format!("failed to write {file_path}: {e}"))?;
     Ok(json!({ "wrote": file_path, "bytes": content.len() }))
 }
 
-fn edit_path(
+async fn edit_path(
     file_path: &str,
     old_string: &str,
     new_string: &str,
@@ -272,14 +272,19 @@ fn edit_path(
         return Err("oldString and newString are identical".into());
     }
     let path = Path::new(file_path);
-    if !path.exists() {
+    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
         return Err(format!("File not found: {file_path}"));
     }
-    if path.is_dir() {
+    if tokio::fs::metadata(path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
         return Err(format!("Path is a directory, not a file: {file_path}"));
     }
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("failed to read {file_path}: {e}"))?;
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| format!("failed to read {file_path}: {e}"))?;
     if old_string.is_empty() {
         return Err("oldString cannot be empty".into());
     }
@@ -293,17 +298,18 @@ fn edit_path(
         } else {
             content.replacen(old_string, new_string, 1)
         };
-        std::fs::write(path, &new_content)
+        tokio::fs::write(path, &new_content)
+            .await
             .map_err(|e| format!("failed to write {file_path}: {e}"))?;
-        return Ok(json!({ "edited": file_path, "replacements": if replace_all { count } else { 1 } }));
+        return Ok(
+            json!({ "edited": file_path, "replacements": if replace_all { count } else { 1 } }),
+        );
     }
 
     // Exact match failed — fall back to Levenshtein fuzzy matching over
     // same-sized line windows so small drift (whitespace, typos) still lands.
-    let (start, end, score, candidate) =
-        best_fuzzy_match(&content, old_string).ok_or_else(|| {
-            "oldString not found in content".to_string()
-        })?;
+    let (start, end, score, candidate) = best_fuzzy_match(&content, old_string)
+        .ok_or_else(|| "oldString not found in content".to_string())?;
     if score < FUZZY_THRESHOLD {
         return Err(format!(
             "oldString not found. Closest match ({:.0}% similar):\n{candidate}",
@@ -347,7 +353,9 @@ fn edit_path(
             }
         }
     }
-    std::fs::write(path, &out).map_err(|e| format!("failed to write {file_path}: {e}"))?;
+    tokio::fs::write(path, &out)
+        .await
+        .map_err(|e| format!("failed to write {file_path}: {e}"))?;
     Ok(json!({ "edited": file_path, "replacements": replacements, "fuzzy": true }))
 }
 
@@ -422,7 +430,7 @@ fn best_fuzzy_match(content: &str, old_string: &str) -> Option<(usize, usize, f6
 
 /// Execute a single tool call against the live sessions and return its result
 /// text (truncated for the token budget).
-pub fn execute(tc: &ToolCall) -> Result<String, String> {
+pub async fn execute(tc: &ToolCall) -> Result<String, String> {
     let args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
 
     let result: Result<Value, String> = match tc.function.name.as_str() {
@@ -431,30 +439,29 @@ pub fn execute(tc: &ToolCall) -> Result<String, String> {
             let command = get_str(&args, "command")?;
             let workdir = get_str_opt(&args, "workdir");
             let timeout = args.get("timeout").and_then(|v| v.as_u64());
-            let out = bash_execute_simple(&command, workdir, timeout)?;
+            let out = bash_execute_simple(&command, workdir, timeout).await?;
             Ok(Value::String(out))
         }
         "read" => {
             let file_path = get_str(&args, "filePath")?;
             let offset = args.get("offset").and_then(|v| v.as_u64());
             let limit = args.get("limit").and_then(|v| v.as_u64());
-            read_path(&file_path, offset, limit)
+            read_path(&file_path, offset, limit).await
         }
         "write" => {
             let file_path = get_str(&args, "filePath")?;
             let content = get_str(&args, "content")?;
-            write_path(&file_path, &content)
+            write_path(&file_path, &content).await
         }
         "edit" => {
             let file_path = get_str(&args, "filePath")?;
             let old_string = get_str(&args, "oldString")?;
             let new_string = get_str(&args, "newString")?;
             let replace_all = get_bool_opt(&args, "replaceAll", false);
-            edit_path(&file_path, &old_string, &new_string, replace_all)
+            edit_path(&file_path, &old_string, &new_string, replace_all).await
         }
         other => Err(format!("unknown tool: {other}")),
     };
 
     result.map(|v| truncate(&render(v)))
 }
-
