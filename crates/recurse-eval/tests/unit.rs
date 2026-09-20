@@ -605,3 +605,65 @@ async fn empty_tool_result_is_replaced_not_sent_verbatim() {
     // The trace (what a human inspects) must agree with what was sent.
     assert_eq!(agent.trace().turns[0].tool_results[0].result, "(no output)");
 }
+
+#[tokio::test]
+async fn r2_is_one_tool_and_the_runtime_refuses_to_fake_it() {
+    // Analysis must go through the native tool, not bash. The base runtime has
+    // no r2 process, so it must say so rather than silently "succeed".
+    let tools = librecurse::tools::schema();
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&librecurse::r2::TOOL_NAME));
+    // One analysis tool, not a family of r2_disasm/r2_xref/... tools.
+    assert_eq!(
+        names.iter().filter(|n| n.starts_with("r2")).count(),
+        1,
+        "exactly one r2 tool: {names:?}"
+    );
+    let desc = tools
+        .iter()
+        .find(|t| t["function"]["name"] == librecurse::r2::TOOL_NAME)
+        .and_then(|t| t["function"]["description"].as_str())
+        .expect("r2 tool described");
+    assert!(desc.contains("do NOT call r2 through bash"));
+
+    let tc = ToolCall {
+        id: "x".into(),
+        call_type: "function".into(),
+        function: librecurse::agent::ToolCallFn {
+            name: librecurse::r2::TOOL_NAME.into(),
+            arguments: r#"{"cmd":"afl"}"#.into(),
+        },
+    };
+    let err = librecurse::tools::execute(&tc)
+        .await
+        .expect_err("base runtime cannot serve r2");
+    assert!(err.contains("served by the host"), "got: {err}");
+}
+
+#[tokio::test]
+async fn bash_results_are_colour_stripped_through_the_tool_runtime() {
+    // The escape-stripping has to apply on the path the model actually sees,
+    // not only inside the r2 module.
+    let tc = ToolCall {
+        id: "b".into(),
+        call_type: "function".into(),
+        function: librecurse::agent::ToolCallFn {
+            name: "bash".into(),
+            // Built, not hand-written: JSON has no \033 escape, so a literal
+            // raw string here would fail to parse as arguments.
+            arguments: serde_json::json!({
+                "command": "printf '\\033[31mred\\033[0m\\n'"
+            })
+            .to_string(),
+        },
+    };
+    let out = librecurse::tools::execute(&tc).await.expect("bash runs");
+    assert_eq!(out.trim(), "red");
+    assert!(
+        !out.contains('\u{1b}'),
+        "no escapes reach the model: {out:?}"
+    );
+}
