@@ -9,12 +9,38 @@ disassembly, xrefs, strings and imports; **r2ghidra** (optional) provides decomp
 
 ## Features
 
-- Cursor-style workspace: function list, disassembly/strings/imports tabs, and a chat
-  agent sidebar (toggle with the Chat button or `Ctrl+L`)
+- Cursor-style workspace: function list, disassembly/strings/imports tabs, CFG graph,
+  and a chat agent sidebar (toggle with the Chat button or `Ctrl+L`)
+- Grounded agent: every address is a clickable object (function list, graph nodes,
+  xrefs, decompiler annotations) — not pasted text that the model can hallucinate
 - Live analysis session on any binary — including extension-less files
+- Persistent project memory (`memory/*.md`): renames, findings and notes survive
+  `/clear` and reopen, and seed the next session
+- Headless core (`librecurse`): same agent loop runs in the UI and in a CLI for
+  deterministic evals
 - LLM agent backed by an OpenAI-compatible endpoint (OpenRouter by default) with a
   model picker; drives the session directly (disasm, xrefs, strings, imports, decompile)
 - Dark-first UI built with Tailwind CSS v4 + shadcn/ui
+
+## Why not just MCP-to-IDA / yolo it in Claude Code?
+
+Stapling an MCP server onto IDA/Ghidra, or pasting `r2` output into a CLI agent,
+works for 5-function CTFs and falls apart on real binaries. Recurse is a
+purpose-built environment, not a chatbot wrapper:
+
+- **Binary world-model, not text scraping.** Functions, xrefs, strings and the CFG
+  are first-class state shared by the agent and the UI. No re-parsing
+  `pdF` dumps into context every turn, no invented `0x401023`s.
+- **Verification > generation.** In RE there is no `npm test` — verification is
+  visual. Agent renames propagate to the function list, graph and decompile
+  instantly, so a human confirms or rejects in one click.
+- **Built for scale.** Real malware is 10k functions. Demand-driven tools +
+  persistent memory beat dumping full decompiles until context OOMs.
+- **Agentable engine.** IDA is single-threaded, license-locked and headless-hostile.
+  radare2 is free, scriptable and pipeable — agents can run 100 turns, fork,
+  reset and diff. And you can actually ship it.
+- **Malware-safe by default.** Local-first, BYO-key/OpenRouter routing, and a path
+  to offline models — no forced exfil of samples to a cloud chatbot.
 
 ## Prerequisites
 
