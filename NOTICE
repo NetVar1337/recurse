@@ -9,7 +9,7 @@ particular that the reverse-engineering engine is pluggable (see
 docs/backends.md):
 
   * The native backend (default build) links only permissively licensed Rust
-    crates (object, iced-x86, rustc-demangle, cpp_demangle, libc) and contains
+    crates (object, capstone, rustc-demangle, cpp_demangle, nix) and contains
     no copyleft component.
 
   * radare2 and the optional r2ghidra plugin are separate programs, invoked at

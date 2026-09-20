@@ -50,9 +50,9 @@ engine is a choice, not a hard dependency:
 
 - **`r2`** (default) — drives the radare2 executable over its `-q0` pipe. Everything,
   including r2ghidra decompilation.
-- **`native`** — pure-Rust ELF/PE/Mach-O parsing and x86/x86-64 disassembly
-  (`object` + `iced-x86`). No child process, no external tool, no LGPL in the build.
-  No decompiler; non-x86 code is reported, not disassembled.
+- **`native`** — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly
+  (`object` + `capstone`): x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ,
+  M68K, BPF. No child process, no external tool, no LGPL in the build. No decompiler.
 
 Pick with the settings menu, the `RECURSE_BACKEND` environment variable
 (`r2` | `native`), or the stored config. The agent gets one backend-neutral `analyze` tool

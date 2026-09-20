@@ -3,6 +3,11 @@
 //! Only the r2 backend needs this (the native backend is in-process). On
 //! non-Unix targets the functions report failure instead of pretending to act.
 
+#[cfg(unix)]
+use nix::sys::signal::{kill, killpg, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
+
 /// Send `SIGINT` to `pid`, mirroring Ctrl-C: a blocked r2 command unwinds and
 /// the pipe produces its response. Returns false when `pid` is 0 or the
 /// signal could not be delivered.
@@ -13,7 +18,7 @@
 /// ```
 #[cfg(unix)]
 pub fn interrupt(pid: u32) -> bool {
-    signal(pid, libc::SIGINT)
+    signal(pid, Signal::SIGINT)
 }
 
 /// Send `SIGINT`; always false off Unix.
@@ -39,7 +44,7 @@ pub fn interrupt(_pid: u32) -> bool {
 /// ```
 #[cfg(unix)]
 pub fn terminate(pid: u32) -> bool {
-    signal(pid, libc::SIGKILL)
+    signal(pid, Signal::SIGKILL)
 }
 
 /// Send `SIGKILL`; always false off Unix.
@@ -56,24 +61,18 @@ pub fn terminate(_pid: u32) -> bool {
     false
 }
 
-/// Shared Unix delivery path. A pid of 0 is "no known child", never signal
-/// it. The signal goes to the process *group* first (the session sets one at
-/// spawn) so r2's own children are covered; if that fails the single pid is
-/// signalled instead.
+/// Shared Unix delivery path, implemented with `nix` so no `unsafe` is needed
+/// in this crate. A pid of 0 is "no known child", never signal it. The signal
+/// goes to the process *group* first (the session sets one at spawn) so r2's
+/// own children are covered; if that fails the single pid is signalled
+/// instead.
 #[cfg(unix)]
-fn signal(pid: u32, sig: libc::c_int) -> bool {
+fn signal(pid: u32, sig: Signal) -> bool {
     if pid == 0 {
         return false;
     }
-    // SAFETY: `kill` with a pid/group we spawned; the return value is checked
-    // and no pointers are involved.
-    unsafe {
-        let g = pid as libc::pid_t;
-        if libc::kill(-g, sig) == 0 {
-            return true;
-        }
-        libc::kill(g, sig) == 0
-    }
+    let group = Pid::from_raw(pid as i32);
+    killpg(group, sig).is_ok() || kill(group, sig).is_ok()
 }
 
 #[cfg(test)]

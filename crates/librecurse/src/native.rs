@@ -1,28 +1,28 @@
 //! Pure-Rust analysis backend: no radare2 process, no copyleft dependency.
 //!
-//! Parsing (ELF/PE/Mach-O), symbols, imports and strings come from the
-//! [`object`](https://docs.rs/object) crate. Disassembly and control-flow
-//! recovery for x86/x86-64 come from [`iced-x86`](https://docs.rs/iced-x86).
-//! Everything is in-process, so there is no child to spawn, interrupt or reap
-//! and no external tool to install.
+//! Parsing (ELF/PE/Mach-O) comes from [`object`](https://docs.rs/object).
+//! Disassembly and control-flow recovery come from
+//! [`capstone`](https://docs.rs/capstone), which covers x86/x86-64, ARM,
+//! AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, M68K, BPF and more behind
+//! one API. Capstone is BSD-3-Clause, so the whole backend stays permissive.
 //!
 //! Scope, stated honestly:
 //!
-//! * x86-64 / x86 is disassembled; other architectures are detected and
-//!   reported, but disassembly returns a clear "use the r2 backend" error.
-//! * Functions are discovered from the symbol table and the entry point, then
-//!   extended by recursive descent over direct call targets. A stripped binary
-//!   therefore yields fewer functions than radare2's heuristics.
-//! * There is no decompiler in the permissive Rust ecosystem, so
+//! * Functions are discovered from the symbol table, the entry point, and
+//!   direct call targets (recursive descent). A stripped binary therefore
+//!   yields fewer functions than radare2's heuristics.
+//! * Branch targets and fall-through edges are recovered from instruction
+//!   details, so the CFG covers reachable code; exotic architectures whose
+//!   conditionality we cannot classify exactly are treated as conditional.
+//! * There is no decompiler in the permissive ecosystem, so
 //!   [`Engine::decompile`] reports `capabilities().decompile == false`.
-//!
-//! All types are owned and merged into the backend-neutral results from
-//! [`crate::engine`]; nothing here leaks into the agent or the UI.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use capstone::prelude::*;
+use capstone::{Endian, InsnGroupType};
 use object::{
     Architecture, BinaryFormat, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionKind,
     SymbolKind,
@@ -40,7 +40,7 @@ const MAX_FUNCTIONS: usize = 4096;
 const MAX_BLOCKS: usize = 2048;
 /// Maximum instructions decoded per block.
 const MAX_BLOCK_INSNS: usize = 4096;
-/// Minimum run length for an ASCII string.
+/// Minimum run length for a string.
 const MIN_STRING_LEN: usize = 4;
 
 /// Mutable analysis state, guarded by a mutex because [`Engine`] methods take
@@ -64,6 +64,110 @@ impl NativeState {
     }
 }
 
+/// Build a Capstone disassembler configured for the object file's CPU, mode
+/// and endianness. Capstone handles every architecture it supports uniformly,
+/// so this is the only place that switches on the architecture.
+fn build_capstone(file: &object::File<'_>) -> Result<Capstone, String> {
+    let endian = if file.is_little_endian() {
+        Endian::Little
+    } else {
+        Endian::Big
+    };
+    let built = match file.architecture() {
+        Architecture::X86_64 | Architecture::X86_64_X32 => Capstone::new()
+            .x86()
+            .mode(arch::x86::ArchMode::Mode64)
+            .detail(true)
+            .build(),
+        Architecture::I386 => Capstone::new()
+            .x86()
+            .mode(arch::x86::ArchMode::Mode32)
+            .detail(true)
+            .build(),
+        Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => Capstone::new()
+            .arm64()
+            .mode(arch::arm64::ArchMode::Arm)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::Arm => Capstone::new()
+            .arm()
+            .mode(arch::arm::ArchMode::Arm)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::Mips => Capstone::new()
+            .mips()
+            .mode(arch::mips::ArchMode::Mips32)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::Mips64 | Architecture::Mips64_N32 => Capstone::new()
+            .mips()
+            .mode(arch::mips::ArchMode::Mips64)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::PowerPc => Capstone::new()
+            .ppc()
+            .mode(arch::ppc::ArchMode::Mode32)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::PowerPc64 => Capstone::new()
+            .ppc()
+            .mode(arch::ppc::ArchMode::Mode64)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::Riscv32 => Capstone::new()
+            .riscv()
+            .mode(arch::riscv::ArchMode::RiscV32)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::Riscv64 => Capstone::new()
+            .riscv()
+            .mode(arch::riscv::ArchMode::RiscV64)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        Architecture::Sparc | Architecture::Sparc32Plus => Capstone::new()
+            .sparc()
+            .mode(arch::sparc::ArchMode::Default)
+            .detail(true)
+            .build(),
+        Architecture::Sparc64 => Capstone::new()
+            .sparc()
+            .mode(arch::sparc::ArchMode::V9)
+            .detail(true)
+            .build(),
+        Architecture::S390x => Capstone::new()
+            .sysz()
+            .mode(arch::sysz::ArchMode::Default)
+            .detail(true)
+            .build(),
+        Architecture::M68k => Capstone::new()
+            .m68k()
+            .mode(arch::m68k::ArchMode::M68k000)
+            .detail(true)
+            .build(),
+        Architecture::Bpf => Capstone::new()
+            .bpf()
+            .mode(arch::bpf::ArchMode::Cbpf)
+            .endian(endian)
+            .detail(true)
+            .build(),
+        other => {
+            return Err(format!(
+                "native backend cannot disassemble {} yet; set RECURSE_BACKEND=r2",
+                arch_name(other)
+            ))
+        }
+    };
+    built.map_err(|e| format!("capstone initialisation failed: {e}"))
+}
+
 /// The in-process [`Engine`] implementation.
 pub struct NativeEngine {
     data: Vec<u8>,
@@ -77,15 +181,15 @@ impl NativeEngine {
     ///
     /// ```
     /// use librecurse::native::NativeEngine;
+    /// use librecurse::engine::Engine;
     /// let path = std::env::current_exe().unwrap();
     /// let e = NativeEngine::open(&path).unwrap();
-    /// use librecurse::engine::Engine;
     /// assert!(e.summary().unwrap()["function_count"].as_u64().unwrap() >= 0);
     /// ```
     pub fn open(path: &Path) -> Result<Self, String> {
         let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        // Fail fast on non-objects; every later query then only fails on
-        // odd sections, not on a fundamentally unparsable file.
+        // Fail fast on non-objects; every later query then only fails on odd
+        // sections, not on a fundamentally unparsable file.
         object::File::parse(&*data).map_err(|e| format!("not a recognised binary: {e}"))?;
         Ok(Self {
             data,
@@ -120,26 +224,15 @@ impl NativeEngine {
     /// Decode up to `count` instructions linearly from `addr`.
     fn decode_linear(&self, addr: u64, count: usize) -> Result<Vec<Instruction>, String> {
         let file = self.parse()?;
-        self.decode_from(&file, addr, count)
-    }
-
-    /// Decode `count` instructions starting at `addr` inside its section.
-    fn decode_from(
-        &self,
-        file: &object::File<'_>,
-        addr: u64,
-        count: usize,
-    ) -> Result<Vec<Instruction>, String> {
-        let bitness = bitness_of(file)?;
-        let section = Self::text_section(file, addr)
+        let cs = build_capstone(&file)?;
+        let section = Self::text_section(&file, addr)
             .ok_or_else(|| format!("no executable section contains {addr:#x}"))?;
         let data = section.data().map_err(|e| e.to_string())?;
-        let base = section.address();
-        let start = (addr - base) as usize;
-        if start >= data.len() {
+        let offset = (addr - section.address()) as usize;
+        if offset >= data.len() {
             return Err(format!("{addr:#x} is past the end of its section"));
         }
-        Ok(decode_bytes(&data[start..], addr, bitness, count))
+        Ok(decode_with(&cs, &data[offset..], addr, count.max(1), false))
     }
 
     /// Decode the basic blocks of the function at `func_addr`, caching the
@@ -156,66 +249,8 @@ impl NativeEngine {
             }
         }
         let file = self.parse()?;
-        let bitness = bitness_of(&file)?;
-        let section = Self::text_section(&file, func_addr)
-            .ok_or_else(|| format!("no executable section contains {func_addr:#x}"))?;
-        let data = section.data().map_err(|e| e.to_string())?;
-        let base = section.address();
-        let mut visited: HashSet<u64> = HashSet::new();
-        let mut queue: VecDeque<u64> = VecDeque::new();
-        let mut blocks: Vec<BasicBlock> = Vec::new();
-        queue.push_back(func_addr);
-
-        while let Some(start) = queue.pop_front() {
-            if !visited.insert(start) || blocks.len() >= MAX_BLOCKS {
-                continue;
-            }
-            if start < base || !Self::in_text(&file, start) {
-                continue;
-            }
-            let offset = (start - base) as usize;
-            if offset >= data.len() {
-                continue;
-            }
-            let ops = decode_bytes(&data[offset..], start, bitness, MAX_BLOCK_INSNS);
-            if ops.is_empty() {
-                continue;
-            }
-            let last = ops.last().cloned().unwrap_or(Instruction {
-                addr: start,
-                disasm: String::new(),
-                kind: None,
-                jump: None,
-                fail: None,
-            });
-            let mut jump = None;
-            let mut fail = None;
-            let kind = last.kind.as_deref().unwrap_or("");
-            if matches!(kind, "jmp" | "call") {
-                jump = last.jump;
-            } else if kind == "cjmp" {
-                jump = last.jump;
-                fail = last.fail;
-            }
-            if let Some(t) = jump {
-                if Self::in_text(&file, t) {
-                    queue.push_back(t);
-                }
-            }
-            if let Some(t) = fail {
-                if Self::in_text(&file, t) {
-                    queue.push_back(t);
-                }
-            }
-            blocks.push(BasicBlock {
-                addr: start,
-                ninstr: ops.len() as u64,
-                jump,
-                fail,
-                ops,
-            });
-        }
-        blocks.sort_by_key(|b| b.addr);
+        let cs = build_capstone(&file)?;
+        let blocks = decode_blocks(&file, &cs, func_addr)?;
         let mut state = self
             .state
             .lock()
@@ -237,6 +272,7 @@ impl NativeEngine {
             }
         }
         let file = self.parse()?;
+        let cs = build_capstone(&file)?;
         // Named seeds first: they carry the real symbol names.
         let mut names: HashMap<u64, String> = HashMap::new();
         for sym in file.symbols().chain(file.dynamic_symbols()) {
@@ -260,14 +296,13 @@ impl NativeEngine {
 
         let mut discovered: BTreeMap<u64, FunctionInfo> = BTreeMap::new();
         let mut seen: HashSet<u64> = HashSet::new();
+        let mut cache: HashMap<u64, Vec<BasicBlock>> = HashMap::new();
         while let Some(addr) = queue.pop_front() {
             if !seen.insert(addr) || discovered.len() >= MAX_FUNCTIONS {
                 continue;
             }
-            let blocks = self.blocks_for(addr)?;
-            let mut ops: Vec<&Instruction> = blocks.iter().flat_map(|b| b.ops.iter()).collect();
-            ops.sort_by_key(|o| o.addr);
-            for op in &ops {
+            let blocks = decode_blocks(&file, &cs, addr)?;
+            for op in blocks.iter().flat_map(|b| b.ops.iter()) {
                 if op.kind.as_deref() == Some("call") {
                     if let Some(t) = op.jump {
                         if Self::in_text(&file, t) && !seen.contains(&t) {
@@ -291,6 +326,7 @@ impl NativeEngine {
                     signature: None,
                 },
             );
+            cache.insert(addr, blocks);
         }
 
         // Fill in sizes from the sorted neighbour addresses.
@@ -313,6 +349,7 @@ impl NativeEngine {
             .lock()
             .map_err(|e| format!("native state poisoned: {e}"))?;
         state.functions = discovered;
+        state.blocks = cache;
         state.analyzed = true;
         Ok(())
     }
@@ -320,7 +357,7 @@ impl NativeEngine {
     /// Build the UI-shaped `info` object.
     fn info_value(&self, file: &object::File<'_>) -> serde_json::Value {
         let arch = arch_name(file.architecture());
-        let bits = if file.is_64() { 64 } else { 32 };
+        let bits = arch_bits(file.architecture()).unwrap_or(0);
         let kind = format_name(file.format());
         let endian = if file.is_little_endian() {
             "little"
@@ -341,6 +378,245 @@ impl NativeEngine {
             "core": { "type": object_kind_name(file.kind()) },
         })
     }
+}
+
+/// Decode up to `max` instructions from a byte slice that begins at `ip`.
+/// When `stop_at_terminator` is set, decoding stops *after* the first
+/// instruction that ends a basic block (jump, conditional jump, return, trap).
+///
+/// Decoding is batched: Capstone honours a count by decoding that many
+/// instructions up front, so asking for the whole cap (4096) just to stop at
+/// the first branch wasted most of the work on large binaries. Small batches
+/// plus an early return keep the cost proportional to the block length.
+fn decode_with(
+    cs: &Capstone,
+    bytes: &[u8],
+    ip: u64,
+    max: usize,
+    stop_at_terminator: bool,
+) -> Vec<Instruction> {
+    /// Instructions requested per Capstone call.
+    const BATCH: usize = 32;
+
+    let mut out: Vec<Instruction> = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() && out.len() < max {
+        let want = BATCH.min(max - out.len());
+        let Ok(insns) = cs.disasm_count(&bytes[cursor..], ip + cursor as u64, want) else {
+            break;
+        };
+        if insns.is_empty() {
+            break;
+        }
+        let exhausted = insns.len() < want;
+        let mut consumed = 0usize;
+        for insn in insns.iter() {
+            let (kind, jump, fail) = classify(cs, insn);
+            let terminator = matches!(
+                kind.as_deref(),
+                Some("jmp") | Some("cjmp") | Some("ret") | Some("int")
+            );
+            consumed += insn.bytes().len();
+            out.push(Instruction {
+                addr: insn.address(),
+                disasm: format_insn(insn),
+                kind,
+                jump,
+                fail,
+            });
+            if (stop_at_terminator && terminator) || out.len() >= max {
+                return out;
+            }
+        }
+        cursor += consumed;
+        if exhausted {
+            break;
+        }
+    }
+    out
+}
+
+/// Recover the basic blocks of the function at `func_addr` by following
+/// branch and fall-through edges. Pure over the parsed file and Capstone
+/// handle, so callers share one handle across many functions.
+fn decode_blocks(
+    file: &object::File<'_>,
+    cs: &Capstone,
+    func_addr: u64,
+) -> Result<Vec<BasicBlock>, String> {
+    let section = NativeEngine::text_section(file, func_addr)
+        .ok_or_else(|| format!("no executable section contains {func_addr:#x}"))?;
+    let data = section.data().map_err(|e| e.to_string())?;
+    let base = section.address();
+    let mut visited: HashSet<u64> = HashSet::new();
+    let mut queue: VecDeque<u64> = VecDeque::new();
+    let mut blocks: Vec<BasicBlock> = Vec::new();
+    queue.push_back(func_addr);
+
+    while let Some(start) = queue.pop_front() {
+        if !visited.insert(start) || blocks.len() >= MAX_BLOCKS {
+            continue;
+        }
+        if start < base || start >= base.saturating_add(data.len() as u64) {
+            continue;
+        }
+        let offset = (start - base) as usize;
+        let ops = decode_with(cs, &data[offset..], start, MAX_BLOCK_INSNS, true);
+        if ops.is_empty() {
+            continue;
+        }
+        let Some(last) = ops.last() else {
+            continue;
+        };
+        let (jump, fail) = match last.kind.as_deref() {
+            Some("jmp") | Some("call") => (last.jump, None),
+            Some("cjmp") => (last.jump, last.fail),
+            _ => (last.jump, None),
+        };
+        for target in [jump, fail].into_iter().flatten() {
+            if NativeEngine::in_text(file, target) {
+                queue.push_back(target);
+            }
+        }
+        blocks.push(BasicBlock {
+            addr: start,
+            ninstr: ops.len() as u64,
+            jump,
+            fail,
+            ops,
+        });
+    }
+    blocks.sort_by_key(|b| b.addr);
+    Ok(blocks)
+}
+
+/// Render one Capstone instruction as `mnemonic operand, operand`.
+fn format_insn(insn: &capstone::Insn<'_>) -> String {
+    let mnemonic = insn.mnemonic().unwrap_or("");
+    let operands = insn.op_str().unwrap_or("");
+    if operands.is_empty() {
+        mnemonic.to_string()
+    } else {
+        format!("{mnemonic} {operands}")
+    }
+}
+
+/// Map a Capstone instruction's groups to the canonical kind and edges.
+///
+/// Flow control comes from Capstone's instruction groups (jump/call/ret), and
+/// direct targets are read from the operand text. An operand containing a
+/// memory reference (`[...]`) or a register is a register/memory-indirect
+/// branch and therefore has no static target.
+fn classify(
+    cs: &Capstone,
+    insn: &capstone::Insn<'_>,
+) -> (Option<String>, Option<u64>, Option<u64>) {
+    let mnemonic = insn.mnemonic().unwrap_or("");
+    let operands = insn.op_str().unwrap_or("");
+    let groups = cs
+        .insn_detail(insn)
+        .map(|d| d.groups().to_vec())
+        .unwrap_or_default();
+    let has = |g: u8| groups.iter().any(|x| x.0 == g);
+    let next = insn.address().saturating_add(insn.bytes().len() as u64);
+
+    if has(InsnGroupType::CS_GRP_RET as u8) || has(InsnGroupType::CS_GRP_IRET as u8) {
+        return (Some("ret".into()), None, None);
+    }
+    if has(InsnGroupType::CS_GRP_CALL as u8) {
+        return (Some("call".into()), parse_branch_target(operands), None);
+    }
+    if has(InsnGroupType::CS_GRP_JUMP as u8) {
+        let target = parse_branch_target(operands);
+        if is_unconditional_branch(mnemonic) {
+            return (Some("jmp".into()), target, None);
+        }
+        return (Some("cjmp".into()), target, Some(next));
+    }
+    if has(InsnGroupType::CS_GRP_INT as u8) {
+        return (Some("int".into()), None, None);
+    }
+    (None, None, None)
+}
+
+/// Extract a direct branch/call target from an operand string, if it names a
+/// bare immediate. Memory (`[...]`) and register operands yield `None`.
+///
+/// ```
+/// use librecurse::native::parse_branch_target;
+/// assert_eq!(parse_branch_target("0x401000"), Some(0x401000));
+/// assert_eq!(parse_branch_target("#0x1234"), Some(0x1234));
+/// assert_eq!(parse_branch_target("ra, 0x1234"), Some(0x1234));
+/// assert_eq!(parse_branch_target("rax"), None);
+/// assert_eq!(parse_branch_target("qword ptr [rip + 0x10]"), None);
+/// ```
+pub fn parse_branch_target(operands: &str) -> Option<u64> {
+    if operands.contains('[') || operands.contains("ptr") {
+        return None;
+    }
+    for token in operands
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .rev()
+    {
+        let t = token.trim_matches(|c: char| matches!(c, '#' | ']' | ')' | '+' | ':' | '$' | '('));
+        if t.is_empty() {
+            continue;
+        }
+        if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            if let Ok(v) = u64::from_str_radix(hex, 16) {
+                return Some(v);
+            }
+        } else if t.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(v) = t.parse::<u64>() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// True when a branch mnemonic is an unconditional jump (so a block has no
+/// fall-through edge). Best-effort across the architectures Capstone covers;
+/// an unrecognised mnemonic is treated as conditional, which only adds a
+/// fall-through edge rather than dropping real control flow.
+///
+/// ```
+/// use librecurse::native::is_unconditional_branch;
+/// assert!(is_unconditional_branch("jmp"));
+/// assert!(is_unconditional_branch("b"));
+/// assert!(is_unconditional_branch("b.w"));
+/// assert!(is_unconditional_branch("ba"));
+/// assert!(!is_unconditional_branch("je"));
+/// assert!(!is_unconditional_branch("beq"));
+/// ```
+pub fn is_unconditional_branch(mnemonic: &str) -> bool {
+    // Strip ARM condition/width suffixes (`b.w`, `b.n`, `bne` stays distinct).
+    let stem = mnemonic
+        .split(['.', ' '])
+        .next()
+        .unwrap_or(mnemonic)
+        .to_ascii_lowercase();
+    matches!(
+        stem.as_str(),
+        "jmp"
+            | "ljmp"
+            | "b"
+            | "ba"
+            | "br"
+            | "bx"
+            | "bxj"
+            | "bra"
+            | "braf"
+            | "brf"
+            | "j"
+            | "ja"
+            | "jr"
+            | "jal"
+            | "jalr"
+            | "bctr"
+            | "blr"
+            | "rg"
+    )
 }
 
 impl Engine for NativeEngine {
@@ -449,6 +725,7 @@ impl Engine for NativeEngine {
         let blocks = self.blocks_for(entry)?;
         let mut ops: Vec<Instruction> = blocks.into_iter().flat_map(|b| b.ops).collect();
         ops.sort_by_key(|o| o.addr);
+        ops.dedup_by_key(|o| o.addr);
         Ok(Disassembly {
             addr: entry,
             name: func
@@ -640,81 +917,6 @@ impl Engine for NativeEngine {
     }
 }
 
-/// Decode instructions from a byte slice that begins at `ip`.
-fn decode_bytes(bytes: &[u8], ip: u64, bitness: u32, max: usize) -> Vec<Instruction> {
-    use iced_x86::{
-        Decoder, DecoderOptions, Formatter, Instruction as IcedInstruction, IntelFormatter,
-    };
-
-    let mut decoder = Decoder::with_ip(bitness, bytes, ip, DecoderOptions::NONE);
-    let mut formatter = IntelFormatter::new();
-    let mut out = Vec::new();
-    while decoder.can_decode() && out.len() < max {
-        let instr: IcedInstruction = decoder.decode();
-        let mut output = TextOutput::new();
-        formatter.format(&instr, &mut output);
-        let disasm = output.into_string();
-        let fc = instr.flow_control();
-        let (kind, jump, fail) = classify(&instr, fc);
-        out.push(Instruction {
-            addr: instr.ip(),
-            disasm,
-            kind,
-            jump,
-            fail,
-        });
-    }
-    out
-}
-
-/// Minimal [`iced_x86::FormatterOutput`] that concatenates everything the
-/// formatter emits into one string (the crate ships no ready-made collector).
-struct TextOutput(String);
-
-impl TextOutput {
-    fn new() -> Self {
-        Self(String::new())
-    }
-
-    fn into_string(self) -> String {
-        self.0
-    }
-}
-
-impl iced_x86::FormatterOutput for TextOutput {
-    fn write(&mut self, text: &str, _kind: iced_x86::FormatterTextKind) {
-        self.0.push_str(text);
-    }
-}
-
-/// Map an iced instruction's flow control to the canonical kind and edges.
-fn classify(
-    instr: &iced_x86::Instruction,
-    fc: iced_x86::FlowControl,
-) -> (Option<String>, Option<u64>, Option<u64>) {
-    use iced_x86::{FlowControl, OpKind};
-    let direct = matches!(
-        instr.op0_kind(),
-        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
-    );
-    let target = if direct {
-        Some(instr.near_branch_target())
-    } else {
-        None
-    };
-    match fc {
-        FlowControl::Next => (None, None, None),
-        FlowControl::UnconditionalBranch => (Some("jmp".into()), target, None),
-        FlowControl::IndirectBranch => (Some("ijmp".into()), None, None),
-        FlowControl::ConditionalBranch => (Some("cjmp".into()), target, Some(instr.next_ip())),
-        FlowControl::Return => (Some("ret".into()), None, None),
-        FlowControl::Call => (Some("call".into()), target, None),
-        FlowControl::IndirectCall => (Some("icall".into()), None, None),
-        FlowControl::Interrupt => (Some("int".into()), None, None),
-        _ => (None, None, None),
-    }
-}
-
 /// The reference kind a branch instruction carries, for xref labels.
 fn branch_kind(op: &Instruction) -> String {
     match op.kind.as_deref() {
@@ -784,23 +986,10 @@ fn is_ascii_printable(b: u8) -> bool {
     (0x20..=0x7e).contains(&b) || b == b'\t'
 }
 
-/// Decode the iced bitness for an object file, or explain why it can't.
-fn bitness_of(file: &object::File<'_>) -> Result<u32, String> {
-    match file.architecture() {
-        Architecture::X86_64 | Architecture::X86_64_X32 => Ok(64),
-        Architecture::I386 => Ok(32),
-        other => Err(format!(
-            "native backend disassembles x86/x86-64 only (binary is {}); set RECURSE_BACKEND=r2",
-            arch_name(other)
-        )),
-    }
-}
-
 /// Short architecture name matching r2's vocabulary.
 fn arch_name(arch: Architecture) -> &'static str {
     match arch {
-        Architecture::X86_64 | Architecture::X86_64_X32 => "x86",
-        Architecture::I386 => "x86",
+        Architecture::X86_64 | Architecture::X86_64_X32 | Architecture::I386 => "x86",
         Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => "arm",
         Architecture::Arm => "arm",
         Architecture::Mips | Architecture::Mips64 | Architecture::Mips64_N32 => "mips",
@@ -808,8 +997,40 @@ fn arch_name(arch: Architecture) -> &'static str {
         Architecture::Riscv32 | Architecture::Riscv64 => "riscv",
         Architecture::Sparc | Architecture::Sparc32Plus | Architecture::Sparc64 => "sparc",
         Architecture::S390x => "s390",
+        Architecture::M68k => "m68k",
+        Architecture::Bpf => "bpf",
+        Architecture::Avr => "avr",
         Architecture::Wasm32 | Architecture::Wasm64 => "wasm",
         _ => "unknown",
+    }
+}
+
+/// Address width in bits for an architecture, when known.
+fn arch_bits(arch: Architecture) -> Option<u64> {
+    match arch {
+        Architecture::X86_64
+        | Architecture::X86_64_X32
+        | Architecture::Aarch64
+        | Architecture::Mips64
+        | Architecture::Mips64_N32
+        | Architecture::PowerPc64
+        | Architecture::Riscv64
+        | Architecture::Sparc64
+        | Architecture::S390x
+        | Architecture::Wasm64 => Some(64),
+        Architecture::I386
+        | Architecture::Arm
+        | Architecture::Aarch64_Ilp32
+        | Architecture::Mips
+        | Architecture::PowerPc
+        | Architecture::Riscv32
+        | Architecture::Sparc
+        | Architecture::Sparc32Plus
+        | Architecture::Wasm32
+        | Architecture::Bpf
+        | Architecture::M68k => Some(32),
+        Architecture::Avr => Some(8),
+        _ => None,
     }
 }
 
@@ -875,15 +1096,21 @@ mod tests {
     }
 
     #[test]
-    fn bitness_reflects_architecture() {
-        // /bin/true on this host is an ELF; parse it through object directly.
-        if let Ok(data) = std::fs::read("/bin/true") {
-            if let Ok(file) = object::File::parse(&*data) {
-                // Any bitness the host supports must decode or give a clear error.
-                let r = bitness_of(&file);
-                assert!(r.is_ok() || r.unwrap_err().contains("x86"));
-            }
-        }
+    fn branch_targets_ignore_indirect_operands() {
+        assert_eq!(parse_branch_target("0x401000"), Some(0x401000));
+        assert_eq!(parse_branch_target("#0x1234"), Some(0x1234));
+        assert_eq!(parse_branch_target("ra, 0x1234"), Some(0x1234));
+        assert_eq!(parse_branch_target("rax"), None);
+        assert_eq!(parse_branch_target("qword ptr [rip + 0x10]"), None);
+    }
+
+    #[test]
+    fn unconditional_branch_detection() {
+        assert!(is_unconditional_branch("jmp"));
+        assert!(is_unconditional_branch("b.w"));
+        assert!(is_unconditional_branch("ba"));
+        assert!(!is_unconditional_branch("je"));
+        assert!(!is_unconditional_branch("bne"));
     }
 
     #[test]

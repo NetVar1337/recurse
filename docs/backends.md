@@ -45,22 +45,25 @@ process, no external tool, and no copyleft dependency anywhere in the chain.
 Honest scope:
 
 - ELF / PE / Mach-O parsing, symbols, imports, strings.
-- x86 / x86-64 disassembly and control-flow recovery (recursive descent from
-  symbols + entry over direct call targets).
+- Multi-architecture disassembly and control-flow recovery (Capstone):
+  x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, M68K, BPF.
+- Functions are discovered from symbols, the entry point, and direct call
+  targets.
 - No decompiler (`capabilities().decompile == false`) and no raw console. The
   agent tool answers `op:"decompile"` with a precise "install r2 + r2ghidra and
   set `RECURSE_BACKEND=r2`" message rather than a generic failure.
-- Non-x86 code is detected and reported, not disassembled.
+- Architectures Capstone does not cover (AVR, CSky, LoongArch, Xtensa, …) are
+  detected and reported, not disassembled.
 
 ## Crates and why
 
 | Crate | License | Used for |
 | --- | --- | --- |
 | `object` | Apache-2.0 / MIT | ELF/PE/Mach-O/COFF parsing: architecture, bits, endianness, entry point, sections, symbols, imports, exports. |
-| `iced-x86` | MIT | x86/x64 instruction decoding + formatting, and flow-control edges (jump/fail/call/ret) for CFG and xref recovery. Pure Rust, no C. |
+| `capstone` | BSD-3-Clause | Multi-architecture disassembly + instruction groups (jump/call/ret) for CFG and xref recovery: x86, x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, M68K, BPF, and more. Vendors the Capstone C library (permissive), used behind a safe API. |
 | `rustc-demangle` | Apache-2.0 / MIT | Rust v0/legacy symbol demangling. |
 | `cpp_demangle` | Apache-2.0 / MIT | Itanium C++ symbol demangling. |
-| `libc` | MIT / Apache-2.0 | Unix `kill` for `Engine::interrupt` / `force_kill` (r2 backend only). |
+| `nix` | MIT | Safe wrappers (`killpg`/`kill`) for `Engine::interrupt` / `force_kill` (r2 backend only). Replaces any raw `libc` FFI. |
 
 Already-present crates that also serve analysis: `serde`/`serde_json` (canonical
 envelopes), `regex` (host-side scans).
@@ -69,16 +72,16 @@ envelopes), `regex` (host-side scans).
 
 | Candidate | Why not (for the native backend) |
 | --- | --- |
-| `capstone` | BSD-3 and multi-arch, but links C. Kept out to keep the native backend dependency-light; can be an optional third backend later. |
-| `yaxpeax-*` | 0BSD/MIT pure-Rust multi-arch decoders. Viable for ARM/MIPS/RISC-V; deferred until a non-x86 target needs it. |
+| `iced-x86` | MIT and excellent, but x86-only. Capstone supersedes it for a multi-arch backend behind one API; keeps a single decode path. |
+| `yaxpeax-*` | 0BSD/MIT pure-Rust multi-arch decoders. Kept as the fallback if linking the Capstone C library (via `cc`) is ever undesirable; coverage is currently narrower. |
 | `goblin` | MIT, but `object` is the ecosystem standard and what `gimli`/`addr2line` use. |
-| `zydis` | MIT but x86-only and bindgen over C++. No advantage over `iced-x86`. |
+| `zydis` | MIT but x86-only and bindgen over C++. No advantage over Capstone. |
 | `petgraph` | MIT/Apache, but the CFG is a small `Vec<BasicBlock>` and needs no graph library. |
 | RetDec / Ghidra / snowman | Decompilers. RetDec is MIT but a large C++ sidecar; Ghidra is Apache but a JVM; snowman is GPL. Decompilation stays with r2ghidra, behind the capability flag. |
 
-If multi-architecture native disassembly becomes a requirement, add
-`yaxpeax-arm` / `yaxpeax-mips` / `yaxpeax-riscv` behind the same `Engine`
-methods; nothing above the trait changes.
+If linking a C library at all is unacceptable, swap `capstone` for the
+`yaxpeax-*` decoders behind the same `Engine` methods; nothing above the trait
+changes.
 
 ## Licensing posture
 
