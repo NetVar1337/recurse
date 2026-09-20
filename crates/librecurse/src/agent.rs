@@ -3,8 +3,6 @@ use std::io::BufRead;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config;
-
 const OPENROUTER_MODELS: &str = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODELS_LIST: &str = "https://openrouter.ai/api/v1/models";
 const DEFAULT_MODEL: &str = "openrouter/auto";
@@ -98,8 +96,9 @@ impl ChatMessage {
     }
 }
 
-/// Runtime LLM configuration. The model is selectable from the UI; the endpoint
-/// defaults to OpenRouter and the API key is read from the environment.
+/// Runtime LLM configuration. A plain interface type: hosts construct it
+/// (from their own config file, environment, or UI) and hand it to the
+/// run loop — the library never reads configuration storage itself.
 #[derive(Clone)]
 pub struct LlmConfig {
     pub endpoint: String,
@@ -107,21 +106,30 @@ pub struct LlmConfig {
     pub model: String,
 }
 
+impl LlmConfig {
+    /// Explicit construction from resolved values.
+    pub fn new(endpoint: String, api_key: Option<String>, model: String) -> Self {
+        Self {
+            endpoint,
+            api_key,
+            model,
+        }
+    }
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
-        // Precedence: config file > env > defaults.
-        let file = config::load();
-        let api_key = file
-            .openrouter_api_key
-            .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
+        // Environment + built-in defaults only. File-backed precedence
+        // (e.g. `~/.recurse/config.json`) is the host's job: it loads its
+        // file and calls [`LlmConfig::new`], falling back to these fields.
+        let api_key = std::env::var("OPENROUTER_API_KEY")
+            .ok()
             .or_else(|| std::env::var("RECURSE_LLM_API_KEY").ok());
-        let endpoint = file
-            .endpoint
-            .or_else(|| std::env::var("RECURSE_LLM_ENDPOINT").ok())
+        let endpoint = std::env::var("RECURSE_LLM_ENDPOINT")
+            .ok()
             .unwrap_or_else(|| OPENROUTER_MODELS.to_string());
-        let model = file
-            .model
-            .or_else(|| std::env::var("RECURSE_LLM_MODEL").ok())
+        let model = std::env::var("RECURSE_LLM_MODEL")
+            .ok()
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
         Self {
             endpoint,
@@ -756,6 +764,7 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use std::io::{BufRead, Read, Write};
     use std::net::TcpListener;

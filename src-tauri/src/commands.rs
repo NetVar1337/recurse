@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
 
-use crate::agent::{self, AgentEvent, ModelInfo, ToolCall};
+use librecurse::agent::{self, AgentEvent, ModelInfo, ToolCall};
 use crate::config;
 use crate::engine;
 use crate::memory;
@@ -264,7 +264,7 @@ pub async fn agent_chat(
     let sid = session_id.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let tools = crate::tools::schema();
+        let tools = librecurse::tools::schema();
         let memory = memory::summary_for(project.as_deref(), &message);
 
         // Wrapped so any panic still surfaces an Error event to the frontend.
@@ -273,7 +273,7 @@ pub async fn agent_chat(
                 let mut guard = agent
                     .lock()
                     .map_err(|_| "agent lock poisoned".to_string())?;
-                let mut exec = |tc: &ToolCall| crate::tools::execute(tc);
+                let mut exec = |tc: &ToolCall| librecurse::tools::execute(tc);
                 let mut emit = |ev: AgentEvent| {
                     let _ = on_event.send(ev);
                 };

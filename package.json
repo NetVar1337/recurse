@@ -11,8 +11,8 @@
     "tauri": "tauri",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\" && cargo fmt --manifest-path src-tauri/Cargo.toml",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\" && cargo fmt --manifest-path src-tauri/Cargo.toml --check",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\" && cargo fmt --manifest-path src-tauri/Cargo.toml && cargo fmt --manifest-path crates/librecurse/Cargo.toml",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\" && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo fmt --manifest-path crates/librecurse/Cargo.toml --check",
     "cov:rust": "cargo llvm-cov --manifest-path src-tauri/Cargo.toml --summary-only --workspace",
     "cov:rust:html": "cargo llvm-cov --manifest-path src-tauri/Cargo.toml --html --output-dir target/coverage-html",
     "test:fe": "vitest run"

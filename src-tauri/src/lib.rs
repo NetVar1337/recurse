@@ -1,4 +1,3 @@
-pub mod agent;
 pub mod commands;
 pub mod config;
 pub mod engine;
@@ -8,15 +7,13 @@ pub mod project;
 pub mod session;
 pub mod sessions;
 pub mod shell;
-/// Test-only helpers (HOME isolation). Hidden from docs but compiled so the
-/// integration tests can share it.
+/// Test-only helpers (HOME isolation) for the storage modules' unit tests.
 #[doc(hidden)]
 pub mod testhome;
-pub mod tools;
 
 use std::sync::{Arc, Mutex};
 
-use agent::{Agent, LlmConfig, ModelInfo};
+use librecurse::agent::{Agent, LlmConfig, ModelInfo};
 
 /// WebKitGTK registers a `GtkGestureZoom` on the web view under the data key
 /// `"wk-view-zoom-gesture"` that scales the whole page on trackpad pinch. Tauri
@@ -53,7 +50,7 @@ pub struct AppState {
     pub agent: Arc<Mutex<Agent>>,
     pub llm: Mutex<LlmConfig>,
     pub models: Mutex<Option<Vec<ModelInfo>>>,
-    pub project: Mutex<Option<project::Project>>,
+    pub project: Mutex<Option<crate::project::Project>>,
     pub current_session: Mutex<Option<String>>,
     pub shell: shell::ShellManager,
 }
@@ -82,14 +79,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            sessions::cleanup_legacy();
+            crate::sessions::cleanup_legacy();
             disable_pinch_zoom(app);
             Ok(())
         })
         .manage(AppState {
             session: Arc::new(Mutex::new(None)),
             agent: Arc::new(Mutex::new(Agent::new())),
-            llm: Mutex::new(LlmConfig::default()),
+            llm: Mutex::new(crate::config::llm_config()),
             models: Mutex::new(None),
             project: Mutex::new(None),
             current_session: Mutex::new(None),

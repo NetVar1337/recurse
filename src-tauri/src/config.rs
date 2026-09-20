@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use librecurse::agent::LlmConfig;
+
 /// Persisted user configuration at `~/.recurse/config.json`.
 /// Only fields the user sets explicitly are written; everything else is
 /// preserved across updates.
@@ -56,6 +58,19 @@ pub fn set_api_key(key: Option<String>) -> Result<(), String> {
 
 pub fn set_model(model: String) -> Result<(), String> {
     update(|c| c.model = Some(model))
+}
+
+/// Resolve the runtime LLM config the agent loop consumes.
+/// Precedence: config file > environment > built-in defaults (the last two
+/// come from [`LlmConfig::default`]).
+pub fn llm_config() -> LlmConfig {
+    let file = load();
+    let fallback = LlmConfig::default();
+    LlmConfig::new(
+        file.endpoint.unwrap_or(fallback.endpoint),
+        file.openrouter_api_key.or(fallback.api_key),
+        file.model.unwrap_or(fallback.model),
+    )
 }
 
 #[cfg(test)]

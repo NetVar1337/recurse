@@ -1,0 +1,31 @@
+[package]
+name = "librecurse"
+version = "0.1.0"
+description = "Independent agent framework for Recurse: LLM run loop and tool runtime"
+authors = ["Aayush Khanna"]
+license = "MIT"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "librecurse"
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["tls", "json"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+# Same bar as the Tauri shell: no silent panics on poisoned locks or bad
+# UTF-8 from external processes.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
