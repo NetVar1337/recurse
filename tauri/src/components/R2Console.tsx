@@ -17,7 +17,9 @@ function loadHistory(): string[] {
 	try {
 		const raw = localStorage.getItem(HISTORY_KEY);
 		const arr = raw ? (JSON.parse(raw) as unknown) : [];
-		return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
+		return Array.isArray(arr)
+			? arr.filter((x): x is string => typeof x === "string")
+			: [];
 	} catch {
 		return [];
 	}
@@ -48,16 +50,27 @@ export function R2Console() {
 			setHistIdx(null);
 			try {
 				const out = await api.raw(trimmed);
-				const text = typeof out === "string" ? out : JSON.stringify(out, null, 1);
+				const text =
+					typeof out === "string"
+						? out
+						: JSON.stringify(out, null, 1);
 				setLines((prev) =>
-					[...prev, { cmd: trimmed, out: text || "(empty)" }].slice(-MAX_LINES),
+					[...prev, { cmd: trimmed, out: text || "(empty)" }].slice(
+						-MAX_LINES,
+					),
 				);
-				const next = [trimmed, ...history.filter((h) => h !== trimmed)].slice(0, 100);
+				const next = [
+					trimmed,
+					...history.filter((h) => h !== trimmed),
+				].slice(0, 100);
 				setHistory(next);
 				localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
 			} catch (e) {
 				setLines((prev) =>
-					[...prev, { cmd: trimmed, out: String(e), err: true }].slice(-MAX_LINES),
+					[
+						...prev,
+						{ cmd: trimmed, out: String(e), err: true },
+					].slice(-MAX_LINES),
 				);
 			} finally {
 				setRunning(false);
@@ -72,7 +85,10 @@ export function R2Console() {
 			void send(input);
 		} else if (e.key === "ArrowUp" && history.length > 0) {
 			e.preventDefault();
-			const next = histIdx === null ? 0 : Math.min(histIdx + 1, history.length - 1);
+			const next =
+				histIdx === null
+					? 0
+					: Math.min(histIdx + 1, history.length - 1);
 			setHistIdx(next);
 			setInput(history[next]);
 		} else if (e.key === "ArrowDown" && histIdx !== null) {
@@ -94,13 +110,16 @@ export function R2Console() {
 				{lines.length === 0 && (
 					<div className="text-muted-foreground px-3 py-3">
 						Raw radare2 passthrough. Examples: <code>aflj</code>,{" "}
-						<code>pdf @ sym.main</code>, <code>axtj @ 0x401000</code>,{" "}
-						<code>iz~password</code>. Output is JSON when the command ends in{" "}
-						<code>j</code>.
+						<code>pdf @ sym.main</code>,{" "}
+						<code>axtj @ 0x401000</code>, <code>iz~password</code>.
+						Output is JSON when the command ends in <code>j</code>.
 					</div>
 				)}
 				{lines.map((l, i) => (
-					<div key={i} className="px-3 py-0.5 whitespace-pre-wrap break-all">
+					<div
+						key={i}
+						className="px-3 py-0.5 break-all whitespace-pre-wrap"
+					>
 						<span className="text-primary">&gt; </span>
 						<span className="text-foreground">{l.cmd}</span>
 						<pre

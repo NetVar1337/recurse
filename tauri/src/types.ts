@@ -77,12 +77,7 @@ export interface DecompileResult {
 	[k: string]: unknown;
 }
 
-export type CenterTab =
-	| "disasm"
-	| "strings"
-	| "imports"
-	| "console"
-	| "shell";
+export type CenterTab = "disasm" | "strings" | "imports" | "console" | "shell";
 
 export interface ModelInfo {
 	id: string;

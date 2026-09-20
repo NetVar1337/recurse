@@ -26,7 +26,11 @@ export class PanelErrorBoundary extends Component<Props, State> {
 	}
 
 	componentDidCatch(error: Error, info: ErrorInfo) {
-		console.error(`[${this.props.label}] crashed:`, error, info.componentStack);
+		console.error(
+			`[${this.props.label}] crashed:`,
+			error,
+			info.componentStack,
+		);
 	}
 
 	render() {

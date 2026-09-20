@@ -1,7 +1,5 @@
 import { useState } from "react";
-import {
-	Trash2,
-} from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -36,7 +34,9 @@ export function SessionMenu() {
 					className="max-w-[170px] truncate"
 					title="Select session"
 				>
-					<span className="truncate">{current?.name ?? "Session"}</span>
+					<span className="truncate">
+						{current?.name ?? "Session"}
+					</span>
 				</Button>
 			</DropdownMenuTrigger>
 
