@@ -140,10 +140,16 @@ pub fn touch(name: &str) -> Result<(), String> {
 pub fn remove(name: &str) -> Result<(), String> {
     let conn = db::connect()?;
     // Manual cascade: sessions + memories (both tables, incl. FTS).
-    conn.execute("DELETE FROM sessions WHERE project_name = ?1", params![name])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM memories WHERE project_name = ?1", params![name])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM sessions WHERE project_name = ?1",
+        params![name],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM memories WHERE project_name = ?1",
+        params![name],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute(
         "DELETE FROM memories_fts WHERE project_name = ?1",
         params![name],

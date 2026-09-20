@@ -299,13 +299,10 @@ pub async fn agent_chat(
             async move {
                 match tc.function.name.as_str() {
                     "memory_save" | "memory_load" | "memory_search" => {
-                        let args: serde_json::Value = serde_json::from_str(
-                            &tc.function.arguments,
-                        )
-                        .unwrap_or(serde_json::Value::Null);
-                        crate::db::memory_store().and_then(|s| {
-                            s.execute_tool(&mem_project, &tc.function.name, &args)
-                        })
+                        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        crate::db::memory_store()
+                            .and_then(|s| s.execute_tool(&mem_project, &tc.function.name, &args))
                     }
                     _ => librecurse::tools::execute(&tc).await,
                 }

@@ -5,7 +5,26 @@ Agentic reverse engineering environment — a Ghidra-class desktop app in the sp
 of an existing RE toolchain: **[radare2](https://rada.re/n/)** does all parsing, analysis,
 disassembly, xrefs, strings and imports; **r2ghidra** (optional) provides decompilation.
 
-![Recurse demo](public/recurse_demo.png)
+![Recurse demo](tauri/public/recurse_demo.png)
+
+## Repository layout
+
+Cargo workspace at the root; the desktop app is one package in it.
+
+```
+tauri/                   desktop app (Tauri + React)
+  src/                     React frontend
+  src-tauri/               Tauri Rust backend (r2 sessions, agent wiring)
+  package.json             app scripts (Vite, Vitest, Tauri CLI)
+crates/
+  librecurse/              agent framework: LLM loop, tool runtime, SQLite memory
+  recurse-eval/            headless eval harness (YAML-configured tiers)
+justfile                 single entry point for both halves
+```
+
+`librecurse` has no Tauri dependency and builds/tests standalone; `recurse-eval`
+drives it headlessly. All three are workspace members, so one `Cargo.lock` and one
+`target/` cover the whole repo.
 
 ## Features
 
@@ -14,10 +33,10 @@ disassembly, xrefs, strings and imports; **r2ghidra** (optional) provides decomp
 - Grounded agent: every address is a clickable object (function list, graph nodes,
   xrefs, decompiler annotations) — not pasted text that the model can hallucinate
 - Live analysis session on any binary — including extension-less files
-- Persistent project memory (`memory/*.md`): renames, findings and notes survive
-  `/clear` and reopen, and seed the next session
-- Headless core (`librecurse`): same agent loop runs in the UI and in a CLI for
-  deterministic evals
+- Persistent project memory in SQLite with FTS5/BM25 retrieval — renames, findings
+  and notes survive `/clear` and reopen, and seed the next session
+- Headless core (`librecurse`) with per-turn debug tracing; the same agent loop runs
+  in the UI and in the eval harness
 - LLM agent backed by an OpenAI-compatible endpoint (OpenRouter by default) with a
   model picker; drives the session directly (disasm, xrefs, strings, imports, decompile)
 - Dark-first UI built with Tailwind CSS v4 + shadcn/ui
@@ -110,11 +129,14 @@ Without it, the Decompile tab surfaces a graceful error; everything else works.
 
 ## Build
 
+App dependencies live in `tauri/`; Rust comes from the workspace root. `just` wraps
+both (see `just --list`), or drive them directly.
+
 ### Development
 
 ```bash
-npm install
-npm run tauri dev
+just dev
+# equivalent: cd tauri && npm install && npm run tauri dev
 ```
 
 This starts the Vite dev server and launches the Tauri window. First compile takes a
@@ -123,37 +145,54 @@ while (Rust build); subsequent ones are fast.
 ### Production binary
 
 ```bash
-npm install
-npm run tauri build
+just build
+# equivalent: cd tauri && npm run tauri build
 ```
 
-The bundle lands in `src-tauri/target/release/bundle/`:
+The bundle lands in `target/release/bundle/` (workspace target):
 
 - `.deb` / `.rpm` / `.AppImage` for Linux
-- standalone binary at `src-tauri/target/release/recurse`
+- standalone binary at `target/release/recurse`
 
 ### Just the frontend (no desktop shell)
 
 ```bash
-npm install
-npm run build   # tsc typecheck + vite build → dist/
-npm run preview # serve dist/ for a quick look
+just preview
+# equivalent: cd tauri && npm run build && npm run preview
 ```
 
 ## Quality checks
 
 ```bash
-npm run lint          # ESLint (flat config)
-npm run format        # Prettier (tabs, 4-wide) + cargo fmt
-npm run format:check  # verify formatting without writing
-npm run build         # TypeScript + Vite build
-cargo check           # Rust compile check (run in src-tauri/)
+just lint        # cargo clippy --workspace + eslint
+just fmt         # cargo fmt --all + prettier
+just fmt-check   # verify without writing
+just test        # cargo test --workspace + vitest
 ```
+
+Equivalent direct commands: `cargo clippy --workspace --all-targets`,
+`cargo test --workspace` at the root; `npm run lint` / `npm run format` /
+`npm run build` inside `tauri/`.
+
+## Evals
+
+The agent is evaluated headlessly against crackme tiers (see
+[`crates/recurse-eval/README.md`](crates/recurse-eval/README.md)). Tiers are YAML:
+selection filters over the dataset, or a frozen hexid list, plus run knobs.
+
+```bash
+just eval-fetch   # download the tier's binaries
+just eval-test    # fast self-tests (no API key needed)
+just eval-run     # run the tier (needs a key + r2)
+```
+
+The same recipes are npm scripts inside `tauri/` (`npm run eval:run`, …). Per-turn
+traces land in `target/eval-traces/<tier>/<hexid>.json`.
 
 ## Agent LLM
 
 The agent chat panel runs on an OpenAI-compatible endpoint. Configure the API key and
-model from the in-app model picker (persisted to `~/.recurse/config.json`), or via env:
+model from the in-app model picker (persisted in `~/.recurse/recurse.db`), or via env:
 
 ```bash
 export RECURSE_LLM_API_KEY=sk-or-...   # or OPENROUTER_API_KEY

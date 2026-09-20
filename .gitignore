@@ -25,4 +25,3 @@ dist-ssr
 .gitnexus
 
 target
-crates/librecurse/Cargo.lock

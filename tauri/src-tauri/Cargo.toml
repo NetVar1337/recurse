@@ -22,7 +22,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Independent agent framework (LLM loop, tool runtime). No Tauri
 # dependency, no config/storage access — builds and tests standalone.
-librecurse = { path = "../crates/librecurse" }
+librecurse = { path = "../../crates/librecurse" }
 # sync primitives only (Mutex); the async runtime comes from Tauri.
 tokio = { version = "1", features = ["sync"] }
 tauri = { version = "2", features = [] }

@@ -1,0 +1,55 @@
+# Recurse monorepo task runner (`just --list` to see all).
+#
+# Layout: `tauri/` = desktop app (frontend + Rust backend),
+# `crates/` = shared Rust crates, root `Cargo.toml` = workspace.
+# `just` is the single entry point for both halves.
+
+default:
+    @just --list
+
+# --- app ---
+dev:
+    cd tauri && npm run tauri dev
+
+build:
+    cd tauri && npm run tauri build
+
+# Frontend only (no desktop shell)
+preview:
+    cd tauri && npm run build && npm run preview
+
+# --- checks ---
+lint:
+    cargo clippy --workspace --all-targets --all-features
+    cd tauri && npm run lint
+
+fmt:
+    cargo fmt --all
+    cd tauri && npm run format
+
+fmt-check:
+    cargo fmt --all --check
+    cd tauri && npm run format:check
+
+test:
+    cargo test --workspace
+    cd tauri && npm run test:fe
+
+# Rust only / frontend only
+test-rs:
+    cargo test --workspace
+
+test-fe:
+    cd tauri && npm run test:fe
+
+# --- evals (see crates/recurse-eval/README.md) ---
+eval-fetch:
+    cargo run -p recurse-eval --bin fetch-corpus
+
+eval-test:
+    cargo test -p recurse-eval --test unit
+
+eval-run:
+    cargo test -p recurse-eval --test tier -- --nocapture
+
+eval: eval-fetch eval-test

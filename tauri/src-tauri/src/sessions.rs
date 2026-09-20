@@ -66,13 +66,7 @@ pub fn create(project: Option<&str>, model: &str) -> Result<Session, String> {
     conn.execute(
         "INSERT INTO sessions (id, project_name, name, model, created_at, updated_at, chat_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5, '[]')",
-        params![
-            id,
-            effective_project(project),
-            DEFAULT_NAME,
-            model,
-            ts
-        ],
+        params![id, effective_project(project), DEFAULT_NAME, model, ts],
     )
     .map_err(|e| e.to_string())?;
     Ok(row_to_session(

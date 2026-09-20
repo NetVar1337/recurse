@@ -1,0 +1,19 @@
+# Recurse — Cargo workspace root.
+#
+# Members:
+#   tauri/src-tauri    desktop app (Tauri + radare2 backend)
+#   crates/librecurse  agent framework (LLM loop, tools, SQLite memory)
+#   crates/recurse-eval headless eval harness
+#
+# The frontend lives in `tauri/` (its own package.json); `just` at the repo
+# root is the single entry point for both halves.
+
+[workspace]
+resolver = "2"
+members = ["crates/librecurse", "crates/recurse-eval", "tauri/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Aayush Khanna"]

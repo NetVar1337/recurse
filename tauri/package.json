@@ -11,11 +11,16 @@
     "tauri": "tauri",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\" && cargo fmt --manifest-path src-tauri/Cargo.toml && cargo fmt --manifest-path crates/librecurse/Cargo.toml",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\" && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo fmt --manifest-path crates/librecurse/Cargo.toml --check",
-    "cov:rust": "cargo llvm-cov --manifest-path src-tauri/Cargo.toml --summary-only --workspace",
-    "cov:rust:html": "cargo llvm-cov --manifest-path src-tauri/Cargo.toml --html --output-dir target/coverage-html",
-    "test:fe": "vitest run"
+    "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\"",
+    "cov:rust": "cargo llvm-cov -p recurse -p librecurse --summary-only",
+    "cov:rust:html": "cargo llvm-cov -p recurse -p librecurse --html --output-dir ../target/coverage-html",
+    "test:fe": "vitest run",
+    "test:rs": "cargo test -p librecurse --lib && cargo test -p recurse --lib",
+    "eval:fetch": "cargo run -p recurse-eval --bin fetch-corpus",
+    "eval:test": "cargo test -p recurse-eval --test unit",
+    "eval:run": "cargo test -p recurse-eval --test tier -- --nocapture",
+    "eval": "npm run eval:fetch && npm run eval:test"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
