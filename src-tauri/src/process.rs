@@ -1,8 +1,8 @@
 use std::process::Command;
 
 /// Configure a Command to run in its own process group / job so
-/// interrupt / teardown can signal the whole tree (r2 + debuggee +
-/// sandbox wrapper) without touching unrelated processes.
+/// interrupt / teardown can signal the whole tree (r2 and its children)
+/// without touching unrelated processes.
 pub fn configure_command(cmd: &mut Command) {
     #[cfg(unix)]
     {
@@ -45,7 +45,7 @@ pub fn interrupt_process(pid: u32) -> bool {
             .args(["/PID", &pid.to_string(), "/T"])
             .output();
         // Fallback: try direct kill via `taskkill /F` if graceful failed.
-        // Return true optimistically — caller will poll `debug_busy`.
+        // Return true optimistically — the caller verifies via session state.
         true
     }
     #[cfg(not(any(unix, windows)))]

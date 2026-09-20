@@ -22,7 +22,7 @@ fn tool(name: &str, description: &str, params: Value) -> Value {
 }
 
 /// Minimal agent schema for now: bash + read + write + edit.
-/// Native r2/debug/memory/todo/skill/question remain UI-only to avoid the
+/// Native r2/memory/todo/skill/question remain UI-only to avoid the
 /// decompile/search loop; the agent drives all analysis through bash.
 pub fn schema() -> Vec<Value> {
     vec![
@@ -581,7 +581,6 @@ mod tests {
                 let err = execute(&tc).unwrap_err();
                 assert!(
                     err.contains("no binary loaded")
-                        || err.contains("debugger not started")
                         || err.contains("unknown tool")
                         || err.contains("missing string")
                         || err.contains("File not found"),

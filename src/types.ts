@@ -81,7 +81,6 @@ export type CenterTab =
 	| "disasm"
 	| "strings"
 	| "imports"
-	| "debug"
 	| "console"
 	| "shell";
 
@@ -147,7 +146,7 @@ export interface AgentEvent {
 
 export interface ContextItem {
 	id: string;
-	source: "disasm" | "decompile" | "string" | "function" | "debug";
+	source: "disasm" | "decompile" | "string" | "function";
 	label: string;
 	text: string;
 }
@@ -156,24 +155,6 @@ export interface PendingSelection {
 	label: string;
 	text: string;
 	source: ContextItem["source"];
-}
-
-export interface Registers {
-	[key: string]: number;
-}
-
-export interface DebugInsn {
-	addr: number;
-	text?: string;
-	disasm?: string;
-	bytes?: string | null;
-	[k: string]: unknown;
-}
-
-export interface DebugBreakpoint {
-	addr: number;
-	enabled?: boolean;
-	[k: string]: unknown;
 }
 
 export interface GraphOp {
@@ -207,10 +188,4 @@ export interface Session {
 	model: string;
 	created_at: number;
 	updated_at: number;
-}
-
-export interface SandboxStatus {
-	backend: string;
-	available: boolean;
-	detail: string;
 }

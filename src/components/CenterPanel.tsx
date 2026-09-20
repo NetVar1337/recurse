@@ -24,10 +24,6 @@ const ShellPanel = lazy(() =>
 	import("@/components/ShellPanel").then((m) => ({ default: m.ShellPanel })),
 );
 
-const DebugPanel = lazy(() =>
-	import("@/components/DebugPanel").then((m) => ({ default: m.DebugPanel })),
-);
-
 const R2Console = lazy(() =>
 	import("@/components/R2Console").then((m) => ({ default: m.R2Console })),
 );
@@ -174,7 +170,6 @@ export function CenterPanel() {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
 	const [shellMounted, setShellMounted] = useState(false);
-	const [debugMounted, setDebugMounted] = useState(false);
 	const [consoleMounted, setConsoleMounted] = useState(false);
 	const [viewMode, setViewMode] = useState<"linear" | "graph">("linear");
 	const [xrefs, setXrefs] = useState<Xref[]>([]);
@@ -211,9 +206,6 @@ export function CenterPanel() {
 	if (tab === "shell" && !shellMounted) {
 		setShellMounted(true);
 	}
-	if (tab === "debug" && !debugMounted) {
-		setDebugMounted(true);
-	}
 	if (tab === "console" && !consoleMounted) {
 		setConsoleMounted(true);
 	}
@@ -235,12 +227,7 @@ export function CenterPanel() {
 				setPending(null);
 				return;
 			}
-			const source =
-				tab === "disasm"
-					? "disasm"
-					: tab === "debug"
-						? "debug"
-						: "decompile";
+			const source = tab === "disasm" ? "disasm" : "decompile";
 			const label = selected
 				? `${fmtAddr(selected.addr)} · ${selected.name ?? "fn"}`
 				: "selection";
@@ -311,7 +298,6 @@ export function CenterPanel() {
 						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
 						<TabsTrigger value="strings">Strings</TabsTrigger>
 						<TabsTrigger value="imports">Imports</TabsTrigger>
-						<TabsTrigger value="debug">Debug</TabsTrigger>
 						<TabsTrigger value="console">r2</TabsTrigger>
 						<TabsTrigger value="shell">Shell</TabsTrigger>
 					</TabsList>
@@ -380,7 +366,7 @@ export function CenterPanel() {
 			<div
 				className={cn(
 					"min-h-0 min-w-0 flex-1 flex-col",
-					tab === "shell" || tab === "debug" ? "hidden" : "flex",
+					tab === "shell" ? "hidden" : "flex",
 				)}
 			>
 				{tab === "disasm" && viewMode === "graph" && selected ? (
@@ -643,27 +629,6 @@ export function CenterPanel() {
 					</>
 				)}
 			</div>
-
-			{debugMounted && (
-				<div
-					className={cn(
-						"min-h-0 min-w-0 flex-1",
-						tab !== "debug" && "hidden",
-					)}
-				>
-					<PanelErrorBoundary label="Debug">
-					<Suspense
-						fallback={
-							<div className="text-muted-foreground px-3 py-3 text-xs">
-								loading debugger…
-							</div>
-						}
-					>
-						<DebugPanel />
-					</Suspense>
-					</PanelErrorBoundary>
-				</div>
-			)}
 
 			{consoleMounted && (
 				<div

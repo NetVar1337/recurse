@@ -312,7 +312,7 @@ fn build_system_prompt(path: &str, info: &Value, memory: &str) -> String {
          Workflow (do not deviate): 1) bash immediately with `file`, `ls`, and targeted r2 (`r2 -AA -q -c 'izz; iz; afl~main; p8 32 @ 0x140005160; ps @ 0x140005000; px 32 @ 0x1400051a0'`). 2) bash Python with capstone/unicorn/numba (`uv run --with capstone --with unicorn --with numba` or `uv venv`) to decode probe physics and brute-force. 3) write/edit keygen to /tmp/keygen.py (read first, then write/edit). 4) bash verify the keygen.\n\
          Tools: bash for r2/python/uv; read/write/edit for files. If bash output is truncated, rerun a narrower r2 command.\n\
          Anti-loop: doom_loop fires after 3 identical tool:args. Batch independent calls in parallel. Verify via bash before finishing.",
-        if kind.contains("pe") || kind.contains("mach0") || arch.contains("x86") && kind.contains("pe") { "PE/Mach-O on Linux — static bash+r2, not debug_*" } else { kind }
+        if kind.contains("pe") || kind.contains("mach0") || arch.contains("x86") && kind.contains("pe") { "PE/Mach-O on Linux — static bash+r2 analysis" } else { kind }
     );
     if !memory.is_empty() {
         prompt.push_str("\n\nPreviously saved memory (from earlier sessions):\n");
@@ -615,8 +615,8 @@ impl Agent {
     /// produces a final answer. There is no hard iteration cap; a runaway run
     /// is stopped via the cooperative cancel flag (`request_cancel`).
     ///
-    /// `exec` runs a tool call (name + JSON arguments) against the live r2 /
-    /// debug / memory backends and returns its result text.
+    /// `exec` runs a tool call (name + JSON arguments) against the live tool
+    /// backends and returns its result text.
     #[allow(clippy::too_many_arguments)] // one cohesive run context
     pub fn run(
         &mut self,
@@ -920,13 +920,13 @@ mod tests {
     #[test]
     fn executes_tool_loop_then_final_answer() {
         let (res, events, content, _) = run_with(vec![
-            tool_body("debug_registers", "{}"),
+            tool_body("bash", "{}"),
             content_body("registers dumped."),
         ]);
         assert!(res.is_ok(), "run failed: {res:?}");
         assert!(events
             .iter()
-            .any(|e| matches!(e, AgentEvent::ToolCall { name, .. } if name == "debug_registers")));
+            .any(|e| matches!(e, AgentEvent::ToolCall { name, .. } if name == "bash")));
         assert!(events
             .iter()
             .any(|e| matches!(e, AgentEvent::ToolResult { result, .. } if result == "rip=0x1234")));
@@ -959,8 +959,8 @@ mod tests {
     #[test]
     fn cancel_between_tool_calls_stops_run() {
         let mock = MockSse::new(vec![
-            tool_body("debug_registers", "{}"),
-            tool_body("debug_registers", "{}"),
+            tool_body("bash", "{}"),
+            tool_body("bash", "{}"),
             content_body("never reached"),
         ]);
         let config = LlmConfig {

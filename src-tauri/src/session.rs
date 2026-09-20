@@ -21,9 +21,9 @@ type StartupResult = Result<(), String>;
 /// the null-terminated command protocol over the child's stdio.
 ///
 /// We deliberately do not use the `r2pipe` crate here: it hides the child
-/// handle, so there is no way to get r2's PID — which the debugger needs to
-/// interrupt a blocked command (`dc` waiting on the debuggee) or tear down a
-/// wedged session. Owning the [`Child`] gives us the PID and reaping duties.
+/// handle, so there is no way to get r2's PID — which we need to interrupt
+/// a blocked command or tear down a wedged session. Owning the [`Child`]
+/// gives us the PID and reaping duties.
 struct R2PipeProc {
     write: std::process::ChildStdin,
     read: BufReader<std::process::ChildStdout>,
@@ -37,9 +37,8 @@ impl R2PipeProc {
         crate::process::configure_command(&mut cmd);
         let mut child = cmd
             // Own process group: lets interrupt/teardown signal the entire
-            // tree (r2 + its debuggee + any sandbox wrapper like bwrap)
-            // without touching unrelated processes. The group id equals the
-            // child's pid on Unix.
+            // tree without touching unrelated processes. The group id
+            // equals the child's pid on Unix.
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -121,9 +120,8 @@ impl R2Session {
         Self::open_with_args(path, vec!["-e".into(), "bin.cache=true".into()])
     }
 
-    /// Spawn r2 with extra command-line arguments (e.g. `-d` to start the
-    /// native debugger). Reused by both the analysis session and the debug
-    /// session.
+    /// Spawn r2 with extra command-line arguments beyond the defaults used
+    /// by [`R2Session::open`].
     pub fn open_with_args(path: impl Into<PathBuf>, args: Vec<String>) -> Result<Self, String> {
         let path = path.into();
         let mut argv = vec!["r2".to_string(), "-q0".to_string()];
@@ -132,8 +130,7 @@ impl R2Session {
         Self::open_argv(argv)
     }
 
-    /// Spawn a full pre-built argv (e.g. an `r2` invocation wrapped by the
-    /// sandbox backend) speaking the same `-q0` pipe protocol.
+    /// Spawn a full pre-built argv speaking the same `-q0` pipe protocol.
     pub fn open_argv(argv: Vec<String>) -> Result<Self, String> {
         if argv.is_empty() {
             return Err("empty spawn argv".into());
@@ -212,10 +209,9 @@ impl R2Session {
         self.pid.load(Ordering::SeqCst)
     }
 
-    /// Send SIGINT to the r2 child's process group (r2 + debuggee + sandbox
-    /// wrapper). r2 handles this like Ctrl-C in an interactive session: a
-    /// blocked debugger command (`dc`) unwinds and the pipe produces its
-    /// response. Returns false when no live child is known.
+    /// Send SIGINT to the r2 child's process group. r2 handles this like
+    /// Ctrl-C in an interactive session: a blocked command unwinds and the
+    /// pipe produces its response. Returns false when no live child is known.
     pub fn interrupt(&self) -> bool {
         crate::process::interrupt_process(self.pid())
     }
