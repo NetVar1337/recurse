@@ -174,11 +174,16 @@ impl R2Session {
         Ok(sess)
     }
 
-    /// Full analysis pass: functions, refs, xrefs, strings. Long-running on big
-    /// binaries, but gives the agent a fully analyzed target. Run it explicitly
-    /// (or via `raw`) so the UI can show the workspace in the meantime.
+    /// Default analysis pass: `aa` (function discovery) + `aac` (call refs).
+    ///
+    /// Deliberately NOT `aaa`: on large Rust binaries (youki ~8 MiB) `aaa`
+    /// walks every jump table / vtable / type-match pass, takes minutes, and
+    /// spams `Limiting jump table at 0x... to 512 cases` warnings while the
+    /// UI sits on "analyzing…" with no progress. `aa; aac` returns in
+    /// seconds with a usable function list; run `aaa` (or `aaaa`) manually
+    /// from the r2 console when deep analysis is worth the wait.
     pub fn analyze(&self) -> Result<Value, String> {
-        self.run("aaa")
+        self.run("aa; aac")
     }
 
     /// Run an r2 command. JSON output is preferred; plain-text output is

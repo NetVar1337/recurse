@@ -234,7 +234,7 @@ pub fn analyze(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Core of [`analyze`]; see [`open_binary_impl`].
 pub fn analyze_impl(state: &AppState) -> Result<(), String> {
-    eprintln!("[recurse] analyze: starting `aaa`");
+    eprintln!("[recurse] analyze: starting `aa; aac` (run `aaa` in the r2 console for deep analysis)");
     let guard = session_of(state)?;
     with_sess(&guard)?.analyze()?;
     eprintln!("[recurse] analyze: done");

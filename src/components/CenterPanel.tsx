@@ -182,6 +182,19 @@ export function CenterPanel() {
 	const [xrefsOpen, setXrefsOpen] = useState(false);
 	const [xrefsLoading, setXrefsLoading] = useState(false);
 	const [xrefsError, setXrefsError] = useState<string | null>(null);
+	const [stringQuery, setStringQuery] = useState("");
+
+	// Large Rust binaries can carry 100k+ strings (youki: 113k). Rendering
+	// them all freezes the webview, so filter first and cap the row count.
+	const visibleStrings = useMemo(() => {
+		const q = stringQuery.trim().toLowerCase();
+		const CAP = 2000;
+		if (!q) return { rows: strings.slice(0, CAP), total: strings.length, capped: strings.length > CAP };
+		const matched = strings.filter((s) =>
+			(s.string ?? "").toLowerCase().includes(q),
+		);
+		return { rows: matched.slice(0, CAP), total: matched.length, capped: matched.length > CAP };
+	}, [strings, stringQuery]);
 
 	// Address → function lookup so call instructions can resolve to their target.
 	const funcByAddr = useMemo(() => {
@@ -537,42 +550,44 @@ export function CenterPanel() {
 							)}
 
 							{tab === "strings" && (
-								<table className="w-full font-mono text-xs">
-									<thead className="bg-card sticky top-0">
-										<tr className="text-muted-foreground text-left text-[11px]">
-											<th className="px-3 py-1.5">
-												Offset
-											</th>
-											<th className="px-3 py-1.5">
-												Type
-											</th>
-											<th className="px-3 py-1.5">
-												String
-											</th>
-										</tr>
-									</thead>
-									<tbody>
-										{strings.map((s) => (
-											<tr
-												key={`${s.vaddr}-${s.string}`}
-												className="hover:bg-accent"
-											>
-												<td className="text-primary px-3 py-px">
-													{fmtAddr(s.vaddr)}
-												</td>
-												<td className="px-3 py-px">
-													{s.type ?? ""}
-												</td>
-												<td
-													className="max-w-0 truncate px-3 py-px"
-													title={s.string}
-												>
-													{s.string}
-												</td>
+								<div className="flex min-h-0 flex-1 flex-col">
+									<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5">
+										<input
+											value={stringQuery}
+											onChange={(e) => setStringQuery(e.target.value)}
+											placeholder={`Filter ${strings.length.toLocaleString()} strings…`}
+											className="bg-background border-border w-64 rounded-md border px-2 py-1 font-mono text-xs outline-none"
+										/>
+										<span className="text-muted-foreground text-[11px]">
+											showing {visibleStrings.rows.length.toLocaleString()} of{" "}
+											{visibleStrings.total.toLocaleString()}
+											{visibleStrings.capped ? " (capped at 2,000 — refine the filter)" : ""}
+										</span>
+									</div>
+									<table className="w-full font-mono text-xs">
+										<thead className="bg-card sticky top-0">
+											<tr className="text-muted-foreground text-left text-[11px]">
+												<th className="px-3 py-1.5">Offset</th>
+												<th className="px-3 py-1.5">Type</th>
+												<th className="px-3 py-1.5">String</th>
 											</tr>
-										))}
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											{visibleStrings.rows.map((s, i) => (
+												<tr
+													key={`${s.vaddr}-${i}-${s.string?.slice(0, 16)}`}
+													className="hover:bg-accent"
+												>
+													<td className="text-primary px-3 py-px">{fmtAddr(s.vaddr)}</td>
+													<td className="px-3 py-px">{s.type ?? ""}</td>
+													<td className="max-w-0 truncate px-3 py-px" title={s.string}>
+													{s.string}
+													</td>
+												</tr>
+											))}
+										</tbody>
+									</table>
+								</div>
 							)}
 
 							{tab === "imports" && (

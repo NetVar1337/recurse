@@ -9,15 +9,57 @@ pub fn info(s: &R2Session) -> Value {
     s.info.clone()
 }
 
-/// Full binary summary after analysis (used when a file is opened).
+/// Full binary summary (used when a file is opened).
+///
+/// Lightweight by design: uses `aflc` / `izzc` count commands instead of
+/// pulling the full `aflj` / `izzj` arrays. On a large Rust binary (e.g.
+/// youki, 7.8 MiB, 113k strings) the full dumps cost tens of megabytes of
+/// JSON just to display two numbers — and `open` runs pre-analysis, so the
+/// function count is 0 anyway until `analyze` runs.
+/// Full arrays are fetched explicitly by `functions` / `strings` after
+/// analysis completes.
+///
+/// Count commands return plain text (not JSON), so `run` wraps them as
+/// `Value::String`; parse generously and fall back to 0.
+fn parse_count(v: Result<Value, String>) -> usize {
+    match v {
+        Ok(Value::Number(n)) => n.as_u64().unwrap_or(0) as usize,
+        Ok(Value::String(s)) => s.trim().parse::<usize>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+pub fn function_count(s: &R2Session) -> usize {
+    // `aflc` prints the function count; fall back to `aflj` length if the
+    // count command is unavailable on an older r2.
+    let n = parse_count(s.run("aflc"));
+    if n > 0 {
+        return n;
+    }
+    functions(s)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0)
+}
+
+pub fn string_count(s: &R2Session) -> usize {
+    // `izzc` prints the string count without dumping 100k+ entries.
+    let n = parse_count(s.run("izzc"));
+    if n > 0 {
+        return n;
+    }
+    strings(s)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0)
+}
+
 pub fn summary(s: &R2Session) -> Value {
-    let functions = functions(s).unwrap_or_else(|_| json!([]));
-    let strings = strings(s).unwrap_or_else(|_| json!([]));
     json!({
         "path": s.path.to_string_lossy(),
         "info": s.info,
-        "function_count": functions.as_array().map(|a| a.len()).unwrap_or(0),
-        "string_count": strings.as_array().map(|a| a.len()).unwrap_or(0),
+        "function_count": function_count(s),
+        "string_count": string_count(s),
     })
 }
 
@@ -107,7 +149,8 @@ mod tests {
         // decompile needs r2ghidra; accept either outcome, never a hang.
         let _ = decompile(&s, 0x401000);
         assert!(raw(&s, "f").is_ok());
-        // function_disasm/graph need an analyzed function; run aaa first.
+        // function_disasm/graph need an analyzed function; run aa first.
+        s.analyze().ok();
         s.analyze().ok();
         let _ = function_disasm(&s, 0x401000);
         let _ = function_graph(&s, 0x401000);

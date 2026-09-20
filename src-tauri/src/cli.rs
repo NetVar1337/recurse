@@ -796,7 +796,7 @@ fn run_one_turn(
         "[recurse-cli] binary: {}",
         serde_json::to_string(&info).unwrap_or_default()
     );
-    eprintln!("[recurse-cli] analyzing (aaa) ...");
+    eprintln!("[recurse-cli] analyzing (aa; aac) ...");
     let _ = r2.analyze();
 
     let session = Arc::new(Mutex::new(Some(r2)));
