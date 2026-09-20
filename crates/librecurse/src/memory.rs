@@ -98,6 +98,14 @@ impl MemoryStore {
         Self { db_path }
     }
 
+    /// Open-or-create the store, running the memory schema (idempotent).
+    /// Prefer this when the host does not run [`SCHEMA_SQL`] itself.
+    pub fn open(db_path: PathBuf) -> Result<Self, String> {
+        let conn = open_conn(&db_path)?;
+        ensure_schema(&conn)?;
+        Ok(Self { db_path })
+    }
+
     fn conn(&self) -> Result<Connection, String> {
         open_conn(&self.db_path)
     }
@@ -198,7 +206,11 @@ impl MemoryStore {
             .map_err(|e| format!("memory search failed: {e}"))?;
         let rows = stmt
             .query_map(params![match_query, project, limit], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
             })
             .map_err(|e| format!("memory search failed: {e}"))?;
         let mut out = Vec::new();
@@ -218,7 +230,11 @@ impl MemoryStore {
         if keys.is_empty() {
             return Ok(String::new());
         }
-        Ok(format!("saved findings ({}): {}", keys.len(), keys.join(", ")))
+        Ok(format!(
+            "saved findings ({}): {}",
+            keys.len(),
+            keys.join(", ")
+        ))
     }
 
     /// Small-project fast path: concatenated bodies capped at `max_chars`.
@@ -394,8 +410,10 @@ mod tests {
     #[test]
     fn bm25_search_ranks_relevant_first() {
         let (s, _g) = test_store();
-        s.save("p", "a", "rc4 decryption routine for c2 traffic").unwrap();
-        s.save("p", "b", "totally unrelated string table note").unwrap();
+        s.save("p", "a", "rc4 decryption routine for c2 traffic")
+            .unwrap();
+        s.save("p", "b", "totally unrelated string table note")
+            .unwrap();
         let hits = s.search("p", "rc4 c2 decrypt", 5).unwrap();
         assert!(!hits.is_empty());
         assert_eq!(hits[0].0, "a");

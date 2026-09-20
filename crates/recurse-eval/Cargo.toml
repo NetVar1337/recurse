@@ -1,0 +1,23 @@
+[package]
+name = "recurse-eval"
+version = "0.1.0"
+description = "Headless eval harness for the Recurse agent (Rust only, no Python, no shell)"
+authors = ["Aayush Khanna"]
+license = "MIT"
+edition = "2021"
+
+[dependencies]
+librecurse = { path = "../librecurse" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
+zip = "2"
+flate2 = "1"
+tar = "0.4"
+# Some corpus downloads nest 7z archives; pure-Rust decoder (no system 7z).
+sevenz-rust2 = "0.23"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "fs", "io-util"] }

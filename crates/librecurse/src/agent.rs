@@ -578,6 +578,38 @@ pub async fn generate_title(config: &LlmConfig, user: &str) -> String {
     }
 }
 
+/// One tool result as seen in the trace: id + name + full result text.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TraceToolResult {
+    pub id: String,
+    pub name: String,
+    pub result: String,
+}
+
+/// Exact record of a single model turn: the full input the model saw
+/// (post-compaction, reasoning stripped — byte-identical to the wire
+/// payload minus the tool schemas), plus everything it returned.
+/// Recorded only when the debug flag is on; zero cost otherwise.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TurnTrace {
+    pub run_id: String,
+    /// 1-based iteration index within the run.
+    pub turn: usize,
+    /// Exact `messages` array sent to the LLM for this turn.
+    pub request: Vec<ChatMessage>,
+    /// Number of tool schemas sent alongside the request.
+    pub tools_sent: usize,
+    /// Model text output for the turn (may be empty on tool-only turns).
+    pub content: String,
+    /// Model thinking trace (never sent back to the model).
+    pub reasoning: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub tool_results: Vec<TraceToolResult>,
+    /// Rough token counts (chars / 4 over request/response text).
+    pub est_input_tokens: u64,
+    pub est_output_tokens: u64,
+}
+
 /// The agent: holds conversation history. LLM config and tool execution are
 /// supplied per run so the caller controls session/project access.
 pub struct Agent {
@@ -586,6 +618,8 @@ pub struct Agent {
     /// layer flips it from the UI; `run` checks between iterations and tool
     /// calls so a stop lands within one step, never mid-LLM-stream.
     pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    debug: bool,
+    trace_log: Vec<TurnTrace>,
 }
 
 impl Default for Agent {
@@ -599,6 +633,8 @@ impl Agent {
         Self {
             messages: Vec::new(),
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            debug: false,
+            trace_log: Vec::new(),
         }
     }
 
@@ -620,6 +656,83 @@ impl Agent {
         self.messages.clear();
     }
 
+    /// Enable per-turn tracing. When on, every model turn records its exact
+    /// input messages, reasoning, tool calls and results (see [`TurnTrace`]).
+    /// Off by default; no cloning overhead when off. The trace survives
+    /// [`Agent::reset`] — use [`Agent::clear_trace`] to drop it.
+    pub fn set_debug(&mut self, debug: bool) {
+        self.debug = debug;
+    }
+
+    pub fn trace(&self) -> &[TurnTrace] {
+        &self.trace_log
+    }
+
+    pub fn clear_trace(&mut self) {
+        self.trace_log.clear();
+    }
+
+    /// Whole run as pretty JSON: per-turn traces plus the final conversation.
+    /// Useful for eval reports and post-mortems.
+    pub fn trace_json(&self) -> String {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "turns": self.trace_log,
+            "conversation": self.messages,
+        }))
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Write [`Agent::trace_json`] to a file (async fs, like the rest of
+    /// the library's storage-agnostic IO — the caller picks the path).
+    pub async fn save_trace(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = self.trace_json();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        tokio::fs::write(path, json)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)] // one cohesive trace record
+    fn record_turn(
+        &mut self,
+        run_id: &str,
+        turn: usize,
+        request: Option<Vec<ChatMessage>>,
+        tools_len: usize,
+        content: &str,
+        reasoning: &str,
+        tool_calls: &[ToolCall],
+        tool_results: Vec<TraceToolResult>,
+    ) {
+        let Some(request) = request else {
+            return;
+        };
+        let est_input_tokens: u64 = request
+            .iter()
+            .filter_map(|m| m.content.as_ref())
+            .map(|c| c.chars().count() as u64 / 4)
+            .sum();
+        let est_output_tokens = (content.chars().count() + reasoning.chars().count()) as u64 / 4;
+        self.trace_log.push(TurnTrace {
+            run_id: run_id.to_string(),
+            turn,
+            request,
+            tools_sent: tools_len,
+            content: content.to_string(),
+            reasoning: reasoning.to_string(),
+            tool_calls: tool_calls.to_vec(),
+            tool_results,
+            est_input_tokens,
+            est_output_tokens,
+        });
+    }
+
     /// Run one user turn to completion: stream the reply, execute any tool
     /// calls the model requests, feed results back, and loop until the model
     /// produces a final answer. There is no hard iteration cap; a runaway run
@@ -637,6 +750,29 @@ impl Agent {
         target: &PromptTarget,
         user: &str,
         tools: &[Value],
+        exec: &mut E,
+        emit: &mut (dyn FnMut(AgentEvent) + Send),
+    ) -> Result<(), String>
+    where
+        E: FnMut(&ToolCall) -> F + Send,
+        F: Future<Output = Result<String, String>> + Send,
+    {
+        self.run_limited(run_id, config, target, user, tools, usize::MAX, exec, emit)
+            .await
+    }
+
+    /// Same as [`Agent::run`], but stops with an error after `max_turns`
+    /// model calls. Eval harnesses use this to bound cost on stuck runs;
+    /// interactive hosts pass `usize::MAX` (via [`Agent::run`]).
+    #[allow(clippy::too_many_arguments)] // one cohesive run context
+    pub async fn run_limited<E, F>(
+        &mut self,
+        run_id: &str,
+        config: &LlmConfig,
+        target: &PromptTarget,
+        user: &str,
+        tools: &[Value],
+        max_turns: usize,
         exec: &mut E,
         emit: &mut (dyn FnMut(AgentEvent) + Send),
     ) -> Result<(), String>
@@ -670,12 +806,17 @@ impl Agent {
 
         let mut empty_final_retries = 0u8;
         let mut continuation_nudge: Option<ChatMessage> = None;
+        let mut turn: usize = 0;
         loop {
             if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
                 self.cancel
                     .store(false, std::sync::atomic::Ordering::SeqCst);
                 return Err("run cancelled".into());
             }
+            if turn >= max_turns {
+                return Err(format!("turn budget exhausted after {turn} turns"));
+            }
+            turn += 1;
             let mut full = vec![ChatMessage::system(&system)];
             full.extend(
                 self.messages
@@ -687,6 +828,8 @@ impl Agent {
                 full.push(nudge);
             }
 
+            let request_snapshot = self.debug.then(|| full.clone());
+            let tools_len = tools.len();
             let outcome = stream_http(run_id, config, &full, tools, emit).await?;
 
             if !outcome.tool_calls.is_empty() {
@@ -701,6 +844,7 @@ impl Agent {
                         .with_reasoning(Some(outcome.reasoning.clone())),
                 );
 
+                let mut tool_records: Vec<TraceToolResult> = Vec::new();
                 for tc in &outcome.tool_calls {
                     if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
                         self.cancel
@@ -736,8 +880,23 @@ impl Agent {
                         name: tc.function.name.clone(),
                         result: result.clone(),
                     });
+                    tool_records.push(TraceToolResult {
+                        id: tc.id.clone(),
+                        name: tc.function.name.clone(),
+                        result: result.clone(),
+                    });
                     self.messages.push(ChatMessage::tool(tc.id.clone(), result));
                 }
+                self.record_turn(
+                    run_id,
+                    turn,
+                    request_snapshot,
+                    tools_len,
+                    &outcome.content,
+                    &outcome.reasoning,
+                    &outcome.tool_calls,
+                    tool_records,
+                );
                 continue;
             }
 
@@ -750,6 +909,16 @@ impl Agent {
                 if empty_final_retries > 2 {
                     return Err("model returned an empty answer three times; the agent did not complete the task".into());
                 }
+                self.record_turn(
+                    run_id,
+                    turn,
+                    request_snapshot,
+                    tools_len,
+                    &outcome.content,
+                    &outcome.reasoning,
+                    &outcome.tool_calls,
+                    Vec::new(),
+                );
                 continuation_nudge = Some(ChatMessage::user(
                     "Continue the task. Do not finish with an empty answer. Use the next highest-value action now; for reverse engineering, run bash with targeted r2/Python and write or verify the solver.",
                 ));
@@ -757,6 +926,16 @@ impl Agent {
             }
 
             // Final answer.
+            self.record_turn(
+                run_id,
+                turn,
+                request_snapshot,
+                tools_len,
+                &outcome.content,
+                &outcome.reasoning,
+                &outcome.tool_calls,
+                Vec::new(),
+            );
             emit(AgentEvent::Done {
                 run_id: run_id.to_string(),
                 content: outcome.content.clone(),
