@@ -3,7 +3,7 @@ name = "recurse-eval"
 version = "0.1.0"
 description = "Headless eval harness for the Recurse agent (Rust only, no Python, no shell)"
 authors = ["Aayush Khanna"]
-license = "MIT"
+license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]

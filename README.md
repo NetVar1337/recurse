@@ -209,4 +209,4 @@ command (disassembly, xrefs, strings, imports, decompilation) through the sessio
 
 ## License
 
-[MIT](./LICENSE) — © 2026 Aayush Khanna
+[Apache-2.0](./LICENSE) — © 2026 Aayush Khanna
