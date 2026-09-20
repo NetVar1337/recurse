@@ -1,7 +1,6 @@
 pub mod commands;
 pub mod config;
 pub mod engine;
-pub mod memory;
 pub mod process;
 pub mod project;
 pub mod session;

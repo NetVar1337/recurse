@@ -1,10 +1,11 @@
-//! librecurse: independent agent framework — the LLM run loop ([agent])
-//! and its tool runtime ([tools]).
+//! librecurse: independent agent framework — the LLM run loop ([agent]),
+//! its tool runtime ([tools]), and the agent's file-backed memory ([memory]).
 //!
-//! The library is storage-agnostic: it never touches the filesystem for
-//! configuration or state. Hosts pass everything in through plain interfaces
-//! ([agent::LlmConfig], tool schemas, file-name arguments) and persist
-//! whatever they need on their own side.
+//! The library is storage-agnostic: it never resolves project paths or reads
+//! configuration storage itself. Hosts pass everything in through plain
+//! interfaces ([agent::LlmConfig], [agent::PromptTarget], tool schemas, file
+//! names and directories) and persist whatever they need on their own side.
 
 pub mod agent;
+pub mod memory;
 pub mod tools;

@@ -1,11 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
 use librecurse::agent::{self, AgentEvent, ModelInfo, ToolCall};
 use crate::config;
 use crate::engine;
-use crate::memory;
 use crate::project::{self, Project};
 use crate::session::R2Session;
 use crate::sessions::{self, Session};
@@ -265,7 +264,11 @@ pub async fn agent_chat(
 
     tauri::async_runtime::spawn_blocking(move || {
         let tools = librecurse::tools::schema();
-        let memory = memory::summary_for(project.as_deref(), &message);
+        // Memory is a plain directory to the library: project resolution
+        // (including the no-project default) stays on the host side.
+        let memory = project::project_dir(project.as_deref().unwrap_or("default"))
+            .map(|dir| librecurse::memory::summary(&dir.join("memory")))
+            .unwrap_or_default();
         // r2's `ij` shape stays on the host side: the library only ever
         // sees the normalized PromptTarget interface.
         let target = librecurse::agent::PromptTarget {
@@ -546,6 +549,85 @@ pub fn save_api_key(key: String, state: State<'_, AppState>) -> Result<(), Strin
     save_api_key_impl(&state, &key)
 }
 
+/// OpenRouter model catalog endpoint (public, unauthenticated).
+const OPENROUTER_MODELS_LIST: &str = "https://openrouter.ai/api/v1/models";
+
+#[derive(Deserialize)]
+struct OrResponse {
+    data: Vec<OrModel>,
+}
+
+#[derive(Deserialize)]
+struct OrModel {
+    id: String,
+    name: String,
+    #[serde(default)]
+    context_length: Option<u64>,
+    #[serde(default)]
+    pricing: Option<OrPricing>,
+    #[serde(default)]
+    architecture: Option<OrArchitecture>,
+}
+
+#[derive(Deserialize, Default)]
+struct OrArchitecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    output_modalities: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct OrPricing {
+    #[serde(default)]
+    prompt: String,
+}
+
+/// Text-only models: accept text on input (may also accept other modalities)
+/// but produce text-only output. This drops image/video/audio output models
+/// (VLMs, TTS, etc.).
+fn is_text_model(m: &OrModel) -> bool {
+    match m.architecture.as_ref() {
+        Some(a) => {
+            let input_has_text = a.input_modalities.iter().any(|x| x == "text");
+            let output_text_only =
+                a.output_modalities.len() == 1 && a.output_modalities[0] == "text";
+            input_has_text && output_text_only
+        }
+        None => true,
+    }
+}
+
+/// Fetch the full OpenRouter model catalog (public, unauthenticated).
+fn fetch_models() -> Result<Vec<ModelInfo>, String> {
+    let resp: OrResponse = ureq::get(OPENROUTER_MODELS_LIST)
+        .call()
+        .map_err(|e| format!("models request failed: {e}"))?
+        .into_json()
+        .map_err(|e| format!("models parse failed: {e}"))?;
+
+    let models = resp
+        .data
+        .into_iter()
+        .filter(is_text_model)
+        .map(|m| {
+            let prompt_price = m
+                .pricing
+                .as_ref()
+                .map(|p| p.prompt.clone())
+                .unwrap_or_default();
+            ModelInfo {
+                id: m.id,
+                name: m.name,
+                context_length: m.context_length.unwrap_or(0),
+                free: prompt_price == "0",
+                prompt_price,
+            }
+        })
+        .collect();
+    Ok(models)
+}
+
 #[tauri::command]
 pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<ModelInfo>, String> {
     {
@@ -559,7 +641,7 @@ pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<Mode
             }
         }
     }
-    let models = agent::fetch_models()?;
+    let models = fetch_models()?;
     let mut guard = state
         .models
         .lock()

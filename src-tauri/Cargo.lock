@@ -2808,6 +2808,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "ureq",
  "wait-timeout",
  "walkdir",
  "webkit2gtk",
