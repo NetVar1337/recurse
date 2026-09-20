@@ -1,9 +1,5 @@
 //! End-to-end smoke test for the pure-Rust native backend: parse, discover,
 //! disassemble, and reference a real binary (the test executable itself).
-//!
-//! Gated on the `native` feature so a build without it stays green.
-
-#![cfg(feature = "native")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use librecurse::engine::{Engine, Target, XrefDirection};

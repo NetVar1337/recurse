@@ -56,8 +56,7 @@ impl EvalOpts {
 
 /// Resolve the backend with the eval's precedence: `EVAL_BACKEND` > the tier
 /// YAML's `run.backend` (`yaml`) > `RECURSE_BACKEND` > the app default
-/// (`native` when compiled in, else `r2`). An unknown env value is ignored
-/// rather than fatal.
+/// (`native`). An unknown env value is ignored rather than fatal.
 ///
 /// ```
 /// use librecurse::engine::BackendKind;

@@ -12,27 +12,20 @@ edition = "2021"
 name = "librecurse"
 crate-type = ["rlib"]
 
-[features]
-# Backend implementations. `r2` shells out to the radare2 executable and has
-# no crate dependencies; `native` is the pure-Rust in-process backend. Both
-# are on by default, and the host selects one at runtime (RECURSE_BACKEND).
-default = ["native"]
-native = ["dep:object", "dep:capstone", "dep:rustc-demangle", "dep:cpp_demangle"]
-
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "process", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-# Native backend (feature `native`): ELF/PE/Mach-O parsing + multi-arch
-# disassembly. All permissively licensed; no copyleft, no radare2.
-object = { version = "0.36", optional = true }
+# Native backend: ELF/PE/Mach-O parsing + multi-arch disassembly. Compiled
+# unconditionally; it is the default backend. All permissively licensed.
+object = "0.36"
 # Multi-architecture disassembly. Capstone (BSD-3) covers x86, x86-64, ARM,
 # AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, and more behind one API.
-capstone = { version = "0.14", optional = true }
-rustc-demangle = { version = "0.1", optional = true }
-cpp_demangle = { version = "0.4", optional = true }
+capstone = "0.14"
+rustc-demangle = "0.1"
+cpp_demangle = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 # Safe signal wrappers for Engine::interrupt / force_kill (r2 backend only).

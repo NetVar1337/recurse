@@ -33,10 +33,9 @@ pub const TOOL_NAME: &str = "analyze";
 /// Which analysis implementation to instantiate.
 ///
 /// Selected at runtime from `RECURSE_BACKEND` (or the host's config store).
-/// The default is [`BackendKind::Native`] when the `native` feature is
-/// compiled in (it is in the default build), falling back to
-/// [`BackendKind::R2`] in a native-less build. The native backend never
-/// spawns a subprocess and carries no copyleft dependency.
+/// The default is [`BackendKind::Native`]: the in-process, permissive,
+/// multi-architecture backend. Opt into radare2 with `RECURSE_BACKEND=r2` or
+/// the stored config.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
@@ -47,24 +46,16 @@ pub enum BackendKind {
 }
 
 impl Default for BackendKind {
-    /// Native when compiled in (the default build), otherwise r2. A build
-    /// without the `native` feature must still resolve to a usable backend.
+    /// The native backend: in-process, permissive, no external tool.
     ///
     /// ```
     /// use librecurse::engine::BackendKind;
-    /// // `from_env` with the variable unset yields the compiled-in default.
+    /// assert_eq!(BackendKind::default(), BackendKind::Native);
     /// std::env::remove_var("RECURSE_BACKEND");
-    /// assert_eq!(BackendKind::from_env(), BackendKind::default());
+    /// assert_eq!(BackendKind::from_env(), BackendKind::Native);
     /// ```
     fn default() -> Self {
-        #[cfg(feature = "native")]
-        {
-            Self::Native
-        }
-        #[cfg(not(feature = "native"))]
-        {
-            Self::R2
-        }
+        Self::Native
     }
 }
 
@@ -87,9 +78,8 @@ impl BackendKind {
     }
 
     /// Resolve the backend from the `RECURSE_BACKEND` environment variable,
-    /// falling back to [`BackendKind::default`] (native in a default build).
-    /// Unknown values are ignored rather than fatal: a typo must never make
-    /// the app unusable.
+    /// falling back to [`BackendKind::default`] (native). Unknown values are
+    /// ignored rather than fatal: a typo must never make the app unusable.
     ///
     /// ```
     /// use librecurse::engine::BackendKind;
@@ -763,13 +753,8 @@ mod tests {
     }
 
     #[test]
-    fn default_backend_matches_compiled_features() {
-        // Native is the default in the default build; a native-less build
-        // must still resolve to a usable backend.
-        #[cfg(feature = "native")]
+    fn default_backend_is_native() {
         assert_eq!(BackendKind::default(), BackendKind::Native);
-        #[cfg(not(feature = "native"))]
-        assert_eq!(BackendKind::default(), BackendKind::R2);
     }
 
     #[test]

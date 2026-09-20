@@ -19,8 +19,8 @@ engine never touches the agent loop, the storefront, or the eval harness.
   field names match what the UI already rendered from radare2, so the frontend
   is backend-agnostic too.
 - `BackendKind` (`r2` | `native`), selected from `RECURSE_BACKEND` or the
-  stored config. The default is `native` when the backend is compiled in (it
-  is in the default build), otherwise `r2`.
+  stored config. The default is `native` (the in-process, permissive,
+  multi-architecture backend); `r2` is opt-in.
 - The backend-neutral agent tool (`analyze`) and its dispatcher,
   `execute_tool(&dyn Engine, args)`. Its `op` vocabulary is
   `analyze | functions | disasm | graph | decompile | xrefs | strings | imports
@@ -92,6 +92,7 @@ Because the engine is a trait:
   component present**. radare2 is an optional runtime dependency of one
   implementation, invoked as a separate program (mere aggregation), never
   linked.
-- The r2-specific code lives in one module (`r2.rs` command layer and
-  `r2_backend.rs` adapter) and can be compiled out or omitted from a
-  distribution without touching the rest of the tree.
+- The r2-specific code is isolated in one module (`r2.rs` command layer and
+  `r2_backend.rs` adapter), never links radare2, and only runs when the r2
+  backend is selected — so a distribution can omit r2 without touching the
+  rest of the tree.

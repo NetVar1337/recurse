@@ -14,10 +14,8 @@
 pub mod agent;
 pub mod engine;
 pub mod memory;
+pub mod native;
 pub mod r2;
 pub mod r2_backend;
 pub mod signals;
 pub mod tools;
-
-#[cfg(feature = "native")]
-pub mod native;
