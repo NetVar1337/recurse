@@ -54,7 +54,11 @@ select:
   # seed: 7
 
 run:
-  model: "" # empty = app default (RECURSE_LLM_MODEL / OpenRouter auto)
+  # OpenRouter's free-models router: $0 per token, so the harness can be
+  # exercised end to end at no cost. Override per run with EVAL_MODEL, or point
+  # this at a pinned paid model (e.g. deepseek/deepseek-v4.1-flash) when the
+  # score itself matters.
+  model: deepseek/deepseek-v4-flash
   max_turns: 40
   timeout_secs: 480
 

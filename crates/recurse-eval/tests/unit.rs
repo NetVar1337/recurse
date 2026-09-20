@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use librecurse::agent::{Agent, LlmConfig, ToolCall};
 use recurse_eval::config::EvalConfig;
 use recurse_eval::select::{select_tasks, DatasetRecord};
-use recurse_eval::{contains_token, grade_flag, prompt_target_for, Task};
+use recurse_eval::{
+    contains_token, cost_usd, grade_flag, pricing_for, prompt_target_for, rate_label, Task,
+};
 
 fn rec(
     hexid: &str,
@@ -209,7 +211,7 @@ async fn echo_path_records_no_model_turns() {
         .await
         .expect("echo run");
     assert_eq!(agent.messages().len(), 2);
-    assert!(agent.trace().is_empty());
+    assert!(agent.trace().turns.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -235,14 +237,50 @@ fn sse_tool_call(id: &str, name: &str, args_json: &str) -> String {
 
 fn sse_text(text: &str) -> String {
     let payload = serde_json::json!({
+        "model": "some-vendor/served-model-9b",
         "choices": [{"delta": {"content": text}}],
     });
     format!("data: {payload}\n\ndata: [DONE]\n\n")
 }
 
-/// Serve `bodies` as one SSE response per incoming POST. Returns the endpoint
-/// URL; the server task ends after the last body (further accepts ignored).
+/// Serve `bodies` as one SSE response per incoming POST.
 async fn mock_llm(bodies: Vec<String>) -> (String, tokio::task::JoinHandle<()>) {
+    let raws = bodies
+        .into_iter()
+        .map(|b| {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                b.len(),
+                b
+            )
+        })
+        .collect();
+    mock_llm_raw(raws).await
+}
+
+/// A raw HTTP 200 carrying an SSE body (what `mock_llm_raw` expects).
+fn ok_sse(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+/// A 429 as OpenRouter sends it: JSON body plus the reset hint the driver
+/// is expected to honour.
+fn rate_limited_response() -> String {
+    let body = r#"{"error":{"message":"Rate limit exceeded: free-models-per-min.","code":429}}"#;
+    format!(
+        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 0\r\nX-RateLimit-Reset: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+/// Serve pre-built raw HTTP responses, one per incoming POST. Returns the
+/// endpoint URL; the server task ends after the last response.
+async fn mock_llm_raw(responses: Vec<String>) -> (String, tokio::task::JoinHandle<()>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -252,7 +290,7 @@ async fn mock_llm(bodies: Vec<String>) -> (String, tokio::task::JoinHandle<()>) 
         listener.local_addr().expect("addr")
     );
     let handle = tokio::spawn(async move {
-        for body in bodies {
+        for resp in responses {
             let Ok((mut sock, _)) = listener.accept().await else {
                 return;
             };
@@ -284,11 +322,6 @@ async fn mock_llm(bodies: Vec<String>) -> (String, tokio::task::JoinHandle<()>) 
                     Ok(n) => buf.extend_from_slice(&tmp[..n]),
                 }
             }
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
             let _ = sock.write_all(resp.as_bytes()).await;
         }
     });
@@ -337,14 +370,23 @@ async fn mock_loop_records_exact_turns() {
         .expect("mock run");
 
     // Two model turns: tool call, then final answer.
-    let trace = agent.trace();
+    let trace = &agent.trace().turns;
     assert_eq!(trace.len(), 2);
+    // Routers report which model actually answered; the trace must keep it so
+    // an `openrouter/auto` or `openrouter/free` run is attributable.
+    assert_eq!(
+        trace[1].model.as_deref(),
+        Some("some-vendor/served-model-9b")
+    );
     let first = &trace[0];
     assert_eq!(first.run_id, "mock-run");
     assert_eq!(first.turn, 1);
-    assert_eq!(first.request[0].role, "system");
+    // The request is stored as indices into the shared message pool; resolve
+    // it back to the exact messages that were sent.
+    let turn1 = agent.trace().request_messages(1);
+    assert_eq!(turn1[0].role, "system");
     assert!(
-        first.request.iter().any(|m| m
+        turn1.iter().any(|m| m
             .content
             .as_deref()
             .unwrap_or("")
@@ -375,5 +417,191 @@ async fn mock_loop_records_exact_turns() {
     assert!(value["conversation"]
         .as_array()
         .is_some_and(|a| !a.is_empty()));
+    // The system prompt is stored once, not repeated per turn, and messages
+    // live in the pool rather than being copied into every turn's request.
+    assert!(value["system_prompt"]
+        .as_str()
+        .is_some_and(|s| !s.is_empty()));
+    assert!(value["messages"].as_array().is_some_and(|a| !a.is_empty()));
+    assert!(
+        value["turns"][0]["request"][0].is_u64(),
+        "request holds pool indices"
+    );
     let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn trace_stores_each_message_once() {
+    // Turns are cumulative: turn 2's request contains turn 1's messages. Those
+    // must be pooled and referenced, not re-serialized (measured at ~8x
+    // duplication and O(turns^2) file size before this).
+    let (endpoint, _server) = mock_llm(vec![
+        sse_tool_call("c1", "bash", r#"{"command":"echo hi"}"#),
+        sse_text("done"),
+    ])
+    .await;
+    let config = LlmConfig::new(endpoint, Some("test".into()), "mock".into());
+    let target = librecurse::agent::PromptTarget {
+        path: "/tmp/x".into(),
+        arch: "x86".into(),
+        bits: 64,
+        kind: "elf".into(),
+        memory: String::new(),
+    };
+    let tools = librecurse::tools::schema();
+    let mut agent = Agent::new();
+    agent.set_debug(true);
+    let mut exec = |tc: &ToolCall| {
+        let tc = tc.clone();
+        async move { librecurse::tools::execute(&tc).await }
+    };
+    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    agent
+        .run_limited(
+            "dedup", &config, &target, "go", &tools, 4, &mut exec, &mut emit,
+        )
+        .await
+        .expect("run");
+
+    let t = agent.trace();
+    assert_eq!(t.turns.len(), 2);
+    assert!(
+        t.turns[1].request.len() > t.turns[0].request.len(),
+        "later requests are longer"
+    );
+    // Turn 2's request references (does not re-store) turn 1's messages.
+    assert!(
+        t.turns[0]
+            .request
+            .iter()
+            .all(|i| t.turns[1].request.contains(i)),
+        "shared prefix is referenced by index"
+    );
+    assert!(
+        t.messages.len() <= t.turns[1].request.len(),
+        "pool is no larger than the widest request"
+    );
+    // Resolving a turn reproduces exactly what was sent.
+    let resolved = t.request_messages(2);
+    assert_eq!(
+        resolved.len(),
+        t.turns[1].request.len() + 1,
+        "system + request"
+    );
+    assert_eq!(resolved[0].role, "system");
+    assert_eq!(
+        resolved[0].content.as_deref(),
+        Some(t.system_prompt.as_str())
+    );
+}
+
+#[test]
+fn free_models_are_priced_zero() {
+    assert_eq!(pricing_for("openrouter/free"), (0.0, 0.0));
+    assert_eq!(
+        pricing_for("openrouter/auto"),
+        (0.15, 0.60),
+        "paid router -> fallback rate"
+    );
+    assert_eq!(pricing_for("meta-llama/llama-3.3-70b:free"), (0.0, 0.0));
+    assert_eq!(pricing_for("deepseek/deepseek-v4.1-flash"), (0.15, 0.60));
+    // A free run must never report a fabricated cost.
+    assert_eq!(cost_usd("openrouter/free", 5_000_000, 1_000_000), 0.0);
+    assert_eq!(rate_label("openrouter/free"), "free");
+    assert_eq!(rate_label("deepseek/deepseek-v4.1-flash"), "est.");
+    // Priced model: 1M in + 1M out at 0.15/0.60.
+    assert!((cost_usd("deepseek/deepseek-v4.1-flash", 1_000_000, 1_000_000) - 0.75).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn rate_limit_is_retried_then_succeeds() {
+    // Free endpoints throttle hard (openrouter/free allows 20 req/min). A 429
+    // must be waited out and retried rather than failing the whole turn.
+    let (endpoint, _server) = mock_llm_raw(vec![
+        rate_limited_response(),
+        ok_sse(&sse_text("recovered FLAG: ok")),
+    ])
+    .await;
+    let config = LlmConfig::new(endpoint, Some("test".into()), "mock".into());
+    let target = librecurse::agent::PromptTarget {
+        path: "/tmp/x".into(),
+        arch: "x86".into(),
+        bits: 64,
+        kind: "elf".into(),
+        memory: String::new(),
+    };
+    let tools = librecurse::tools::schema();
+    let mut agent = Agent::new();
+    let mut exec = |_: &ToolCall| async { Ok(String::new()) };
+    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    agent
+        .run_limited(
+            "rl", &config, &target, "go", &tools, 3, &mut exec, &mut emit,
+        )
+        .await
+        .expect("429 should be retried, not fatal");
+    assert_eq!(
+        agent
+            .messages()
+            .last()
+            .and_then(|m| m.content.clone())
+            .as_deref(),
+        Some("recovered FLAG: ok")
+    );
+}
+
+#[tokio::test]
+async fn mock_serves_multiple_sequential_requests() {
+    // Isolates the mock from the agent: two POSTs must both get a response.
+    let (endpoint, _server) =
+        mock_llm_raw(vec![rate_limited_response(), ok_sse(&sse_text("second"))]).await;
+    let client = reqwest::Client::new();
+    let r1 = client.post(&endpoint).body("{}").send().await;
+    println!("first: {:?}", r1.as_ref().map(|r| r.status()));
+    let r2 = client.post(&endpoint).body("{}").send().await;
+    println!("second: {:?}", r2.as_ref().map(|r| r.status()));
+    assert_eq!(r1.expect("first").status().as_u16(), 429);
+    assert_eq!(r2.expect("second").status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn empty_tool_result_is_replaced_not_sent_verbatim() {
+    // A successful command can print nothing (`grep` with no match). Sending
+    // `content: ""` breaks providers whose tool-result shape requires an
+    // `outputs` property (Cohere via OpenRouter 400s), so the loop substitutes
+    // a placeholder before the result enters the conversation.
+    let (endpoint, _server) = mock_llm(vec![
+        sse_tool_call("c1", "bash", r#"{"command":"true"}"#),
+        sse_text("done"),
+    ])
+    .await;
+    let config = LlmConfig::new(endpoint, Some("test".into()), "mock".into());
+    let target = librecurse::agent::PromptTarget {
+        path: "/tmp/x".into(),
+        arch: "x86".into(),
+        bits: 64,
+        kind: "elf".into(),
+        memory: String::new(),
+    };
+    let tools = librecurse::tools::schema();
+    let mut agent = Agent::new();
+    agent.set_debug(true);
+    // Tool runtime that returns nothing at all, like a silent success.
+    let mut exec = |_: &ToolCall| async { Ok(String::new()) };
+    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    agent
+        .run_limited(
+            "empty", &config, &target, "go", &tools, 3, &mut exec, &mut emit,
+        )
+        .await
+        .expect("run");
+
+    let tool_msg = agent
+        .messages()
+        .iter()
+        .find(|m| m.role == "tool")
+        .expect("tool message recorded");
+    assert_eq!(tool_msg.content.as_deref(), Some("(no output)"));
+    // The trace (what a human inspects) must agree with what was sent.
+    assert_eq!(agent.trace().turns[0].tool_results[0].result, "(no output)");
 }

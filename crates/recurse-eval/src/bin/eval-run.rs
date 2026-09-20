@@ -24,7 +24,9 @@ use recurse_eval::config::EvalConfig;
 use recurse_eval::corpus::{ensure_dataset_jsonl, ensure_task_binary};
 use recurse_eval::runner::{run_task, EvalOpts};
 use recurse_eval::select::{load_records, select_tasks};
-use recurse_eval::{crate_relative, default_trace_dir, env_path, env_string, load_dotenv, Task};
+use recurse_eval::{
+    crate_relative, default_trace_dir, env_path, env_string, load_dotenv, rate_label, Task,
+};
 
 /// Mirrors every line to stdout and to the run log.
 struct RunLog {
@@ -189,6 +191,9 @@ async fn main() {
                     o.cost_usd,
                     o.error.as_deref().unwrap_or("-")
                 ));
+                if !o.models.is_empty() {
+                    log.log(format!("       served: {}", o.models.join(", ")));
+                }
                 log.log(format!("       trace: {}", o.trace_path.display()));
                 log.log(format!("       answer: {}", first_line(&o.final_answer)));
                 if o.pass {
@@ -209,11 +214,12 @@ async fn main() {
 
     let elapsed = started.elapsed().as_secs();
     log.log(format!(
-        "\n=== {}: {passed}/{} passed in {}s ({:.0}s/task) ===\nin={total_in} out={total_out} cost=${total_cost:.2}",
+        "\n=== {}: {passed}/{} passed in {}s ({:.0}s/task) ===\nin={total_in} out={total_out} cost=${total_cost:.2} ({})",
         cfg.tier,
         tasks.len(),
         elapsed,
-        elapsed as f64 / tasks.len().max(1) as f64
+        elapsed as f64 / tasks.len().max(1) as f64,
+        rate_label(&opts.model)
     ));
     if failed.is_empty() {
         log.log("all tasks produced the expected flag");

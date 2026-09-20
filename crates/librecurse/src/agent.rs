@@ -162,6 +162,57 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
     format!("{trimmed}/chat/completions")
 }
 
+/// Total attempts for one request before giving up (initial try included).
+const MAX_SEND_ATTEMPTS: u32 = 4;
+/// Ceiling on a single wait, so a hostile/incorrect hint can't hang a run.
+const MAX_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(70);
+
+fn is_rate_limited(resp: &reqwest::Response) -> bool {
+    resp.status().as_u16() == 429
+}
+
+/// True when a failed send is worth retrying. These all mean no response was
+/// received, so nothing was streamed and re-sending cannot duplicate a turn
+/// (`is_request` covers connection-level failures such as a reused-but-closed
+/// pooled connection, which `is_connect` misses).
+fn is_transient_send(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout() || e.is_request()
+}
+
+/// Exponential backoff: 500ms, 1s, 2s, ...
+fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(500 * 2u64.saturating_pow(attempt.saturating_sub(1)))
+}
+
+/// How long to wait before retrying. Prefers what the server tells us —
+/// `Retry-After` (seconds, or an HTTP date we don't parse) and OpenRouter's
+/// `X-RateLimit-Reset` (unix milliseconds) — falling back to exponential
+/// backoff. Always capped by [`MAX_RETRY_WAIT`].
+fn retry_delay(resp: &reqwest::Response, attempt: u32) -> std::time::Duration {
+    let headers = resp.headers();
+    if let Some(secs) = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        return std::time::Duration::from_secs(secs).min(MAX_RETRY_WAIT);
+    }
+    if let Some(reset_ms) = headers
+        .get("x-ratelimit-reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // +250ms so we land just after the window rather than on the boundary.
+        let wait_ms = reset_ms.saturating_sub(now_ms).saturating_add(250);
+        return std::time::Duration::from_millis(wait_ms).min(MAX_RETRY_WAIT);
+    }
+    backoff(attempt).min(MAX_RETRY_WAIT)
+}
+
 /// A model entry returned by OpenRouter's `/models` endpoint.
 #[derive(Clone, Serialize)]
 pub struct ModelInfo {
@@ -247,6 +298,10 @@ struct StreamOutcome {
     content: String,
     reasoning: String,
     tool_calls: Vec<ToolCall>,
+    /// Model that actually served the request, as reported by the endpoint.
+    /// Meaningful with routers (`openrouter/auto`, `openrouter/free`) where
+    /// the configured id does not identify the model that answered.
+    model: Option<String>,
 }
 
 fn echo_reply(user: &str) -> String {
@@ -303,6 +358,7 @@ pub fn system_prompt(target: &PromptTarget) -> String {
 struct DeltaChunk {
     content: String,
     reasoning: Vec<String>,
+    model: Option<String>,
 }
 
 /// Parse one SSE `data:` payload, extracting content/reasoning and
@@ -311,6 +367,7 @@ fn parse_delta(data: &str, acc: &mut ToolCallAccumulator) -> DeltaChunk {
     let mut chunk = DeltaChunk {
         content: String::new(),
         reasoning: Vec::new(),
+        model: None,
     };
     let value: Value = match serde_json::from_str(data) {
         Ok(v) => v,
@@ -319,6 +376,11 @@ fn parse_delta(data: &str, acc: &mut ToolCallAccumulator) -> DeltaChunk {
     let Some(choices) = value["choices"].as_array() else {
         return chunk;
     };
+    if let Some(m) = value["model"].as_str() {
+        if !m.is_empty() {
+            chunk.model = Some(m.to_string());
+        }
+    }
     let Some(choice) = choices.first() else {
         return chunk;
     };
@@ -376,8 +438,6 @@ async fn stream_http(
     }
 
     let key = config.api_key.as_deref().unwrap_or("");
-    // Transient connect/timeout errors get exactly one retry; HTTP-status
-    // errors do not (a 401 will not fix itself), and we never retry mid-stream.
     let send = || {
         http_client()
             .post(&config.endpoint)
@@ -386,15 +446,37 @@ async fn stream_http(
             .json(&body)
             .send()
     };
-    let mut resp = match send().await {
-        Ok(r) => r,
-        Err(e) if e.is_connect() || e.is_timeout() => {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            send()
-                .await
-                .map_err(|e| format!("llm request failed: {e}"))?
+    // Transient failures are worth waiting out and are retried before any
+    // bytes are streamed: connect/timeout errors with a short backoff, and
+    // rate limiting / 5xx with the wait the server asks for. A 4xx other than
+    // 429 will not fix itself, so it fails immediately. Once streaming has
+    // started we never retry — the transcript would get a duplicate turn.
+    let mut resp = {
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let last = attempt >= MAX_SEND_ATTEMPTS;
+            match send().await {
+                Ok(r) if r.status().is_success() => break r,
+                Ok(r) if (is_rate_limited(&r) || r.status().is_server_error()) && !last => {
+                    let wait = retry_delay(&r, attempt);
+                    tokio::time::sleep(wait).await;
+                }
+                Ok(r) => {
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_default();
+                    let snippet: String = body.chars().take(300).collect();
+                    return Err(format!(
+                        "llm request failed with status {code}: {snippet}",
+                        code = status.as_u16()
+                    ));
+                }
+                Err(e) if is_transient_send(&e) && !last => {
+                    tokio::time::sleep(backoff(attempt)).await;
+                }
+                Err(e) => return Err(format!("llm request failed: {e}")),
+            }
         }
-        Err(e) => return Err(format!("llm request failed: {e}")),
     };
     let status = resp.status();
     if !status.is_success() {
@@ -413,6 +495,7 @@ async fn stream_http(
     let mut acc = ToolCallAccumulator::default();
     let mut content = String::new();
     let mut reasoning = String::new();
+    let mut served_model: Option<String> = None;
 
     loop {
         match resp.chunk().await {
@@ -424,7 +507,15 @@ async fn stream_http(
         let mut done = false;
         while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
             let raw: Vec<u8> = pending.drain(..=pos).collect();
-            if handle_stream_line(&raw, run_id, &mut acc, &mut content, &mut reasoning, emit) {
+            if handle_stream_line(
+                &raw,
+                run_id,
+                &mut acc,
+                &mut content,
+                &mut reasoning,
+                &mut served_model,
+                emit,
+            ) {
                 done = true;
                 break;
             }
@@ -440,6 +531,7 @@ async fn stream_http(
             &mut acc,
             &mut content,
             &mut reasoning,
+            &mut served_model,
             emit,
         );
     }
@@ -448,6 +540,7 @@ async fn stream_http(
         content,
         reasoning,
         tool_calls: acc.calls,
+        model: served_model,
     })
 }
 
@@ -459,6 +552,7 @@ fn handle_stream_line(
     acc: &mut ToolCallAccumulator,
     content: &mut String,
     reasoning: &mut String,
+    served_model: &mut Option<String>,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> bool {
     let Ok(line) = std::str::from_utf8(raw) else {
@@ -476,6 +570,11 @@ fn handle_stream_line(
         return false;
     }
     let chunk = parse_delta(data, acc);
+    if let Some(m) = chunk.model {
+        if served_model.is_none() {
+            *served_model = Some(m);
+        }
+    }
     for r in chunk.reasoning {
         reasoning.push_str(&r);
         emit(AgentEvent::Reasoning {
@@ -604,17 +703,28 @@ pub struct TraceToolResult {
     pub result: String,
 }
 
-/// Exact record of a single model turn: the full input the model saw
+/// Exact record of a single model turn: the input the model saw
 /// (post-compaction, reasoning stripped — byte-identical to the wire
 /// payload minus the tool schemas), plus everything it returned.
 /// Recorded only when the debug flag is on; zero cost otherwise.
+///
+/// The request is stored as indices into [`Trace::messages`] rather than as a
+/// copy of the messages. Turns are cumulative, so copying would write the same
+/// message once per turn it was present in: measured at ~8x duplication and
+/// 1.5MB for a 23-turn task, growing with the square of the turn count.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TurnTrace {
     pub run_id: String,
     /// 1-based iteration index within the run.
     pub turn: usize,
-    /// Exact `messages` array sent to the LLM for this turn.
-    pub request: Vec<ChatMessage>,
+    /// Model that served this turn, as reported by the endpoint. Differs from
+    /// the configured id when a router is used (`openrouter/auto`,
+    /// `openrouter/free`), where it names the model that actually answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Indices into [`Trace::messages`] giving the exact `messages` array sent
+    /// for this turn, in order. Resolve with `trace.request_messages(turn)`.
+    pub request: Vec<usize>,
     /// Number of tool schemas sent alongside the request.
     pub tools_sent: usize,
     /// Model text output for the turn (may be empty on tool-only turns).
@@ -628,6 +738,39 @@ pub struct TurnTrace {
     pub est_output_tokens: u64,
 }
 
+/// Everything captured for a run: the system prompt, a deduplicated pool of
+/// every message that was ever sent, and one entry per model turn.
+///
+/// Messages are pooled because turns are cumulative — storing each turn's full
+/// request verbatim repeats a message once per subsequent turn. The pool keeps
+/// the trace exact (a turn resolves to the identical messages) while staying
+/// proportional to the number of distinct messages rather than turns squared.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Trace {
+    /// Built once per run and prepended to every turn's request, so it is
+    /// stored here instead of repeated in each turn.
+    pub system_prompt: String,
+    /// Every distinct message ever sent, in first-seen order.
+    pub messages: Vec<ChatMessage>,
+    pub turns: Vec<TurnTrace>,
+}
+
+impl Trace {
+    /// The exact messages sent for `turn` (1-based), system prompt first.
+    pub fn request_messages(&self, turn: usize) -> Vec<ChatMessage> {
+        let mut out = vec![ChatMessage::system(&self.system_prompt)];
+        if let Some(t) = self.turns.iter().find(|t| t.turn == turn) {
+            out.extend(
+                t.request
+                    .iter()
+                    .filter_map(|i| self.messages.get(*i))
+                    .cloned(),
+            );
+        }
+        out
+    }
+}
+
 /// The agent: holds conversation history. LLM config and tool execution are
 /// supplied per run so the caller controls session/project access.
 pub struct Agent {
@@ -637,7 +780,9 @@ pub struct Agent {
     /// calls so a stop lands within one step, never mid-LLM-stream.
     pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     debug: bool,
-    trace_log: Vec<TurnTrace>,
+    trace: Trace,
+    /// Message -> pool index, for deduplication while recording.
+    trace_index: std::collections::HashMap<String, usize>,
 }
 
 impl Default for Agent {
@@ -652,7 +797,8 @@ impl Agent {
             messages: Vec::new(),
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             debug: false,
-            trace_log: Vec::new(),
+            trace: Trace::default(),
+            trace_index: std::collections::HashMap::new(),
         }
     }
 
@@ -682,19 +828,22 @@ impl Agent {
         self.debug = debug;
     }
 
-    pub fn trace(&self) -> &[TurnTrace] {
-        &self.trace_log
+    pub fn trace(&self) -> &Trace {
+        &self.trace
     }
 
     pub fn clear_trace(&mut self) {
-        self.trace_log.clear();
+        self.trace = Trace::default();
+        self.trace_index.clear();
     }
 
-    /// Whole run as pretty JSON: per-turn traces plus the final conversation.
-    /// Useful for eval reports and post-mortems.
+    /// Whole run as pretty JSON: the message pool, per-turn traces, and the
+    /// final conversation. Useful for eval reports and post-mortems.
     pub fn trace_json(&self) -> String {
         serde_json::to_string_pretty(&serde_json::json!({
-            "turns": self.trace_log,
+            "system_prompt": self.trace.system_prompt,
+            "messages": self.trace.messages,
+            "turns": self.trace.turns,
             "conversation": self.messages,
         }))
         .unwrap_or_else(|_| "{}".to_string())
@@ -721,6 +870,7 @@ impl Agent {
         &mut self,
         run_id: &str,
         turn: usize,
+        model: Option<&str>,
         request: Option<Vec<ChatMessage>>,
         tools_len: usize,
         content: &str,
@@ -737,10 +887,27 @@ impl Agent {
             .map(|c| c.chars().count() as u64 / 4)
             .sum();
         let est_output_tokens = (content.chars().count() + reasoning.chars().count()) as u64 / 4;
-        self.trace_log.push(TurnTrace {
+        // `full` is the system prompt followed by the history; intern the rest
+        // into the pool so each distinct message is stored exactly once.
+        let mut indices = Vec::with_capacity(request.len());
+        for msg in request.into_iter().skip(1) {
+            let key = serde_json::to_string(&msg).unwrap_or_default();
+            let idx = match self.trace_index.get(&key) {
+                Some(i) => *i,
+                None => {
+                    let i = self.trace.messages.len();
+                    self.trace.messages.push(msg);
+                    self.trace_index.insert(key, i);
+                    i
+                }
+            };
+            indices.push(idx);
+        }
+        self.trace.turns.push(TurnTrace {
             run_id: run_id.to_string(),
             turn,
-            request,
+            model: model.map(|m| m.to_string()),
+            request: indices,
             tools_sent: tools_len,
             content: content.to_string(),
             reasoning: reasoning.to_string(),
@@ -799,6 +966,9 @@ impl Agent {
         F: Future<Output = Result<String, String>> + Send,
     {
         let system = system_prompt(target);
+        if self.debug {
+            self.trace.system_prompt = system.clone();
+        }
         self.messages.push(ChatMessage::user(user));
 
         let configured = config
@@ -892,6 +1062,18 @@ impl Agent {
                     let result = exec(tc)
                         .await
                         .unwrap_or_else(|e| format!("tool error: {e}"));
+                    // An empty tool result is legal in the OpenAI wire format but
+                    // not portable: Cohere (reached through OpenRouter) rejects
+                    // `tool_results` entries without an `outputs` property, which
+                    // is what an empty string translates to. A successful command
+                    // that prints nothing is common (`grep` with no match, `cd`,
+                    // `2>/dev/null`), so substitute a placeholder rather than
+                    // poisoning the rest of the conversation with a 400.
+                    let result = if result.trim().is_empty() {
+                        "(no output)".to_string()
+                    } else {
+                        result
+                    };
                     emit(AgentEvent::ToolResult {
                         run_id: run_id.to_string(),
                         id: tc.id.clone(),
@@ -908,6 +1090,7 @@ impl Agent {
                 self.record_turn(
                     run_id,
                     turn,
+                    outcome.model.as_deref(),
                     request_snapshot,
                     tools_len,
                     &outcome.content,
@@ -930,6 +1113,7 @@ impl Agent {
                 self.record_turn(
                     run_id,
                     turn,
+                    outcome.model.as_deref(),
                     request_snapshot,
                     tools_len,
                     &outcome.content,
@@ -947,6 +1131,7 @@ impl Agent {
             self.record_turn(
                 run_id,
                 turn,
+                outcome.model.as_deref(),
                 request_snapshot,
                 tools_len,
                 &outcome.content,

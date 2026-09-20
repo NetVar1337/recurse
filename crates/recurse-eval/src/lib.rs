@@ -204,13 +204,38 @@ pub fn prompt_target_for(task: &Task, binary_path: &str) -> librecurse::agent::P
     }
 }
 
-/// Pricing for cost reporting (deepseek-v4.1-flash on OpenRouter,
-/// verified 2026-09-20: $0.15/M in, $0.60/M out). Update when the eval
-/// model changes.
-pub const USD_PER_M_INPUT: f64 = 0.15;
-pub const USD_PER_M_OUTPUT: f64 = 0.60;
+/// Pricing for cost reporting, in USD per million tokens. OpenRouter's own
+/// router ids are priced $0 (they route to free models), so a run against
+/// them reports $0.00 rather than a fabricated estimate.
+///
+/// Unknown ids fall back to the DeepSeek rate so the number stays in the right
+/// ballpark, and [`pricing_for`] says which rate was used.
+pub fn pricing_for(model: &str) -> (f64, f64) {
+    let m = model.to_lowercase();
+    // Free routers and `:free` variants cost nothing.
+    if m == "openrouter/free" || m.ends_with(":free") || m.contains("/free") {
+        return (0.0, 0.0);
+    }
+    match m.as_str() {
+        "deepseek/deepseek-v4-flash" | "deepseek/deepseek-v4-flash-0731" => (0.04, 0.08),
+        "deepseek/deepseek-v4.1-flash" => (0.15, 0.60),
+        "deepseek/deepseek-v3.2" | "deepseek/deepseek-v3.2-exp" => (0.269, 0.40),
+        // Default: assume the mid-tier OSS rate this harness was priced at.
+        _ => (0.15, 0.60),
+    }
+}
 
-pub fn cost_usd(in_tokens: u64, out_tokens: u64) -> f64 {
-    in_tokens as f64 / 1_000_000.0 * USD_PER_M_INPUT
-        + out_tokens as f64 / 1_000_000.0 * USD_PER_M_OUTPUT
+/// Human-readable rate label for the run log.
+pub fn rate_label(model: &str) -> &'static str {
+    let (i, _) = pricing_for(model);
+    if i == 0.0 {
+        "free"
+    } else {
+        "est."
+    }
+}
+
+pub fn cost_usd(model: &str, in_tokens: u64, out_tokens: u64) -> f64 {
+    let (in_rate, out_rate) = pricing_for(model);
+    in_tokens as f64 / 1_000_000.0 * in_rate + out_tokens as f64 / 1_000_000.0 * out_rate
 }

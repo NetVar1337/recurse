@@ -60,6 +60,10 @@ pub struct TaskOutcome {
     pub est_in_tokens: u64,
     pub est_out_tokens: u64,
     pub cost_usd: f64,
+    /// Distinct models that actually served this task, in first-seen order.
+    /// Empty when the endpoint didn't report one. With a router this is the
+    /// only way to know what answered.
+    pub models: Vec<String>,
     pub error: Option<String>,
     pub trace_path: PathBuf,
     /// Kept workdir (temp task dir) for post-mortems.
@@ -151,9 +155,22 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         .and_then(|m| m.content.clone())
         .unwrap_or_default();
     let pass = error.is_none() && grade_flag(&final_answer, &task.flag);
-    let turns = agent.trace().len();
-    let est_in_tokens: u64 = agent.trace().iter().map(|t| t.est_input_tokens).sum();
-    let est_out_tokens: u64 = agent.trace().iter().map(|t| t.est_output_tokens).sum();
+    let turns = agent.trace().turns.len();
+    let mut models: Vec<String> = Vec::new();
+    for t in &agent.trace().turns {
+        if let Some(m) = t.model.as_ref() {
+            if !models.contains(m) {
+                models.push(m.clone());
+            }
+        }
+    }
+    let est_in_tokens: u64 = agent.trace().turns.iter().map(|t| t.est_input_tokens).sum();
+    let est_out_tokens: u64 = agent
+        .trace()
+        .turns
+        .iter()
+        .map(|t| t.est_output_tokens)
+        .sum();
 
     std::fs::create_dir_all(&opts.trace_dir).map_err(|e| format!("trace dir: {e}"))?;
     let trace_path = opts.trace_dir.join(format!("{}.json", task.hexid));
@@ -175,7 +192,8 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         turns,
         est_in_tokens,
         est_out_tokens,
-        cost_usd: cost_usd(est_in_tokens, est_out_tokens),
+        cost_usd: cost_usd(&opts.model, est_in_tokens, est_out_tokens),
+        models,
         error,
         trace_path,
         workdir,
