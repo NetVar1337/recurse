@@ -19,7 +19,8 @@ engine never touches the agent loop, the storefront, or the eval harness.
   field names match what the UI already rendered from radare2, so the frontend
   is backend-agnostic too.
 - `BackendKind` (`r2` | `native`), selected from `RECURSE_BACKEND` or the
-  stored config, with `r2` as the default for compatibility.
+  stored config. The default is `native` when the backend is compiled in (it
+  is in the default build), otherwise `r2`.
 - The backend-neutral agent tool (`analyze`) and its dispatcher,
   `execute_tool(&dyn Engine, args)`. Its `op` vocabulary is
   `analyze | functions | disasm | graph | decompile | xrefs | strings | imports
@@ -31,14 +32,14 @@ process) and box it as `Box<dyn Engine>` (see `tauri/src-tauri/src/engine.rs`).
 
 ## Backends
 
-### `r2` — radare2 (default)
+### `r2` — radare2 (opt-in, full features)
 
 `librecurse::r2_backend::R2Engine` drives the `r2` executable over its `-q0`
 NUL-framed pipe, one long-lived session per target. Full feature set including
 `r2ghidra` decompilation. radare2 is a separate program invoked at runtime and
 is **not** linked or bundled, so it stays under its own LGPL-3.0 terms.
 
-### `native` — pure Rust (no copyleft)
+### `native` — pure Rust (default, no copyleft)
 
 `librecurse::native::NativeEngine` parses and disassembles in-process. No child
 process, no external tool, and no copyleft dependency anywhere in the chain.

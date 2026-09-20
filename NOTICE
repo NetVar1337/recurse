@@ -8,9 +8,10 @@ versions are recorded in Cargo.lock and tauri/package-lock.json. Note in
 particular that the reverse-engineering engine is pluggable (see
 docs/backends.md):
 
-  * The native backend (default build) links only permissively licensed Rust
-    crates (object, capstone, rustc-demangle, cpp_demangle, nix) and contains
-    no copyleft component.
+  * The default native backend links only permissively licensed Rust crates
+    (object, capstone, rustc-demangle, cpp_demangle, nix) and contains no
+    copyleft component. It is selected unless `RECURSE_BACKEND`/the stored
+    config asks for `r2`.
 
   * radare2 and the optional r2ghidra plugin are separate programs, invoked at
     runtime only when the r2 backend is selected, and are licensed

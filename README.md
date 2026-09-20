@@ -2,10 +2,10 @@
 
 Agentic reverse engineering environment — a Ghidra-class desktop app in the spirit of
 "Cursor for reverse engineering". Built with **Tauri 2** (React + TypeScript frontend) on top
-of a **pluggable analysis backend**: **[radare2](https://rada.re/n/)** (default, full feature
-set including optional **r2ghidra** decompilation) or a **pure-Rust native engine** with no
-external process and no copyleft dependency. The agent tool and the UI are backend-agnostic —
-see [docs/backends.md](docs/backends.md).
+of a **pluggable analysis backend**: a **pure-Rust native engine** (the default — no
+external process, no copyleft dependency, multi-architecture via Capstone) or optionally
+**[radare2](https://rada.re/n/)** (full feature set including **r2ghidra** decompilation).
+The agent tool and the UI are backend-agnostic — see [docs/backends.md](docs/backends.md).
 
 ![Recurse demo](tauri/public/recurse_demo.png)
 
@@ -48,11 +48,11 @@ drives it headlessly. All three are workspace members, so one `Cargo.lock` and o
 Analysis goes through a single `Engine` trait (`crates/librecurse/src/engine.rs`), so the
 engine is a choice, not a hard dependency:
 
-- **`r2`** (default) — drives the radare2 executable over its `-q0` pipe. Everything,
-  including r2ghidra decompilation.
-- **`native`** — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly
+- **`native`** (default) — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly
   (`object` + `capstone`): x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ,
   M68K, BPF. No child process, no external tool, no LGPL in the build. No decompiler.
+- **`r2`** (opt-in) — drives the radare2 executable over its `-q0` pipe. Everything,
+  including r2ghidra decompilation.
 
 Pick with the settings menu, the `RECURSE_BACKEND` environment variable
 (`r2` | `native`), or the stored config. The agent gets one backend-neutral `analyze` tool

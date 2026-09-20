@@ -85,7 +85,7 @@ async fn main() {
         .unwrap_or_else(default_trace_dir);
     // Resolve the backend first: it also namespaces the trace dir, so native
     // and r2 runs of the same tier never overwrite each other's traces.
-    // Precedence: EVAL_BACKEND > run.backend > RECURSE_BACKEND > r2.
+    // Precedence: EVAL_BACKEND > run.backend > RECURSE_BACKEND > native.
     let backend = resolve_backend(cfg.run.backend);
     let trace_dir = trace_base.join(&cfg.tier).join(backend.as_str());
 

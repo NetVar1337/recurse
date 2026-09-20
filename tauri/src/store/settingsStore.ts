@@ -25,7 +25,7 @@ interface SettingsState {
 
 function readInitialBackend(): Backend {
 	const v = localStorage.getItem(BACKEND_KEY);
-	return v === "native" ? "native" : "r2";
+	return v === "r2" ? "r2" : "native";
 }
 
 function readInitial(): number {

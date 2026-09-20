@@ -18,7 +18,7 @@ pub struct EvalOpts {
     pub endpoint: String,
     pub api_key: String,
     /// Analysis backend the agent drives: `r2` or `native`. Resolved from
-    /// `EVAL_BACKEND`, then `RECURSE_BACKEND`, then the app default (`r2`).
+    /// `EVAL_BACKEND`, then `RECURSE_BACKEND`, then the app default (native).
     pub backend: BackendKind,
     pub max_turns: usize,
     pub timeout_secs: u64,
@@ -55,8 +55,9 @@ impl EvalOpts {
 }
 
 /// Resolve the backend with the eval's precedence: `EVAL_BACKEND` > the tier
-/// YAML's `run.backend` (`yaml`) > `RECURSE_BACKEND` > `r2`. An unknown env
-/// value is ignored rather than fatal.
+/// YAML's `run.backend` (`yaml`) > `RECURSE_BACKEND` > the app default
+/// (`native` when compiled in, else `r2`). An unknown env value is ignored
+/// rather than fatal.
 ///
 /// ```
 /// use librecurse::engine::BackendKind;

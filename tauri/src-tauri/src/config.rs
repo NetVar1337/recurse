@@ -78,8 +78,9 @@ pub fn set_backend(backend: Option<String>) -> Result<(), String> {
 }
 
 /// Resolve which analysis backend to instantiate. Precedence:
-/// stored config > `RECURSE_BACKEND` environment > built-in default (`r2`).
-/// Unknown names fall back rather than making the app unusable.
+/// stored config > `RECURSE_BACKEND` environment > built-in default
+/// (`native` in the default build, otherwise `r2`). Unknown names fall back
+/// rather than making the app unusable.
 pub fn backend() -> librecurse::engine::BackendKind {
     load()
         .backend

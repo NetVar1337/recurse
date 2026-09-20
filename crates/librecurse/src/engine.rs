@@ -33,8 +33,10 @@ pub const TOOL_NAME: &str = "analyze";
 /// Which analysis implementation to instantiate.
 ///
 /// Selected at runtime from `RECURSE_BACKEND` (or the host's config store).
-/// The default is [`BackendKind::R2`] for backward compatibility; the native
-/// backend never spawns a subprocess and carries no copyleft dependency.
+/// The default is [`BackendKind::Native`] when the `native` feature is
+/// compiled in (it is in the default build), falling back to
+/// [`BackendKind::R2`] in a native-less build. The native backend never
+/// spawns a subprocess and carries no copyleft dependency.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
@@ -42,6 +44,28 @@ pub enum BackendKind {
     R2,
     /// Pure-Rust ELF/PE/Mach-O parsing and disassembly.
     Native,
+}
+
+impl Default for BackendKind {
+    /// Native when compiled in (the default build), otherwise r2. A build
+    /// without the `native` feature must still resolve to a usable backend.
+    ///
+    /// ```
+    /// use librecurse::engine::BackendKind;
+    /// // `from_env` with the variable unset yields the compiled-in default.
+    /// std::env::remove_var("RECURSE_BACKEND");
+    /// assert_eq!(BackendKind::from_env(), BackendKind::default());
+    /// ```
+    fn default() -> Self {
+        #[cfg(feature = "native")]
+        {
+            Self::Native
+        }
+        #[cfg(not(feature = "native"))]
+        {
+            Self::R2
+        }
+    }
 }
 
 impl BackendKind {
@@ -63,22 +87,23 @@ impl BackendKind {
     }
 
     /// Resolve the backend from the `RECURSE_BACKEND` environment variable,
-    /// falling back to [`BackendKind::R2`]. Unknown values are ignored rather
-    /// than fatal: a typo must never make the app unusable.
+    /// falling back to [`BackendKind::default`] (native in a default build).
+    /// Unknown values are ignored rather than fatal: a typo must never make
+    /// the app unusable.
     ///
     /// ```
     /// use librecurse::engine::BackendKind;
     /// std::env::remove_var("RECURSE_BACKEND");
+    /// assert_eq!(BackendKind::from_env(), BackendKind::default());
+    /// std::env::set_var("RECURSE_BACKEND", "r2");
     /// assert_eq!(BackendKind::from_env(), BackendKind::R2);
-    /// std::env::set_var("RECURSE_BACKEND", "native");
-    /// assert_eq!(BackendKind::from_env(), BackendKind::Native);
     /// std::env::remove_var("RECURSE_BACKEND");
     /// ```
     pub fn from_env() -> Self {
         std::env::var("RECURSE_BACKEND")
             .ok()
             .and_then(|v| Self::parse(&v))
-            .unwrap_or(Self::R2)
+            .unwrap_or_default()
     }
 
     /// Stable lowercase label for logs, the UI, and the database.
@@ -735,6 +760,16 @@ mod tests {
         assert_eq!(BackendKind::parse("native"), Some(BackendKind::Native));
         assert_eq!(BackendKind::parse("ida"), None);
         assert_eq!(BackendKind::R2.as_str(), "r2");
+    }
+
+    #[test]
+    fn default_backend_matches_compiled_features() {
+        // Native is the default in the default build; a native-less build
+        // must still resolve to a usable backend.
+        #[cfg(feature = "native")]
+        assert_eq!(BackendKind::default(), BackendKind::Native);
+        #[cfg(not(feature = "native"))]
+        assert_eq!(BackendKind::default(), BackendKind::R2);
     }
 
     #[test]

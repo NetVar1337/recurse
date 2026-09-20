@@ -41,7 +41,7 @@ so results are directly comparable. Precedence:
 1. `EVAL_BACKEND` environment variable (per run),
 2. `run.backend` in the tier YAML,
 3. `RECURSE_BACKEND`,
-4. `r2` (default).
+4. `native` (default when compiled in), else `r2`.
 
 ```bash
 EVAL_BACKEND=native just eval-run   # pure Rust, no radare2 required
