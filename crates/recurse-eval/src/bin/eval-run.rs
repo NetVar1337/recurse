@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use recurse_eval::config::EvalConfig;
 use recurse_eval::corpus::{ensure_dataset_jsonl, ensure_task_binary};
-use recurse_eval::runner::{run_task, EvalOpts};
+use recurse_eval::runner::{resolve_backend, run_task, EvalOpts};
 use recurse_eval::select::{load_records, select_tasks};
 use recurse_eval::{
     crate_relative, default_trace_dir, env_path, env_string, load_dotenv, rate_label, Task,
@@ -83,7 +83,11 @@ async fn main() {
     let trace_base = env_path("EVAL_TRACES")
         .or_else(|| cfg.trace_dir.as_deref().map(crate_relative))
         .unwrap_or_else(default_trace_dir);
-    let trace_dir = trace_base.join(&cfg.tier);
+    // Resolve the backend first: it also namespaces the trace dir, so native
+    // and r2 runs of the same tier never overwrite each other's traces.
+    // Precedence: EVAL_BACKEND > run.backend > RECURSE_BACKEND > native.
+    let backend = resolve_backend(cfg.run.backend);
+    let trace_dir = trace_base.join(&cfg.tier).join(backend.as_str());
 
     // Setup failures are loud here (unlike a test): an explicit run that can't
     // run must not look like a pass.
@@ -97,15 +101,39 @@ async fn main() {
                 crate_relative(".env").display()
             ))
         });
-    if !r2_available() {
-        die("radare2 (`r2`) not on PATH — the agent cannot analyze binaries");
+    // Resolve run knobs before the header so the log records what will
+    // actually run, including the backend. Precedence: env > YAML > defaults.
+    let mut opts = match EvalOpts::from_env(corpus_dir.clone(), trace_dir.clone()) {
+        Ok(o) => o,
+        Err(e) => die(e),
+    };
+    opts.api_key = api_key;
+    opts.backend = backend;
+    if env_string("EVAL_MODEL").is_none() && !cfg.run.model.is_empty() {
+        opts.model = cfg.run.model.clone();
+    }
+    if env_string("EVAL_MAX_TURNS").is_none() {
+        opts.max_turns = cfg.run.max_turns;
+    }
+    if env_string("EVAL_TIMEOUT_SECS").is_none() {
+        opts.timeout_secs = cfg.run.timeout_secs;
+    }
+
+    // radare2 is only required when the r2 backend is selected; the native
+    // backend is in-process and needs no external tool.
+    if opts.backend == librecurse::engine::BackendKind::R2 && !r2_available() {
+        die(
+            "backend `r2` selected but radare2 (`r2`) is not on PATH — install it \
+             or run with EVAL_BACKEND=native",
+        );
     }
 
     let mut log = RunLog::create(&trace_dir.join("run.log"));
     let started = std::time::Instant::now();
     log.log(format!(
-        "=== recurse eval / tier {} ===\nconfig: {}\ncorpus: {}\ntraces: {}\nstarted: {}",
+        "=== recurse eval / tier {} ===\nbackend: {}\nconfig: {}\ncorpus: {}\ntraces: {}\nstarted: {}",
         cfg.tier,
+        opts.backend.as_str(),
         config_path.display(),
         corpus_dir.display(),
         trace_dir.display(),
@@ -128,26 +156,11 @@ async fn main() {
         Err(e) => die(format!("selection: {e}")),
     };
 
-    let mut opts = match EvalOpts::from_env(corpus_dir.clone(), trace_dir.clone()) {
-        Ok(o) => o,
-        Err(e) => die(e),
-    };
-    opts.api_key = api_key;
-    // Precedence: env > YAML > built-in defaults.
-    if env_string("EVAL_MODEL").is_none() && !cfg.run.model.is_empty() {
-        opts.model = cfg.run.model.clone();
-    }
-    if env_string("EVAL_MAX_TURNS").is_none() {
-        opts.max_turns = cfg.run.max_turns;
-    }
-    if env_string("EVAL_TIMEOUT_SECS").is_none() {
-        opts.timeout_secs = cfg.run.timeout_secs;
-    }
-
     log.log(format!(
-        "tasks: {}\nmodel: {}\nendpoint: {}\nmax_turns: {}\ntimeout: {}s\n",
+        "tasks: {}\nmodel: {}\nbackend: {}\nendpoint: {}\nmax_turns: {}\ntimeout: {}s\n",
         tasks.len(),
         opts.model,
+        opts.backend.as_str(),
         opts.endpoint,
         opts.max_turns,
         opts.timeout_secs
@@ -165,6 +178,7 @@ async fn main() {
     let mut total_in = 0u64;
     let mut total_out = 0u64;
     let mut total_cost = 0.0;
+    let mut total_tool_ms = 0u64;
 
     for task in &tasks {
         let binary = match fetch_binary(&corpus_dir, task, &mut log).await {
@@ -180,20 +194,23 @@ async fn main() {
                 total_in += o.est_in_tokens;
                 total_out += o.est_out_tokens;
                 total_cost += o.cost_usd;
+                total_tool_ms += o.tool_ms;
                 let status = if o.pass { "PASS" } else { "FAIL" };
                 log.log(format!(
-                    "[{status}] {} {} turns={} tools_in={} out={} ${:.3} err={}",
+                    "[{status}] {} {} turns={} tools_in={} out={} ${:.3} analyze={}ms err={}",
                     o.hexid,
                     o.name,
                     o.turns,
                     o.est_in_tokens,
                     o.est_out_tokens,
                     o.cost_usd,
+                    o.tool_ms,
                     o.error.as_deref().unwrap_or("-")
                 ));
                 if !o.models.is_empty() {
                     log.log(format!("       served: {}", o.models.join(", ")));
                 }
+                log.log(format!("       backend: {}", o.backend.as_str()));
                 log.log(format!("       trace: {}", o.trace_path.display()));
                 log.log(format!("       answer: {}", first_line(&o.final_answer)));
                 if o.pass {
@@ -214,7 +231,7 @@ async fn main() {
 
     let elapsed = started.elapsed().as_secs();
     log.log(format!(
-        "\n=== {}: {passed}/{} passed in {}s ({:.0}s/task) ===\nin={total_in} out={total_out} cost=${total_cost:.2} ({})",
+        "\n=== {}: {passed}/{} passed in {}s ({:.0}s/task) ===\nin={total_in} out={total_out} cost=${total_cost:.2} analyze={total_tool_ms}ms ({})",
         cfg.tier,
         tasks.len(),
         elapsed,

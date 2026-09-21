@@ -3,6 +3,8 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::engine::Capabilities;
+
 const OPENROUTER_MODELS: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL: &str = "openrouter/auto";
 
@@ -326,6 +328,10 @@ pub struct PromptTarget {
     pub kind: String,
     /// Previously saved agent memory, appended verbatim when non-empty.
     pub memory: String,
+    /// What the active backend can do. The prompt only advertises ops the
+    /// tool can actually serve, so the model does not spend turns on
+    /// `decompile`/`raw` against a backend that lacks them.
+    pub capabilities: Capabilities,
 }
 
 /// Build the system prompt for a run. Public library interface: hosts can
@@ -337,14 +343,32 @@ pub fn system_prompt(target: &PromptTarget) -> String {
         bits,
         kind,
         memory,
+        capabilities,
     } = target;
+    let mut ops: Vec<&str> = vec!["`analyze`", "`functions`", "`disasm`"];
+    if capabilities.graph {
+        ops.push("`graph`");
+    }
+    if capabilities.decompile {
+        ops.push("`decompile`");
+    }
+    ops.extend(["`xrefs`", "`strings`", "`imports`", "`info`"]);
+    if capabilities.raw {
+        ops.push("`raw` (backend console)");
+    }
+    let decompile_step = if capabilities.decompile {
+        ", `decompile` for pseudocode"
+    } else {
+        ""
+    };
     let mut prompt = format!(
         "You are Recurse, an expert reverse-engineering agent. Crack the target: recover the serial/key.\n\
          Target: {path} arch={arch} bits={bits} type={kind} ({})\n\
-         Tooling: use the `r2` tool for ALL binary inspection — never run r2 through bash. Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
-         Workflow: 1) r2 `aaa` once to analyse. 2) r2 `afl` for the function list, `pdf @ <fn>` to read a function, `axt @ <addr>` for xrefs, `izz` for strings, `iij` for imports. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
-         Efficiency (measured and expected of you): never repeat an identical r2 call; chain related commands in ONE call (`aaa; afl; izz`); do not re-dump data you already have; keep queries narrow (`pd 40 @ main`, not a whole huge function). Keep prose under 4 lines.",
-        if kind.contains("pe") || kind.contains("mach0") { "PE/Mach-O — static analysis on Linux" } else { "" }
+         Tooling: use the `analyze` tool for ALL binary inspection — never shell out to a disassembler. Ops: {}. Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
+         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG{decompile_step}. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
+         Efficiency (measured and expected of you): never repeat an identical analyze call; keep queries narrow (`disasm` a window, not a whole huge function). Keep prose under 4 lines.",
+        if kind.contains("pe") || kind.contains("mach0") { "PE/Mach-O — static analysis on Linux" } else { "" },
+        ops.join(", ")
     );
     if !memory.is_empty() {
         prompt.push_str("\n\nPreviously saved memory (from earlier sessions):\n");
@@ -700,6 +724,11 @@ pub struct TraceToolResult {
     pub id: String,
     pub name: String,
     pub result: String,
+    /// Wall-clock time the tool call took, in milliseconds. Separates backend
+    /// latency from model-turn latency in post-mortems. Defaults to 0 for
+    /// traces written before it existed.
+    #[serde(default)]
+    pub duration_ms: u64,
 }
 
 /// Exact record of a single model turn: the input the model saw
@@ -1058,9 +1087,11 @@ impl Agent {
                         name: tc.function.name.clone(),
                         arguments: tc.function.arguments.clone(),
                     });
+                    let started = std::time::Instant::now();
                     let result = exec(tc)
                         .await
                         .unwrap_or_else(|e| format!("tool error: {e}"));
+                    let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     // An empty tool result is legal in the OpenAI wire format but
                     // not portable: Cohere (reached through OpenRouter) rejects
                     // `tool_results` entries without an `outputs` property, which
@@ -1083,6 +1114,7 @@ impl Agent {
                         id: tc.id.clone(),
                         name: tc.function.name.clone(),
                         result: result.clone(),
+                        duration_ms,
                     });
                     self.messages.push(ChatMessage::tool(tc.id.clone(), result));
                 }
@@ -1121,7 +1153,7 @@ impl Agent {
                     Vec::new(),
                 );
                 continuation_nudge = Some(ChatMessage::user(
-                    "Continue the task. Do not finish with an empty answer. Use the next highest-value action now; for reverse engineering, run bash with targeted r2/Python and write or verify the solver.",
+                    "Continue the task. Do not finish with an empty answer. Use the next highest-value action now; for reverse engineering, inspect the binary with the `analyze` tool and write or verify the solver.",
                 ));
                 continue;
             }

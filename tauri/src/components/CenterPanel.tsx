@@ -14,8 +14,10 @@ import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
+import { DisasmComment, splitComment } from "@/lib/disasm";
 import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
+import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
 import { useUiStore } from "@/store/uiStore";
 import type { CenterTab, DecompileAnnotation, Function, Xref } from "@/types";
@@ -96,6 +98,7 @@ function OpRow({
 	onGoTo?: (f: Function) => void;
 }) {
 	const text = op.text ?? op.disasm ?? "";
+	const { instr, comment } = splitComment(text);
 	const clickable = !!target;
 	return (
 		<div
@@ -110,10 +113,16 @@ function OpRow({
 					: undefined
 			}
 		>
-			<span className="text-primary w-[9ch] shrink-0">
+			<span
+				className="w-[9ch] shrink-0 text-sky-600 dark:text-sky-400"
+				title="Virtual address"
+			>
 				{fmtAddr(op.addr)}
 			</span>
-			<span className="text-muted-foreground w-[16ch] shrink-0 overflow-hidden">
+			<span
+				className="w-[16ch] shrink-0 overflow-hidden text-emerald-600 dark:text-emerald-400"
+				title="Machine code bytes (hex)"
+			>
 				{op.bytes ?? ""}
 			</span>
 			<span
@@ -122,16 +131,18 @@ function OpRow({
 					clickable &&
 						"text-primary underline decoration-dotted underline-offset-2",
 				)}
+				title="Disassembly (mnemonic + operands)"
 			>
-				{text}
+				{instr}
+				<DisasmComment comment={comment} />
 				{typeof op.jump === "number" && (
-					<span className="text-amber-500 dark:text-yellow-600">
+					<span className="text-violet-500 dark:text-violet-400">
 						{" "}
 						→ {fmtAddr(op.jump)}
 					</span>
 				)}
 				{typeof op.ptr === "number" && (
-					<span className="text-amber-500 dark:text-yellow-600">
+					<span className="text-violet-500 dark:text-violet-400">
 						{" "}
 						; [{fmtAddr(op.ptr)}]
 					</span>
@@ -160,6 +171,9 @@ export function CenterPanel() {
 	const refreshDisasm = useAnalysisStore((s) => s.refreshDisasm);
 	const decompile = useAnalysisStore((s) => s.decompile);
 	const clearDecompiled = useAnalysisStore((s) => s.clearDecompiled);
+	// Capabilities of the active backend; hide affordances it cannot serve
+	// (decompile / raw console on native). Undefined = older host, show them.
+	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
 
 	const pending = useContextStore((s) => s.pending);
 	const setPending = useContextStore((s) => s.setPending);
@@ -307,7 +321,9 @@ export function CenterPanel() {
 						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
 						<TabsTrigger value="strings">Strings</TabsTrigger>
 						<TabsTrigger value="imports">Imports</TabsTrigger>
-						<TabsTrigger value="console">r2</TabsTrigger>
+						{capabilities?.raw !== false && (
+							<TabsTrigger value="console">r2</TabsTrigger>
+						)}
 						<TabsTrigger value="shell">Shell</TabsTrigger>
 					</TabsList>
 				</Tabs>
@@ -339,14 +355,16 @@ export function CenterPanel() {
 								Graph
 							</button>
 						</div>
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={decompile}
-							disabled={decompiling || !selected}
-						>
-							{decompiling ? "Decompiling…" : "Decompile"}
-						</Button>
+						{capabilities?.decompile !== false && (
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={decompile}
+								disabled={decompiling || !selected}
+							>
+								{decompiling ? "Decompiling…" : "Decompile"}
+							</Button>
+						)}
 						<Button
 							variant={xrefsOpen ? "secondary" : "ghost"}
 							size="sm"
@@ -527,6 +545,19 @@ export function CenterPanel() {
 												asm.ops.length === 0) && (
 												<div className="text-muted-foreground px-3 py-3">
 													No instructions.
+												</div>
+											)}
+										{selected &&
+											!asmLoading &&
+											(asm?.ops?.length ?? 0) > 0 && (
+												<div className="border-border text-muted-foreground bg-card flex gap-3 border-b px-3 py-1 text-[10px] font-semibold tracking-wider uppercase">
+													<span className="w-[9ch] shrink-0 text-sky-600 dark:text-sky-400">
+														Address
+													</span>
+													<span className="w-[16ch] shrink-0 text-emerald-600 dark:text-emerald-400">
+														Bytes
+													</span>
+													<span>Instruction</span>
 												</div>
 											)}
 										{asm?.ops?.map((op) => (

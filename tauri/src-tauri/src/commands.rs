@@ -2,15 +2,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
+use librecurse::engine::{Engine, Target, XrefDirection};
+
 use crate::config;
-use crate::engine;
 use crate::project::{self, Project};
-use crate::session::R2Session;
 use crate::sessions::{self, Session};
 use crate::AppState;
 use librecurse::agent::{self, AgentEvent, ModelInfo, ToolCall};
 
-fn session_of(state: &AppState) -> Result<std::sync::MutexGuard<'_, Option<R2Session>>, String> {
+fn session_of(
+    state: &AppState,
+) -> Result<std::sync::MutexGuard<'_, Option<Box<dyn Engine>>>, String> {
     state
         .session
         .lock()
@@ -19,7 +21,7 @@ fn session_of(state: &AppState) -> Result<std::sync::MutexGuard<'_, Option<R2Ses
 
 fn session<'a>(
     state: &'a State<'_, AppState>,
-) -> Result<std::sync::MutexGuard<'a, Option<R2Session>>, String> {
+) -> Result<std::sync::MutexGuard<'a, Option<Box<dyn Engine>>>, String> {
     state
         .session
         .lock()
@@ -27,9 +29,12 @@ fn session<'a>(
 }
 
 fn with_sess<'a>(
-    guard: &'a std::sync::MutexGuard<'a, Option<R2Session>>,
-) -> Result<&'a R2Session, String> {
-    guard.as_ref().ok_or_else(|| "no binary loaded".into())
+    guard: &'a std::sync::MutexGuard<'a, Option<Box<dyn Engine>>>,
+) -> Result<&'a dyn Engine, String> {
+    guard
+        .as_ref()
+        .map(|b| b.as_ref())
+        .ok_or_else(|| "no binary loaded".into())
 }
 
 fn current_project_of(state: &AppState) -> Result<Option<String>, String> {
@@ -79,10 +84,18 @@ fn persist_history(project: Option<&str>, session_id: &str, messages: &[agent::C
 /// Core of [`open_binary`], taking plain state so integration tests can
 /// drive the exact production path without a Tauri runtime.
 pub fn open_binary_impl(path: String, state: &AppState) -> Result<Value, String> {
-    eprintln!("[recurse] open_binary: {path}");
+    eprintln!(
+        "[recurse] open_binary: {path} (backend={})",
+        crate::engine::active_label()
+    );
     let mut guard = session_of(state)?;
-    let sess = R2Session::open(path)?;
-    let summary = engine::summary(&sess);
+    let sess = crate::engine::build(std::path::Path::new(&path))?;
+    let mut summary = sess.summary()?;
+    // Host metadata the UI uses to hide affordances the backend cannot serve
+    // (decompile / raw console on the native backend).
+    summary["backend"] = serde_json::json!(sess.backend().as_str());
+    summary["capabilities"] =
+        serde_json::to_value(sess.capabilities()).unwrap_or(serde_json::Value::Null);
     eprintln!(
         "[recurse] open_binary: funcs={} strings={}",
         summary["function_count"], summary["string_count"]
@@ -108,7 +121,8 @@ pub fn analyze(state: State<'_, AppState>) -> Result<(), String> {
 /// Core of [`analyze`]; see [`open_binary_impl`].
 pub fn analyze_impl(state: &AppState) -> Result<(), String> {
     eprintln!(
-        "[recurse] analyze: starting `aa; aac` (run `aaa` in the r2 console for deep analysis)"
+        "[recurse] analyze: starting analysis pass (backend={})",
+        crate::engine::active_label()
     );
     let guard = session_of(state)?;
     with_sess(&guard)?.analyze()?;
@@ -143,82 +157,101 @@ pub fn binary_info(state: State<'_, AppState>) -> Result<Value, String> {
 /// Core of [`binary_info`]; see [`open_binary_impl`].
 pub fn binary_info_impl(state: &AppState) -> Result<Value, String> {
     let guard = session_of(state)?;
-    Ok(engine::info(with_sess(&guard)?))
+    with_sess(&guard)?.info()
 }
 
 #[tauri::command]
 pub fn functions(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    let v = engine::functions(with_sess(&guard)?)?;
-    eprintln!(
-        "[recurse] functions: {}",
-        v.as_array().map(|a| a.len()).unwrap_or(0)
-    );
-    Ok(v)
+    let funcs = with_sess(&guard)?.functions()?;
+    eprintln!("[recurse] functions: {}", funcs.len());
+    serde_json::to_value(funcs).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn disassemble(addr: u64, count: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    engine::disassemble(with_sess(&guard)?, addr, count)
+    let dis = with_sess(&guard)?.disassemble(&Target::Addr(addr), Some(count as usize))?;
+    serde_json::to_value(dis).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn function_at(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    engine::function_at(with_sess(&guard)?, addr)
+    let f = with_sess(&guard)?.function_at(addr)?;
+    serde_json::to_value(f).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn function_disasm(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    engine::function_disasm(with_sess(&guard)?, addr)
+    let dis = with_sess(&guard)?.function_disasm(addr)?;
+    serde_json::to_value(dis).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn function_graph(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    engine::function_graph(with_sess(&guard)?, addr)
+    let graph = with_sess(&guard)?.function_graph(addr)?;
+    serde_json::to_value(graph).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn strings(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    let v = engine::strings(with_sess(&guard)?)?;
-    eprintln!(
-        "[recurse] strings: {}",
-        v.as_array().map(|a| a.len()).unwrap_or(0)
-    );
-    Ok(v)
+    let strings = with_sess(&guard)?.strings()?;
+    eprintln!("[recurse] strings: {}", strings.len());
+    serde_json::to_value(strings).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn imports(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    let v = engine::imports(with_sess(&guard)?)?;
-    eprintln!(
-        "[recurse] imports: {}",
-        v.as_array().map(|a| a.len()).unwrap_or(0)
-    );
-    Ok(v)
+    let imports = with_sess(&guard)?.imports()?;
+    eprintln!("[recurse] imports: {}", imports.len());
+    serde_json::to_value(imports).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn xrefs_to(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    engine::xrefs_to(with_sess(&guard)?, addr)
+    let refs = with_sess(&guard)?.xrefs(&Target::Addr(addr), XrefDirection::To)?;
+    serde_json::to_value(refs).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn decompile(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    engine::decompile(with_sess(&guard)?, addr)
+    let dec = with_sess(&guard)?.decompile(addr)?;
+    serde_json::to_value(dec).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn raw(cmd: String, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
-    engine::raw(with_sess(&guard)?, &cmd)
+    with_sess(&guard)?.raw(&cmd)
+}
+
+#[derive(Serialize)]
+pub struct BackendStatus {
+    pub backend: String,
+}
+
+/// The active analysis backend, for the UI selector.
+#[tauri::command]
+pub fn get_backend() -> BackendStatus {
+    BackendStatus {
+        backend: crate::engine::active_label().to_string(),
+    }
+}
+
+/// Persist the selected analysis backend (`r2` or `native`). Takes effect on
+/// the next binary open.
+#[tauri::command]
+pub fn set_backend(backend: String) -> Result<(), String> {
+    let parsed = librecurse::engine::BackendKind::parse(&backend)
+        .ok_or_else(|| format!("unknown backend: {backend}"))?;
+    config::set_backend(Some(parsed.as_str().to_string()))
 }
 
 /// Zoom the whole window (native webview zoom, like VS Code's Ctrl +/-).
@@ -243,7 +276,7 @@ pub async fn agent_chat(
     on_event: tauri::ipc::Channel<AgentEvent>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (path, info) = {
+    let (path, info, capabilities) = {
         let guard = state
             .session
             .lock()
@@ -251,7 +284,11 @@ pub async fn agent_chat(
         let sess = guard
             .as_ref()
             .ok_or_else(|| "no binary loaded".to_string())?;
-        (sess.path.to_string_lossy().to_string(), engine::info(sess))
+        (
+            sess.path().to_string_lossy().to_string(),
+            sess.info()?,
+            sess.capabilities(),
+        )
     };
     let config = state
         .llm
@@ -271,7 +308,7 @@ pub async fn agent_chat(
     // a panicking worker still reports through this clone.
     let panic_channel = on_event.clone();
     let worker = tauri::async_runtime::spawn(async move {
-        let mut tools = librecurse::tools::schema();
+        let mut tools = librecurse::tools::schema(capabilities);
         tools.extend(librecurse::memory::memory_tool_schema());
         // Memory is owned by librecurse (SQLite + BM25); the host only
         // resolves which project the turn belongs to.
@@ -287,6 +324,7 @@ pub async fn agent_chat(
             bits: info["bin"]["bits"].as_u64().unwrap_or(0),
             kind: info["bin"]["type"].as_str().unwrap_or("?").to_string(),
             memory,
+            capabilities,
         };
 
         // The async mutex is held across the whole turn; cancel/reset wait
@@ -310,33 +348,19 @@ pub async fn agent_chat(
                         crate::db::memory_store()
                             .and_then(|s| s.execute_tool(&mem_project, &tc.function.name, &args))
                     }
-                    // Native analysis tool: serve it from the live session the
-                    // UI is already driving, so analysis state is shared and the
-                    // result is projected/capped the same way as in the harness.
-                    librecurse::r2::TOOL_NAME => {
+                    // Backend-neutral analysis tool: serve it from the live
+                    // engine the UI is already driving, so analysis state is
+                    // shared and the result is projected/capped the same way
+                    // as in the harness. Accept the op as the tool name too.
+                    name if librecurse::engine::is_op(name) => {
                         let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::Value::Null);
-                        let cmd = args
-                            .get("cmd")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        let limit = args
-                            .get("limit")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as usize)
-                            .unwrap_or(60);
                         let guard = session_state
                             .lock()
                             .map_err(|e| format!("session lock poisoned: {e}"))?;
                         match guard.as_ref() {
-                            Some(sess) => {
-                                let raw = sess.run(&cmd)?;
-                                let text = match raw {
-                                    serde_json::Value::String(s) => s,
-                                    other => other.to_string(),
-                                };
-                                Ok(librecurse::r2::normalize(&cmd, &text, limit))
+                            Some(engine) => {
+                                librecurse::engine::execute_call(engine.as_ref(), name, &args)
                             }
                             None => Err("no binary loaded".to_string()),
                         }

@@ -19,12 +19,14 @@ import dagre from "@dagrejs/dagre";
 import { api } from "@/api";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
+import { DisasmComment, splitComment } from "@/lib/disasm";
 import { useAnalysisStore } from "@/store/analysisStore";
-import type { Function, GraphOp, R2Graph } from "@/types";
+import type { Function, FunctionGraph, GraphOp } from "@/types";
 
 const BLOCK_W = 380;
 const LINE_H = 17;
 const HEADER_H = 24;
+const COL_H = 15;
 
 function fmtAddr(a?: number | null) {
 	return typeof a === "number" ? `0x${a.toString(16)}` : "";
@@ -34,6 +36,10 @@ type BlockOp = GraphOp & { target?: Function | null };
 type BlockData = { addr: string; ops: BlockOp[] };
 type BlockNode = Node<BlockData, "cfgnode">;
 
+// Shared column template so the label row and every instruction line up
+// (address | bytes | instruction), matching the disassembly view.
+const BLOCK_COLS = "grid grid-cols-[9ch_16ch_minmax(0,1fr)] gap-x-2";
+
 function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 	return (
 		<div className="border-border bg-card rounded border font-mono text-[10.5px] shadow-lg">
@@ -42,18 +48,32 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 				position={Position.Top}
 				className="!opacity-0"
 			/>
-			<div className="text-muted-foreground border-border bg-secondary/30 flex items-center gap-2 border-b px-1.5 text-[9px]">
+			<div className="text-muted-foreground border-border bg-secondary/30 flex items-center gap-2 border-b px-1.5 py-0.5 text-[9px]">
 				<span className="text-primary font-semibold">{data.addr}</span>
 				<span className="ml-auto">{data.ops.length} insn</span>
+			</div>
+			<div
+				className={cn(
+					BLOCK_COLS,
+					"text-muted-foreground border-border border-b px-1.5 py-0.5 text-[8px] font-semibold tracking-wider uppercase",
+				)}
+			>
+				<span className="text-sky-600 dark:text-sky-400">Addr</span>
+				<span className="text-emerald-600 dark:text-emerald-400">
+					Bytes
+				</span>
+				<span>Instruction</span>
 			</div>
 			<div className="py-0.5">
 				{data.ops.map((op, i) => {
 					const clickable = !!op.target;
+					const { instr, comment } = splitComment(op.disasm ?? "");
 					return (
 						<div
 							key={i}
 							className={cn(
-								"flex gap-1.5 px-1.5 leading-[17px] whitespace-nowrap",
+								BLOCK_COLS,
+								"px-1.5 leading-[17px]",
 								clickable &&
 									"hover:bg-accent/70 cursor-pointer",
 							)}
@@ -71,10 +91,16 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 									: undefined
 							}
 						>
-							<span className="text-primary w-[60px] shrink-0">
+							<span
+								className="text-sky-600 dark:text-sky-400"
+								title="Virtual address"
+							>
 								{fmtAddr(op.addr)}
 							</span>
-							<span className="text-muted-foreground w-[90px] shrink-0 truncate">
+							<span
+								className="truncate text-emerald-600 dark:text-emerald-400"
+								title="Machine code bytes (hex)"
+							>
 								{op.bytes ?? ""}
 							</span>
 							<span
@@ -83,8 +109,10 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 									clickable &&
 										"text-primary underline decoration-dotted underline-offset-2",
 								)}
+								title="Disassembly (mnemonic + operands)"
 							>
-								{op.disasm ?? ""}
+								{instr}
+								<DisasmComment comment={comment} />
 							</span>
 						</div>
 					);
@@ -120,7 +148,7 @@ function makeEdge(src: string, dst: number, label: string | undefined): Edge {
 }
 
 function toGraph(
-	graph: R2Graph,
+	graph: FunctionGraph,
 	byAddr: Map<number, Function>,
 ): { nodes: BlockNode[]; edges: Edge[] } {
 	const blocks = graph.blocks ?? [];
@@ -135,18 +163,22 @@ function toGraph(
 			data: { addr: fmtAddr(b.addr), ops },
 			position: { x: 0, y: 0 },
 			width: BLOCK_W,
-			height: HEADER_H + ops.length * LINE_H + 6,
+			height: HEADER_H + COL_H + ops.length * LINE_H + 6,
 		};
 	});
 
 	const edges: Edge[] = [];
+	// Only emit edges between blocks that exist: a jump target that was not
+	// decoded as a block would otherwise leave a dangling edge ReactFlow chokes
+	// on (common with the native backend's partial CFG).
+	const ids = new Set(nodes.map((n) => n.id));
 	for (const b of blocks) {
 		const src = String(b.addr);
 		const conditional = b.jump != null && b.fail != null;
-		if (b.jump != null) {
+		if (b.jump != null && ids.has(String(b.jump))) {
 			edges.push(makeEdge(src, b.jump, conditional ? "T" : undefined));
 		}
-		if (b.fail != null) {
+		if (b.fail != null && ids.has(String(b.fail))) {
 			edges.push(makeEdge(src, b.fail, conditional ? "F" : undefined));
 		}
 	}
@@ -190,10 +222,9 @@ function GraphCanvas({ addr }: { addr: number }) {
 			if (typeof f.addr === "number") byAddr.set(f.addr, f);
 		}
 		api.functionGraph(addr)
-			.then((arr) => {
+			.then((g) => {
 				if (cancelled) return;
-				const g = arr?.[0];
-				if (!g) {
+				if (!g || !g.blocks || g.blocks.length === 0) {
 					setErr("no graph for this address");
 					setLoading(false);
 					return;

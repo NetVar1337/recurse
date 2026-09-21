@@ -2,8 +2,10 @@
 
 Agentic reverse engineering environment — a Ghidra-class desktop app in the spirit of
 "Cursor for reverse engineering". Built with **Tauri 2** (React + TypeScript frontend) on top
-of an existing RE toolchain: **[radare2](https://rada.re/n/)** does all parsing, analysis,
-disassembly, xrefs, strings and imports; **r2ghidra** (optional) provides decompilation.
+of a **pluggable analysis backend**: a **pure-Rust native engine** (the default — no
+external process, no copyleft dependency, multi-architecture via Capstone) or optionally
+**[radare2](https://rada.re/n/)** (full feature set including **r2ghidra** decompilation).
+The agent tool and the UI are backend-agnostic — see [docs/backends.md](docs/backends.md).
 
 ![Recurse demo](tauri/public/recurse_demo.png)
 
@@ -41,6 +43,25 @@ drives it headlessly. All three are workspace members, so one `Cargo.lock` and o
   model picker; drives the session directly (disasm, xrefs, strings, imports, decompile)
 - Dark-first UI built with Tailwind CSS v4 + shadcn/ui
 
+## Analysis backends
+
+Analysis goes through a single `Engine` trait (`crates/librecurse/src/engine.rs`), so the
+engine is a choice, not a hard dependency:
+
+- **`native`** (default) — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly
+  (`object` + `capstone`): x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ,
+  M68K, BPF. No child process, no external tool, no LGPL in the build. No decompiler.
+- **`r2`** (opt-in) — drives the radare2 executable over its `-q0` pipe. Everything,
+  including r2ghidra decompilation.
+
+Pick with the settings menu, the `RECURSE_BACKEND` environment variable
+(`r2` | `native`), or the stored config. The agent gets one backend-neutral `analyze` tool
+(`functions`, `disasm`, `graph`, `decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw`
+for the backend console) — filtered to the ops the active backend actually supports, so native
+never advertises `decompile`/`raw`. The UI consumes canonical result types rather than r2 JSON.
+See [docs/backends.md](docs/backends.md) for the trait, the crate choices, and the licensing
+rationale.
+
 ## Why not just MCP-to-IDA / yolo it in Claude Code?
 
 Stapling an MCP server onto IDA/Ghidra, or pasting `r2` output into a CLI agent,
@@ -55,9 +76,9 @@ purpose-built environment, not a chatbot wrapper:
   instantly, so a human confirms or rejects in one click.
 - **Built for scale.** Real malware is 10k functions. Demand-driven tools +
   persistent memory beat dumping full decompiles until context OOMs.
-- **Agentable engine.** IDA is single-threaded, license-locked and headless-hostile.
-  radare2 is free, scriptable and pipeable — agents can run 100 turns, fork,
-  reset and diff. And you can actually ship it.
+- **Agentable engine.** radare2 is free, scriptable and pipeable — agents can run 100 turns, fork,
+  reset and diff. And you can actually ship it. If you would rather not depend on it at all, the
+  native backend does the same job in-process with permissive crates.
 - **Malware-safe by default.** Local-first, BYO-key/OpenRouter routing, and a path
   to offline models — no forced exfil of samples to a cloud chatbot.
 
@@ -154,6 +175,10 @@ The bundle lands in `target/release/bundle/` (workspace target):
 - `.deb` / `.rpm` / `.AppImage` for Linux
 - standalone binary at `target/release/recurse`
 
+On Arch and other rolling distros the AppImage step needs a one-time local fix
+(upstream `linuxdeploy` lags the distro toolchain) — see
+[docs/linux-appimage-build.md](docs/linux-appimage-build.md).
+
 ### Just the frontend (no desktop shell)
 
 ```bash
@@ -188,8 +213,9 @@ just eval-run     # run the tier — the only way to execute an eval YAML
 
 `eval-run` is a binary, not a test, so `cargo test` never spends money or time on
 the agent. Endpoint + key go in `crates/recurse-eval/.env` (copy `.env.example`).
-Each run writes `target/eval-traces/<tier>/run.log` (the full narrative) plus one
-`<hexid>.json` per task with the complete per-turn conversation.
+Each run writes `target/eval-traces/<tier>/<backend>/run.log` (the full narrative)
+plus one `<hexid>.json` per task with the complete per-turn conversation. The
+backend (`r2` or `native`) is selectable per run — see the eval README.
 
 ## Agent LLM
 

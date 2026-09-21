@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use librecurse::agent::{Agent, AgentEvent, LlmConfig, PromptTarget, ToolCall};
+use librecurse::engine::{BackendKind, Capabilities, Engine};
 use librecurse::memory::MemoryStore;
 
 use crate::{contains_token, cost_usd, env_string, grade_flag, prompt_target_for, Task};
@@ -16,6 +17,9 @@ pub struct EvalOpts {
     pub model: String,
     pub endpoint: String,
     pub api_key: String,
+    /// Analysis backend the agent drives: `r2` or `native`. Resolved from
+    /// `EVAL_BACKEND`, then `RECURSE_BACKEND`, then the app default (native).
+    pub backend: BackendKind,
     pub max_turns: usize,
     pub timeout_secs: u64,
     pub corpus_dir: PathBuf,
@@ -37,6 +41,7 @@ impl EvalOpts {
             model: env_string("EVAL_MODEL").unwrap_or(fallback.model),
             endpoint: env_string("EVAL_ENDPOINT").unwrap_or(fallback.endpoint),
             api_key,
+            backend: resolve_backend(None),
             max_turns: env_string("EVAL_MAX_TURNS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(40),
@@ -47,6 +52,29 @@ impl EvalOpts {
             trace_dir,
         })
     }
+}
+
+/// Resolve the backend with the eval's precedence: `EVAL_BACKEND` > the tier
+/// YAML's `run.backend` (`yaml`) > `RECURSE_BACKEND` > the app default
+/// (`native`). An unknown env value is ignored rather than fatal.
+///
+/// ```
+/// use librecurse::engine::BackendKind;
+/// use recurse_eval::runner::resolve_backend;
+/// std::env::remove_var("EVAL_BACKEND");
+/// std::env::remove_var("RECURSE_BACKEND");
+/// // YAML wins when the env override is absent.
+/// assert_eq!(resolve_backend(Some(BackendKind::Native)), BackendKind::Native);
+/// // Env wins over YAML when set.
+/// std::env::set_var("EVAL_BACKEND", "r2");
+/// assert_eq!(resolve_backend(Some(BackendKind::Native)), BackendKind::R2);
+/// std::env::remove_var("EVAL_BACKEND");
+/// ```
+pub fn resolve_backend(yaml: Option<BackendKind>) -> BackendKind {
+    env_string("EVAL_BACKEND")
+        .and_then(|v| BackendKind::parse(&v))
+        .or(yaml)
+        .unwrap_or_else(BackendKind::from_env)
 }
 
 /// What happened on one task.
@@ -64,16 +92,28 @@ pub struct TaskOutcome {
     /// Empty when the endpoint didn't report one. With a router this is the
     /// only way to know what answered.
     pub models: Vec<String>,
+    /// Analysis backend this task ran against.
+    pub backend: BackendKind,
+    /// Total wall-clock time spent inside analysis tool calls (ms) — separates
+    /// backend latency from model-turn latency.
+    pub tool_ms: u64,
     pub error: Option<String>,
     pub trace_path: PathBuf,
     /// Kept workdir (temp task dir) for post-mortems.
     pub workdir: PathBuf,
 }
 
-fn task_prompt(binary: &Path) -> String {
+/// The task prompt, phrased for the active backend's capabilities: the native
+/// backend has no decompiler, so asking for `decompile` there just wastes a
+/// turn on an error the model then has to recover from.
+fn task_prompt(binary: &Path, backend: BackendKind) -> String {
+    let ops = match backend {
+        BackendKind::R2 => "functions, disasm, decompile, xrefs, strings, imports",
+        BackendKind::Native => "functions, disasm, xrefs, strings, imports",
+    };
     format!(
         "Recover a valid serial/key for the binary at {}.\n\
-         Use the `r2` tool for static analysis and Python for decoding/brute-force. \
+         Use the `analyze` tool for static analysis (ops: {ops}) and Python for decoding/brute-force. \
          You can run the binary to check a candidate key. When you have one that \
          works, finish with a final message containing the exact serial on its own \
          line prefixed with `FLAG:` (e.g. `FLAG: hunter2`).",
@@ -95,7 +135,6 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     ));
     std::fs::create_dir_all(&workdir).map_err(|e| format!("workdir: {e}"))?;
 
-    let target: PromptTarget = prompt_target_for(task, &binary.to_string_lossy());
     let config = LlmConfig::new(
         opts.endpoint.clone(),
         Some(opts.api_key.clone()),
@@ -105,21 +144,44 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     // Fresh memory DB per task; `open` creates tables idempotently.
     let store = MemoryStore::open(workdir.join("memory.db"))?;
 
-    let mut tools = librecurse::tools::schema();
-    tools.extend(librecurse::memory::memory_tool_schema());
-
-    // One analysed r2 session for the whole task, so `aaa` runs once and every
-    // later query is a cheap follow-up, and so results can be deduplicated.
-    let session = match librecurse::r2::Session::open(binary) {
-        Ok(mut s) => {
-            let _ = s.warm_up();
-            Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
-        }
-        Err(e) => {
-            eprintln!("[eval] r2 session unavailable ({e}); falling back to bash only");
-            None
-        }
+    // One analysed backend for the whole task, so discovery runs once and
+    // every later query is a cheap follow-up. The backend is `opts.backend`
+    // (`EVAL_BACKEND` / the tier YAML / `RECURSE_BACKEND`).
+    let engine: Option<std::sync::Arc<std::sync::Mutex<Box<dyn Engine>>>> = match opts.backend {
+        BackendKind::R2 => match librecurse::r2_backend::R2Engine::open(binary) {
+            Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
+                Box::new(e) as Box<dyn Engine>
+            ))),
+            Err(e) => {
+                eprintln!("[eval] r2 backend unavailable ({e}); falling back to bash only");
+                None
+            }
+        },
+        BackendKind::Native => match librecurse::native::NativeEngine::open(binary) {
+            Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
+                Box::new(e) as Box<dyn Engine>
+            ))),
+            Err(e) => {
+                eprintln!("[eval] native backend unavailable ({e}); falling back to bash only");
+                None
+            }
+        },
     };
+    if let Some(e) = engine.as_ref() {
+        if let Ok(g) = e.lock() {
+            let _ = g.analyze();
+        }
+    }
+
+    // Capabilities drive both the tool schema and the prompt, so the model
+    // never sees ops this backend cannot serve (decompile/raw on native).
+    let capabilities = engine
+        .as_ref()
+        .and_then(|e| e.lock().ok().map(|g| g.capabilities()))
+        .unwrap_or_else(Capabilities::none);
+    let target: PromptTarget = prompt_target_for(task, &binary.to_string_lossy(), capabilities);
+    let mut tools = librecurse::tools::schema(capabilities);
+    tools.extend(librecurse::memory::memory_tool_schema());
 
     let mut agent = Agent::new();
     agent.set_debug(true);
@@ -127,7 +189,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         let tc = tc.clone();
         let mem_project = mem_project.clone();
         let store = store.clone();
-        let session = session.clone();
+        let engine = engine.clone();
         async move {
             match tc.function.name.as_str() {
                 "memory_save" | "memory_load" | "memory_search" => {
@@ -135,28 +197,23 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                         .unwrap_or(serde_json::Value::Null);
                     store.execute_tool(&mem_project, &tc.function.name, &args)
                 }
-                librecurse::r2::TOOL_NAME => {
+                name if librecurse::engine::is_op(name) => {
+                    let name = name.to_string();
                     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::Value::Null);
-                    let cmd = args
-                        .get("cmd")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let limit = args.get("limit").and_then(|v| v.as_u64());
-                    match session {
-                        Some(session) => {
-                            // Blocking process IO off the async runtime.
+                    match engine {
+                        Some(engine) => {
+                            // Blocking analysis IO off the async runtime.
                             tokio::task::spawn_blocking(move || {
-                                let mut guard = session
+                                let guard = engine
                                     .lock()
-                                    .map_err(|e| format!("r2 session poisoned: {e}"))?;
-                                guard.call(&cmd, limit.map(|l| l as usize))
+                                    .map_err(|e| format!("analysis engine poisoned: {e}"))?;
+                                librecurse::engine::execute_call(guard.as_ref(), &name, &args)
                             })
                             .await
-                            .map_err(|e| format!("r2 task failed: {e}"))?
+                            .map_err(|e| format!("analysis task failed: {e}"))?
                         }
-                        None => Err("r2 session unavailable".to_string()),
+                        None => Err("analysis backend unavailable".to_string()),
                     }
                 }
                 _ => librecurse::tools::execute(&tc).await,
@@ -166,7 +223,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     let mut emit = |_: AgentEvent| {};
 
     let run_id = format!("eval-{}", task.hexid);
-    let task_msg = task_prompt(binary);
+    let task_msg = task_prompt(binary, opts.backend);
     let timeout = Duration::from_secs(opts.timeout_secs);
     let run = agent.run_limited(
         &run_id,
@@ -209,6 +266,16 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         .iter()
         .map(|t| t.est_output_tokens)
         .sum();
+    // Analysis (not bash/memory) time, so backend latency is separable from
+    // the model's own latency in a post-mortem.
+    let tool_ms: u64 = agent
+        .trace()
+        .turns
+        .iter()
+        .flat_map(|t| t.tool_results.iter())
+        .filter(|r| librecurse::engine::is_op(&r.name))
+        .map(|r| r.duration_ms)
+        .sum();
 
     std::fs::create_dir_all(&opts.trace_dir).map_err(|e| format!("trace dir: {e}"))?;
     let trace_path = opts.trace_dir.join(format!("{}.json", task.hexid));
@@ -232,6 +299,8 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         est_out_tokens,
         cost_usd: cost_usd(&opts.model, est_in_tokens, est_out_tokens),
         models,
+        backend: opts.backend,
+        tool_ms,
         error,
         trace_path,
         workdir,

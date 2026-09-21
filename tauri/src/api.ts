@@ -4,6 +4,7 @@ import type {
 	AgentEvent,
 	AsmInsn,
 	AsmResult,
+	Backend,
 	BinaryInfo,
 	ChatMessage,
 	DecompileResult,
@@ -12,8 +13,8 @@ import type {
 	LlmStatus,
 	ModelInfo,
 	Project,
-	R2Graph,
 	R2String,
+	FunctionGraph,
 	Session,
 	ShellInfo,
 	Xref,
@@ -36,7 +37,7 @@ export const api = {
 	functionDisasm: (addr: number) =>
 		invoke<AsmResult>("function_disasm", { addr }),
 	functionGraph: (addr: number) =>
-		invoke<R2Graph[]>("function_graph", { addr }),
+		invoke<FunctionGraph>("function_graph", { addr }),
 	disassemble: (addr: number, count: number) =>
 		invoke<AsmInsn[]>("disassemble", { addr, count }),
 	strings: () => invoke<R2String[]>("strings"),
@@ -44,6 +45,8 @@ export const api = {
 	xrefsTo: (addr: number) => invoke<Xref[]>("xrefs_to", { addr }),
 	decompile: (addr: number) => invoke<DecompileResult>("decompile", { addr }),
 	raw: (cmd: string) => invoke<unknown>("raw", { cmd }),
+	getBackend: () => invoke<{ backend: Backend }>("get_backend"),
+	setBackend: (backend: string) => invoke<void>("set_backend", { backend }),
 	setZoom: (scale: number) => invoke<void>("set_zoom", { scale }),
 	agentChat: (
 		message: string,

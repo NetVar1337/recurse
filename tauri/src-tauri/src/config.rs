@@ -16,6 +16,9 @@ pub struct ConfigFile {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Analysis backend (`r2` or `native`). Absent means the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
 }
 
 fn get_key(key: &str) -> Option<String> {
@@ -35,6 +38,7 @@ pub fn load() -> ConfigFile {
         openrouter_api_key: get_key("openrouter_api_key"),
         model: get_key("model"),
         endpoint: get_key("endpoint"),
+        backend: get_key("backend"),
     }
 }
 
@@ -67,6 +71,21 @@ pub fn set_model(model: String) -> Result<(), String> {
 
 pub fn set_endpoint(endpoint: String) -> Result<(), String> {
     set_key("endpoint", Some(endpoint))
+}
+
+pub fn set_backend(backend: Option<String>) -> Result<(), String> {
+    set_key("backend", backend)
+}
+
+/// Resolve which analysis backend to instantiate. Precedence:
+/// stored config > `RECURSE_BACKEND` environment > built-in default (`native`).
+/// Unknown names fall back rather than making the app unusable.
+pub fn backend() -> librecurse::engine::BackendKind {
+    load()
+        .backend
+        .as_deref()
+        .and_then(librecurse::engine::BackendKind::parse)
+        .unwrap_or_else(librecurse::engine::BackendKind::from_env)
 }
 
 /// Resolve the runtime LLM config the agent loop consumes.

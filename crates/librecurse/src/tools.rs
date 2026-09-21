@@ -20,16 +20,20 @@ fn tool(name: &str, description: &str, params: Value) -> Value {
     })
 }
 
-/// Minimal agent schema: one binary-analysis tool (`r2`), a shell for scripts
+/// Minimal agent schema: one backend-neutral binary-analysis tool
+/// (`analyze`, see [`crate::engine::tool_schema`]), a shell for scripts
 /// (`bash`), files (`read`/`write`/`edit`). Memory tools are appended by the
 /// host from [`crate::memory::memory_tool_schema`].
 ///
-/// Analysis goes through `r2` rather than `bash` + `r2 -q -c`: the native tool
-/// keeps one analysed session, returns projected JSON instead of coloured text,
-/// and caps what it hands back.
-pub fn schema() -> Vec<Value> {
+/// Analysis goes through the `analyze` tool rather than `bash`: the host
+/// serves it from the selected engine (native or radare2), keeps one analysed
+/// session, returns projected JSON instead of coloured text, and caps what it
+/// hands back. The tool vocabulary itself is backend-independent, and
+/// `capabilities` filters out ops the backend cannot serve (e.g. `decompile`
+/// and `raw` on the native backend) so the model never sees them.
+pub fn schema(capabilities: crate::engine::Capabilities) -> Vec<Value> {
     vec![
-        crate::r2::tool_schema(),
+        crate::engine::tool_schema(capabilities),
         tool(
             "bash",
             "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures. Use workdir instead of cd.",
@@ -207,9 +211,15 @@ async fn read_path(
         }));
     }
     // file
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| format!("failed to read {file_path}: {e}"))?;
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(format!(
+                "{file_path} is not UTF-8 text (likely a binary); use the `analyze` tool to inspect binaries"
+            ));
+        }
+        Err(e) => return Err(format!("failed to read {file_path}: {e}")),
+    };
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let off = offset.unwrap_or(1).saturating_sub(1) as usize;
@@ -344,8 +354,8 @@ async fn edit_path(
             }
         }
     } else {
-        for i in 0..start {
-            out.push_str(lines[i]);
+        for line in lines.iter().take(start) {
+            out.push_str(line);
             out.push('\n');
         }
         out.push_str(new_string);
@@ -467,10 +477,11 @@ pub async fn execute(tc: &ToolCall) -> Result<String, String> {
             let replace_all = get_bool_opt(&args, "replaceAll", false);
             edit_path(&file_path, &old_string, &new_string, replace_all).await
         }
-        // Analysis is host-owned (it needs a live r2 process for the target).
-        "r2" => Err(format!(
+        // Analysis is host-owned (it needs a live engine for the target). The
+        // model sometimes names the op as the tool; recognise both.
+        name if crate::engine::is_op(name) => Err(format!(
             "the `{}` tool is served by the host, not this runtime",
-            crate::r2::TOOL_NAME
+            crate::engine::TOOL_NAME
         )),
         other => Err(format!("unknown tool: {other}")),
     };

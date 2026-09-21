@@ -56,7 +56,22 @@ run:
     assert!(cfg.select.require_flag, "flag grading on by default");
     assert_eq!(cfg.run.max_turns, 20);
     assert_eq!(cfg.run.timeout_secs, 480, "run default kept");
+    assert!(
+        cfg.run.backend.is_none(),
+        "backend defaults to unset (env/app)"
+    );
     assert!(cfg.dataset.jsonl_url.contains("crackmes_dataset.jsonl"));
+}
+
+#[test]
+fn run_backend_parses_from_yaml() {
+    use librecurse::engine::BackendKind;
+    let native: EvalConfig = serde_yaml::from_str("run:\n  backend: native\n").expect("parse");
+    assert_eq!(native.run.backend, Some(BackendKind::Native));
+    let r2: EvalConfig = serde_yaml::from_str("run:\n  backend: r2\n").expect("parse");
+    assert_eq!(r2.run.backend, Some(BackendKind::R2));
+    // Unknown values are a parse error, not a silent fallback.
+    assert!(serde_yaml::from_str::<EvalConfig>("run:\n  backend: ida\n").is_err());
 }
 
 #[test]
@@ -65,6 +80,8 @@ fn shipped_easy_config_selects_current_ten() {
     let cfg = EvalConfig::load(&path).expect("load easy.yaml");
     assert_eq!(cfg.select.hexids.len(), 10);
     assert_eq!(cfg.binaries.len(), 10);
+    // The shipped tier does not pin a backend; env/app default applies.
+    assert!(cfg.run.backend.is_none());
     // Every binary hint points at a tier hexid (no stale entries).
     let ids: std::collections::HashSet<&str> =
         cfg.select.hexids.iter().map(|s| s.as_str()).collect();
@@ -178,13 +195,13 @@ fn target_mapping() {
         url: String::new(),
         tags: Vec::new(),
     };
-    let t = prompt_target_for(&task, "C:\\x.exe");
+    let t = prompt_target_for(&task, "C:\\x.exe", librecurse::engine::Capabilities::all());
     assert_eq!(t.kind, "pe");
     assert_eq!(t.bits, 32);
     let mut arm = task.clone();
     arm.platform = "Unix/linux etc.".into();
     arm.arch = "ARM".into();
-    let t = prompt_target_for(&arm, "/tmp/x");
+    let t = prompt_target_for(&arm, "/tmp/x", librecurse::engine::Capabilities::all());
     assert_eq!(t.kind, "elf");
     assert_eq!(t.arch, "arm");
 }
@@ -202,8 +219,9 @@ async fn echo_path_records_no_model_turns() {
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
+        capabilities: librecurse::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema();
+    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
     let mut exec = |_: &ToolCall| async { Ok("".to_string()) };
     let mut emit = |_: librecurse::agent::AgentEvent| {};
     agent
@@ -346,8 +364,9 @@ async fn mock_loop_records_exact_turns() {
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
+        capabilities: librecurse::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema();
+    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
     let mut agent = Agent::new();
     agent.set_debug(true);
     let mut exec = |tc: &ToolCall| {
@@ -427,6 +446,9 @@ async fn mock_loop_records_exact_turns() {
         value["turns"][0]["request"][0].is_u64(),
         "request holds pool indices"
     );
+    // Every tool call records its wall-clock duration (backend vs model time).
+    assert_eq!(value["turns"][0]["tool_results"][0]["name"], "bash");
+    assert!(value["turns"][0]["tool_results"][0]["duration_ms"].is_u64());
     let _ = std::fs::remove_file(&path);
 }
 
@@ -447,8 +469,9 @@ async fn trace_stores_each_message_once() {
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
+        capabilities: librecurse::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema();
+    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
     let mut agent = Agent::new();
     agent.set_debug(true);
     let mut exec = |tc: &ToolCall| {
@@ -529,8 +552,9 @@ async fn rate_limit_is_retried_then_succeeds() {
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
+        capabilities: librecurse::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema();
+    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
     let mut agent = Agent::new();
     let mut exec = |_: &ToolCall| async { Ok(String::new()) };
     let mut emit = |_: librecurse::agent::AgentEvent| {};
@@ -582,8 +606,9 @@ async fn empty_tool_result_is_replaced_not_sent_verbatim() {
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
+        capabilities: librecurse::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema();
+    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
     let mut agent = Agent::new();
     agent.set_debug(true);
     // Tool runtime that returns nothing at all, like a silent success.
@@ -607,40 +632,101 @@ async fn empty_tool_result_is_replaced_not_sent_verbatim() {
 }
 
 #[tokio::test]
-async fn r2_is_one_tool_and_the_runtime_refuses_to_fake_it() {
-    // Analysis must go through the native tool, not bash. The base runtime has
-    // no r2 process, so it must say so rather than silently "succeed".
-    let tools = librecurse::tools::schema();
+async fn analyze_is_one_tool_and_the_runtime_refuses_to_fake_it() {
+    // Analysis must go through the backend-neutral tool, not bash. The base
+    // runtime has no engine attached, so it must say so rather than silently
+    // "succeed".
+    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
-    assert!(names.contains(&librecurse::r2::TOOL_NAME));
+    assert!(names.contains(&librecurse::engine::TOOL_NAME));
     // One analysis tool, not a family of r2_disasm/r2_xref/... tools.
     assert_eq!(
-        names.iter().filter(|n| n.starts_with("r2")).count(),
+        names
+            .iter()
+            .filter(|n| **n == librecurse::engine::TOOL_NAME)
+            .count(),
         1,
-        "exactly one r2 tool: {names:?}"
+        "exactly one analysis tool: {names:?}"
     );
     let desc = tools
         .iter()
-        .find(|t| t["function"]["name"] == librecurse::r2::TOOL_NAME)
+        .find(|t| t["function"]["name"] == librecurse::engine::TOOL_NAME)
         .and_then(|t| t["function"]["description"].as_str())
-        .expect("r2 tool described");
-    assert!(desc.contains("do NOT call r2 through bash"));
+        .expect("analysis tool described");
+    assert!(
+        desc.contains("backend"),
+        "description names the backend: {desc}"
+    );
+    assert!(desc.contains("decompile"), "description lists ops: {desc}");
 
     let tc = ToolCall {
         id: "x".into(),
         call_type: "function".into(),
         function: librecurse::agent::ToolCallFn {
-            name: librecurse::r2::TOOL_NAME.into(),
-            arguments: r#"{"cmd":"afl"}"#.into(),
+            name: librecurse::engine::TOOL_NAME.into(),
+            arguments: r#"{"op":"functions"}"#.into(),
         },
     };
     let err = librecurse::tools::execute(&tc)
         .await
-        .expect_err("base runtime cannot serve r2");
+        .expect_err("base runtime cannot serve analysis");
     assert!(err.contains("served by the host"), "got: {err}");
+}
+
+#[test]
+fn native_engine_serves_the_neutral_tool_end_to_end() {
+    // The whole seam: a concrete backend + the neutral tool dispatcher.
+    use librecurse::engine::{execute_tool, Engine};
+    let exe = std::env::current_exe().expect("test exe");
+    let engine = librecurse::native::NativeEngine::open(&exe).expect("open native engine");
+    engine.analyze().expect("analyze");
+    let out = execute_tool(&engine, &serde_json::json!({"op": "functions", "limit": 5}))
+        .expect("functions op");
+    let env: serde_json::Value = serde_json::from_str(&out).expect("envelope");
+    assert_eq!(env["op"], "functions");
+    assert!(env["count"].as_u64().is_some());
+    // The native backend advertises no decompiler and says so precisely.
+    let err = execute_tool(&engine, &serde_json::json!({"op": "decompile", "addr": 0}))
+        .expect_err("native has no decompiler");
+    assert!(err.contains("no decompiler"), "got: {err}");
+
+    // The schema and system prompt derived from those capabilities hide the
+    // ops the backend cannot serve, so the model is never tempted to call
+    // them (the log comparison showed 20 wasted native calls).
+    let caps = engine.capabilities();
+    assert!(!caps.decompile && !caps.raw);
+    let schema = librecurse::engine::tool_schema(caps);
+    let ops = schema["function"]["parameters"]["properties"]["op"]["enum"]
+        .as_array()
+        .expect("op enum");
+    assert!(
+        !ops.iter().any(|v| v == "decompile"),
+        "schema hides decompile"
+    );
+    assert!(!ops.iter().any(|v| v == "raw"), "schema hides raw");
+
+    let target = librecurse::agent::PromptTarget {
+        path: exe.to_string_lossy().into_owned(),
+        arch: "x86".into(),
+        bits: 64,
+        kind: "elf".into(),
+        memory: String::new(),
+        capabilities: caps,
+    };
+    let prompt = librecurse::agent::system_prompt(&target);
+    assert!(
+        !prompt.contains("decompile"),
+        "prompt hides decompile: {prompt}"
+    );
+    assert!(!prompt.contains("`raw`"), "prompt hides raw: {prompt}");
+
+    // `raw` is rejected up front rather than reaching the backend.
+    let err = execute_tool(&engine, &serde_json::json!({"op": "raw", "cmd": "afl"}))
+        .expect_err("native has no console");
+    assert!(err.contains("no console"), "got: {err}");
 }
 
 #[tokio::test]

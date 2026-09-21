@@ -59,6 +59,10 @@ run:
   # this at a pinned paid model (e.g. deepseek/deepseek-v4.1-flash) when the
   # score itself matters.
   model: deepseek/deepseek-v4-flash
+  # Analysis backend for this tier: `native` (pure Rust, the default) or `r2`
+  # (radare2, full features). Unset = the default. Override per run with
+  # `EVAL_BACKEND=r2 just eval-run`.
+  # backend: native
   max_turns: 40
   timeout_secs: 480
 
