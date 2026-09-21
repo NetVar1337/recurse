@@ -20,7 +20,7 @@ import { api } from "@/api";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
 import { useAnalysisStore } from "@/store/analysisStore";
-import type { Function, GraphOp, R2Graph } from "@/types";
+import type { Function, FunctionGraph, GraphOp } from "@/types";
 
 const BLOCK_W = 380;
 const LINE_H = 17;
@@ -120,7 +120,7 @@ function makeEdge(src: string, dst: number, label: string | undefined): Edge {
 }
 
 function toGraph(
-	graph: R2Graph,
+	graph: FunctionGraph,
 	byAddr: Map<number, Function>,
 ): { nodes: BlockNode[]; edges: Edge[] } {
 	const blocks = graph.blocks ?? [];
@@ -140,13 +140,17 @@ function toGraph(
 	});
 
 	const edges: Edge[] = [];
+	// Only emit edges between blocks that exist: a jump target that was not
+	// decoded as a block would otherwise leave a dangling edge ReactFlow chokes
+	// on (common with the native backend's partial CFG).
+	const ids = new Set(nodes.map((n) => n.id));
 	for (const b of blocks) {
 		const src = String(b.addr);
 		const conditional = b.jump != null && b.fail != null;
-		if (b.jump != null) {
+		if (b.jump != null && ids.has(String(b.jump))) {
 			edges.push(makeEdge(src, b.jump, conditional ? "T" : undefined));
 		}
-		if (b.fail != null) {
+		if (b.fail != null && ids.has(String(b.fail))) {
 			edges.push(makeEdge(src, b.fail, conditional ? "F" : undefined));
 		}
 	}
@@ -190,10 +194,9 @@ function GraphCanvas({ addr }: { addr: number }) {
 			if (typeof f.addr === "number") byAddr.set(f.addr, f);
 		}
 		api.functionGraph(addr)
-			.then((arr) => {
+			.then((g) => {
 				if (cancelled) return;
-				const g = arr?.[0];
-				if (!g) {
+				if (!g || !g.blocks || g.blocks.length === 0) {
 					setErr("no graph for this address");
 					setLoading(false);
 					return;

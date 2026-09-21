@@ -167,11 +167,14 @@ export interface GraphOp {
 	disasm?: string;
 	bytes?: string | null;
 	type?: string;
+	jump?: number | null;
+	fail?: number | null;
 	[k: string]: unknown;
 }
 
 export interface GraphBlock {
 	addr: number;
+	ninstr?: number;
 	size?: number;
 	jump?: number | null;
 	fail?: number | null;
@@ -179,10 +182,14 @@ export interface GraphBlock {
 	[k: string]: unknown;
 }
 
-export interface R2Graph {
+/**
+ * Canonical control-flow graph. Both backends produce exactly this shape — the
+ * r2 backend transforms its `agfj` JSON into it host-side — so the graph UI is
+ * backend-agnostic.
+ */
+export interface FunctionGraph {
+	addr: number;
 	name?: string;
-	addr?: number;
-	size?: number;
 	blocks?: GraphBlock[];
 	[k: string]: unknown;
 }
