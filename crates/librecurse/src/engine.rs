@@ -837,9 +837,23 @@ pub fn execute_tool(engine: &dyn Engine, args: &Value) -> Result<String, String>
         }
         "strings" => {
             let all = engine.strings()?;
+            // `addr` answers "what string is at this address?" (a common
+            // question, e.g. from a `[rip+X]` operand); `query` filters by
+            // content.
+            let at = match args.get("addr").and_then(Target::from_json) {
+                Some(Target::Addr(a)) => Some(a),
+                Some(Target::Symbol(n)) => engine.resolve(&n)?,
+                None => None,
+            };
             let filtered: Vec<&StringRef> = all
                 .iter()
-                .filter(|s| matches_query(query, &[s.string.as_str()]))
+                .filter(|s| {
+                    matches_query(query, &[s.string.as_str()])
+                        && at.is_none_or(|a| {
+                            let end = s.addr.saturating_add(s.string.len() as u64 + 1);
+                            a >= s.addr && a < end
+                        })
+                })
                 .collect();
             let (kept, _) = take(&filtered, limit);
             let items = serde_json::to_value(kept).map_err(|e| e.to_string())?;

@@ -1254,17 +1254,17 @@ impl Engine for NativeEngine {
         }
         // A discovered function name. Matched loosely so the model can drop the
         // C++ argument list it saw in the list (`readInput()` -> `readInput`).
+        // The query may also be given mangled (`_Z4mainiPPc`), so demangle it.
+        let query_demangled = demangle(name);
         self.discover()?;
         {
             let state = self
                 .state
                 .lock()
                 .map_err(|e| format!("native state poisoned: {e}"))?;
-            if let Some((_, f)) = state
-                .functions
-                .iter()
-                .find(|(_, f)| name_matches(name, &f.name))
-            {
+            if let Some((_, f)) = state.functions.iter().find(|(_, f)| {
+                name_matches(name, &f.name) || name_matches(&query_demangled, &f.name)
+            }) {
                 return Ok(Some(f.addr));
             }
         }
@@ -1277,9 +1277,14 @@ impl Engine for NativeEngine {
             let Ok(sym_name) = sym.name() else {
                 continue;
             };
-            // The mangled name or its demangled form (`_Z9readInputv` ->
-            // `readInput()`), either of which the model may type.
-            if name_matches(name, sym_name) || name_matches(name, &demangle(sym_name)) {
+            // The mangled name, its demangled form, and the demangled query
+            // (`_Z4mainiPPc` -> `main(int, char**)` -> `main`).
+            let demangled = demangle(sym_name);
+            if name_matches(name, sym_name)
+                || name_matches(name, &demangled)
+                || name_matches(&query_demangled, sym_name)
+                || name_matches(&query_demangled, &demangled)
+            {
                 return Ok(Some(sym.address()));
             }
             let stripped = sym_name.trim_start_matches("sym.").trim_end_matches('_');

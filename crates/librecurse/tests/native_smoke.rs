@@ -133,3 +133,40 @@ fn native_annotates_disassembly_and_names_imports() {
         .expect_err("0 is not code");
     assert!(err.contains("not in an executable section"), "got: {err}");
 }
+
+#[test]
+fn native_strings_by_address_and_mangled_resolve() {
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
+    if !bin.is_file() {
+        return;
+    }
+    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    engine.analyze().expect("analyze");
+    // A mangled C++ query (`_Z4mainiPPc`) resolves like its base name.
+    assert_eq!(
+        engine.resolve("_Z4mainiPPc").expect("resolve mangled"),
+        engine.resolve("main").expect("resolve main")
+    );
+    // `strings` with an address reads the string at/containing it.
+    let strings = engine.strings().expect("strings");
+    let s = strings
+        .iter()
+        .find(|s| s.string.len() > 4)
+        .expect("a string");
+    let inside = s.addr + 1;
+    let out = librecurse::engine::execute_tool(
+        &engine,
+        &serde_json::json!({"op": "strings", "addr": inside}),
+    )
+    .expect("strings by addr");
+    let env: serde_json::Value = serde_json::from_str(&out).expect("envelope");
+    assert!(
+        env["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["string"] == s.string),
+        "string at {inside:#x} returned: {out}"
+    );
+}
