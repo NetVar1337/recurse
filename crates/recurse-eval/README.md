@@ -78,8 +78,10 @@ Equivalent npm scripts live in `tauri/` (`npm run eval:run`, …).
 Everything `eval-run` prints is also written to
 `<traces>/<tier>/<backend>/run.log` — the full run narrative: resolved config,
 backend, model, knobs, the selected task list, every fetch, one line per task
-with turns, tokens, cost and error, plus the totals. Traces default under the
-workspace target dir, so both live at `target/eval-traces/<tier>/<backend>/`.
+with turns, tokens, cost, error and `analyze=<ms>` (time spent inside analysis
+tool calls — backend latency, as opposed to model latency), plus the totals.
+Traces default under the workspace target dir, so both live at
+`target/eval-traces/<tier>/<backend>/`.
 
 Next to it, one `target/eval-traces/<tier>/<backend>/<hexid>.json` per task holds
 the full conversation with per-turn detail: exact request messages, reasoning,
@@ -102,7 +104,7 @@ Instead:
     {
       "turn": 1,
       "request": [0, 1, 2],  // indices into `messages` = exact input sent
-      "tool_results": [ ... ],   // full result text, may exceed what the wire held
+      "tool_results": [ ... ],   // full result text + duration_ms per call
       "reasoning": "...", "content": "...", "tool_calls": [ ... ]
     }
   ],

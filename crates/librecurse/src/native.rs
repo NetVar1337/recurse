@@ -299,7 +299,9 @@ impl NativeEngine {
                 continue;
             }
             if let Ok(name) = sym.name() {
-                names.entry(sym.address()).or_insert_with(|| demangle(name));
+                names
+                    .entry(sym.address())
+                    .or_insert_with(|| shorten_name(name));
             }
         }
         let entry = file.entry();
@@ -434,7 +436,9 @@ impl NativeEngine {
             }
             if let Ok(name) = sym.name() {
                 if !name.is_empty() {
-                    names.entry(sym.address()).or_insert_with(|| demangle(name));
+                    names
+                        .entry(sym.address())
+                        .or_insert_with(|| shorten_name(name));
                 }
             }
         }
@@ -646,7 +650,7 @@ fn import_got_labels(file: &object::File<'_>) -> HashMap<u64, String> {
     for (i, sym) in file.dynamic_symbols().enumerate() {
         if let Ok(name) = sym.name() {
             if !name.is_empty() {
-                dyn_names.insert(i + 1, demangle(name));
+                dyn_names.insert(i + 1, shorten_name(name));
             }
         }
     }
@@ -822,9 +826,10 @@ fn parse_number(token: &str) -> Option<u64> {
     }
 }
 
-/// Loose symbol-name match for [`Engine::resolve`]: ignores a C++ argument
-/// list, an r2 `sym.` prefix and trailing underscores, so `readInput` matches
-/// `readInput()`, `readInput__`, or the mangled `_Z9readInputv` once demangled.
+/// Loose symbol-name match for [`Engine::resolve`]: ignores C++ template
+/// arguments and argument list, an r2 `sym.`/`imp.` prefix and trailing
+/// underscores, so `readInput` matches `readInput()`, `readInput__`, or the
+/// mangled `_Z9readInputv` once demangled.
 ///
 /// ```
 /// use librecurse::native::name_matches;
@@ -838,9 +843,10 @@ fn parse_number(token: &str) -> Option<u64> {
 /// ```
 pub fn name_matches(query: &str, candidate: &str) -> bool {
     let norm = |s: &str| -> String {
-        s.split('(')
+        strip_templates(s)
+            .split('(')
             .next()
-            .unwrap_or(s)
+            .unwrap_or("")
             .trim_start_matches("sym.")
             .trim_start_matches("imp.")
             .trim_end_matches('_')
@@ -848,6 +854,53 @@ pub fn name_matches(query: &str, candidate: &str) -> bool {
     };
     let q = norm(query);
     !q.is_empty() && norm(candidate) == q
+}
+
+/// Remove balanced C++ template argument lists (`<...>`), leaving `operator<<`
+/// and comparisons alone. Nested templates collapse entirely.
+fn strip_templates(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0i32;
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '<' => {
+                if depth > 0 {
+                    depth += 1;
+                } else {
+                    let prev = if i > 0 { chars[i - 1] } else { ' ' };
+                    let next = chars.get(i + 1).copied().unwrap_or(' ');
+                    if matches!(prev, '<' | '=') || matches!(next, '<' | '=') {
+                        out.push(c);
+                    } else {
+                        depth += 1;
+                    }
+                }
+            }
+            '>' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A bounded, human-usable display name for a symbol: demangled, template
+/// arguments and parameters stripped. C++ STL symbols demangle to hundreds of
+/// characters (measured: 496 for one `std::iter_swap`), which bloats the
+/// model's context for no benefit.
+///
+/// ```
+/// use librecurse::native::shorten_name;
+/// assert_eq!(shorten_name("_Z9readInputv"), "readInput");
+/// assert_eq!(shorten_name("main"), "main");
+/// assert!(shorten_name("void std::iter_swap<char*, std::string>(char*, std::string)").len() <= 66);
+/// ```
+pub fn shorten_name(raw: &str) -> String {
+    let base = strip_templates(&demangle(raw));
+    let no_params = base.split('(').next().unwrap_or("");
+    let collapsed = no_params.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_str(collapsed.trim(), 64)
 }
 
 /// Render one Capstone instruction as `mnemonic operand, operand`.
@@ -1136,7 +1189,7 @@ impl Engine for NativeEngine {
             }
             let bind = String::from_utf8_lossy(imp.library()).into_owned();
             out.push(Import {
-                name: demangle(&name),
+                name: shorten_name(&name),
                 plt: None,
                 bind: (!bind.is_empty()).then_some(bind),
                 kind: Some("import".to_string()),
@@ -1512,6 +1565,23 @@ mod tests {
         assert!(name_matches("checkPassword", "checkPassword(int)"));
         assert!(!name_matches("main", "domain"));
         assert!(!name_matches("", "anything"));
+    }
+
+    #[test]
+    fn shortens_long_cpp_names() {
+        assert_eq!(shorten_name("_Z9readInputv"), "readInput");
+        assert_eq!(shorten_name("main"), "main");
+        let long = "void std::iter_swap<char*, std::string>(char*, std::string)";
+        assert!(
+            shorten_name(long).len() <= 66,
+            "got: {}",
+            shorten_name(long)
+        );
+        // `operator<<` keeps its symbol rather than being eaten as a template.
+        assert_eq!(
+            strip_templates("std::operator<< <char>(int)"),
+            "std::operator<< (int)"
+        );
     }
 
     #[test]

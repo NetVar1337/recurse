@@ -31,14 +31,13 @@ fn native_backend_parses_discovers_and_disassembles() {
 
     // Names the tool itself emits must resolve back to an address, even when
     // they are not ELF symbols (`fcn_1080`), or the model's follow-up calls
-    // fail with "could not resolve symbol".
+    // fail with "could not resolve symbol". Shortened C++ names can collide
+    // (`foo(int)`/`foo(char*)` -> `foo`), so require resolution, not equality.
     for f in funcs.iter().take(5) {
-        assert_eq!(
-            engine.resolve(&f.name).expect("resolve"),
-            Some(f.addr),
-            "discovered name {} resolves to {:#x}",
-            f.name,
-            f.addr
+        assert!(
+            engine.resolve(&f.name).expect("resolve").is_some(),
+            "discovered name {} resolves",
+            f.name
         );
     }
     assert_eq!(
@@ -121,8 +120,8 @@ fn native_annotates_disassembly_and_names_imports() {
     );
     assert!(
         ops.iter().any(|o| {
-            o.disasm.contains("; failed()")
-                || o.disasm.contains("; readInput()")
+            o.disasm.contains("; failed")
+                || o.disasm.contains("; readInput")
                 || o.disasm.contains("; main")
         }),
         "call target annotated"
