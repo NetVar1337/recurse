@@ -35,7 +35,6 @@ export function Header() {
 		void initBackend();
 	}, [initBackend]);
 
-	const file = binary?.path.split(/[\\/]/).pop();
 	const zoomPct = Math.round(Math.pow(1.2, zoomLevel) * 100);
 
 	return (
@@ -48,24 +47,10 @@ export function Header() {
 				</span>
 			</div>
 
-			{binary && (
+			{binary && project && (
 				<div className="flex flex-1 items-center gap-1.5 overflow-hidden">
-					{project && (
-						<Badge
-							variant="outline"
-							className="text-primary font-mono"
-						>
-							{project.name}
-						</Badge>
-					)}
-					<Badge
-						variant="outline"
-						className="text-muted-foreground max-w-[260px] truncate font-mono"
-					>
-						{file}
-					</Badge>
-					<Badge variant="outline" className="font-mono">
-						{backend}
+					<Badge variant="outline" className="text-primary font-mono">
+						{project.name}
 					</Badge>
 				</div>
 			)}
