@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
 import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
+import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
 import { useUiStore } from "@/store/uiStore";
 import type { CenterTab, DecompileAnnotation, Function, Xref } from "@/types";
@@ -160,6 +161,9 @@ export function CenterPanel() {
 	const refreshDisasm = useAnalysisStore((s) => s.refreshDisasm);
 	const decompile = useAnalysisStore((s) => s.decompile);
 	const clearDecompiled = useAnalysisStore((s) => s.clearDecompiled);
+	// Capabilities of the active backend; hide affordances it cannot serve
+	// (decompile / raw console on native). Undefined = older host, show them.
+	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
 
 	const pending = useContextStore((s) => s.pending);
 	const setPending = useContextStore((s) => s.setPending);
@@ -307,7 +311,9 @@ export function CenterPanel() {
 						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
 						<TabsTrigger value="strings">Strings</TabsTrigger>
 						<TabsTrigger value="imports">Imports</TabsTrigger>
-						<TabsTrigger value="console">r2</TabsTrigger>
+						{capabilities?.raw !== false && (
+							<TabsTrigger value="console">r2</TabsTrigger>
+						)}
 						<TabsTrigger value="shell">Shell</TabsTrigger>
 					</TabsList>
 				</Tabs>
@@ -339,14 +345,16 @@ export function CenterPanel() {
 								Graph
 							</button>
 						</div>
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={decompile}
-							disabled={decompiling || !selected}
-						>
-							{decompiling ? "Decompiling…" : "Decompile"}
-						</Button>
+						{capabilities?.decompile !== false && (
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={decompile}
+								disabled={decompiling || !selected}
+							>
+								{decompiling ? "Decompiling…" : "Decompile"}
+							</Button>
+						)}
 						<Button
 							variant={xrefsOpen ? "secondary" : "ghost"}
 							size="sm"

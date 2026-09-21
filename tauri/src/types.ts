@@ -1,5 +1,12 @@
 export interface BinaryInfo {
 	path: string;
+	backend?: Backend;
+	capabilities?: {
+		decompile: boolean;
+		raw: boolean;
+		graph: boolean;
+		xrefs_from: boolean;
+	};
 	info: {
 		bin?: {
 			arch?: string;

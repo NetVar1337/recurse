@@ -55,6 +55,11 @@ Honest scope:
   (`call readInput()`), `[rip+X]`/absolute references resolve to strings,
   globals and imported GOT slots (`; "Enter key: "`, `; __libc_start_main`),
   and PLT stubs are named after the import they forward to (`imp.exit`).
+- Symbol names are demangled with template arguments and parameter lists
+  stripped and capped at 64 chars: C++ STL symbols demangle to hundreds of
+  characters (one `std::iter_swap` is 496), which otherwise dominates the
+  model's context. Shortened names can collide; `resolve` returns the first
+  match and the function list still carries addresses.
 - Functions are discovered from symbols, the entry point, and direct call
   targets.
 - No decompiler (`capabilities().decompile == false`) and no raw console. The

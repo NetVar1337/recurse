@@ -90,7 +90,12 @@ pub fn open_binary_impl(path: String, state: &AppState) -> Result<Value, String>
     );
     let mut guard = session_of(state)?;
     let sess = crate::engine::build(std::path::Path::new(&path))?;
-    let summary = sess.summary()?;
+    let mut summary = sess.summary()?;
+    // Host metadata the UI uses to hide affordances the backend cannot serve
+    // (decompile / raw console on the native backend).
+    summary["backend"] = serde_json::json!(sess.backend().as_str());
+    summary["capabilities"] =
+        serde_json::to_value(sess.capabilities()).unwrap_or(serde_json::Value::Null);
     eprintln!(
         "[recurse] open_binary: funcs={} strings={}",
         summary["function_count"], summary["string_count"]
