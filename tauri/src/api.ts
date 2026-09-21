@@ -14,6 +14,7 @@ import type {
 	ModelInfo,
 	Project,
 	R2String,
+	Recon,
 	FunctionGraph,
 	Session,
 	Xref,
@@ -32,6 +33,7 @@ export const api = {
 	analyze: () => invoke<void>("analyze"),
 	closeBinary: () => invoke<void>("close_binary"),
 	functions: () => invoke<Function[]>("functions"),
+	recon: () => invoke<Recon>("recon"),
 	analysisProgress: () =>
 		invoke<{ function_count: number; indexing: boolean }>(
 			"analysis_progress",

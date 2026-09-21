@@ -20,6 +20,49 @@ export interface BinaryInfo {
 	string_count: number;
 }
 
+/** Hardening report (checksec-style) for the recon page. */
+export interface ReconChecksec {
+	relro?: string;
+	canary?: string;
+	nx?: string;
+	pie?: string;
+	rpath?: string;
+	runpath?: string;
+	fortify?: string;
+	fortified?: number;
+	fortifiable?: number;
+}
+
+/** File hashes for the recon page. */
+export interface ReconHashes {
+	md5: string;
+	sha1: string;
+	sha256: string;
+	crc32: string;
+}
+
+/** Analysis counts for the recon page. */
+export interface ReconAnalysis {
+	functions?: number;
+	xrefs?: number;
+	calls?: number;
+	strings?: number;
+	symbols?: number;
+	imports?: number;
+	coverage?: number;
+}
+
+/** Reconnaissance summary rendered by the recon page. */
+export interface Recon {
+	info: Record<string, unknown>;
+	checksec: ReconChecksec;
+	libraries: string[];
+	analysis: ReconAnalysis;
+	hashes: ReconHashes;
+	entropy: number;
+	temperature: number;
+}
+
 export interface Function {
 	addr: number;
 	name?: string;
@@ -84,7 +127,7 @@ export interface DecompileResult {
 	[k: string]: unknown;
 }
 
-export type CenterTab = "disasm" | "strings" | "imports" | "console";
+export type CenterTab = "recon" | "disasm" | "strings" | "imports" | "console";
 
 export interface ModelInfo {
 	id: string;

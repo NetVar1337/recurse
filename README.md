@@ -32,6 +32,9 @@ drives it headlessly. All three are workspace members, so one `Cargo.lock` and o
 
 - Cursor-style workspace: function list, disassembly/strings/imports tabs, CFG graph,
   and a chat agent sidebar (toggle with the Chat button or `Ctrl+L`)
+- Recon page: binary info, MD5/SHA1/SHA256/CRC32 hashes, entropy, linked libraries,
+  a self-contained hardening report (RELRO / PIE / NX / canary / FORTIFY / RPATH —
+  no external `checksec`), and analysis counts
 - Grounded agent: every address is a clickable object (function list, graph nodes,
   xrefs, decompiler annotations) — not pasted text that the model can hallucinate
 - Live analysis session on any binary — including extension-less files

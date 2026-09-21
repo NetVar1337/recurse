@@ -11,6 +11,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
+import { ReconPanel } from "@/components/ReconPanel";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
@@ -170,6 +171,7 @@ export function CenterPanel() {
 	// Capabilities of the active backend; hide affordances it cannot serve
 	// (decompile / raw console on native). Undefined = older host, show them.
 	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
+	const binaryPath = useBinaryStore((s) => s.binary?.path);
 
 	const pending = useContextStore((s) => s.pending);
 	const setPending = useContextStore((s) => s.setPending);
@@ -310,6 +312,7 @@ export function CenterPanel() {
 			<div className="border-border bg-card flex items-center gap-1 border-b px-1">
 				<Tabs value={tab} onValueChange={setTabSafe} className="flex-1">
 					<TabsList className="h-9 bg-transparent p-1">
+						<TabsTrigger value="recon">Recon</TabsTrigger>
 						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
 						<TabsTrigger value="strings">Strings</TabsTrigger>
 						<TabsTrigger value="imports">Imports</TabsTrigger>
@@ -382,7 +385,9 @@ export function CenterPanel() {
 			</div>
 
 			<div className="flex min-h-0 min-w-0 flex-1 flex-col">
-				{tab === "disasm" && viewMode === "graph" && selected ? (
+				{tab === "recon" ? (
+					<ReconPanel key={binaryPath} />
+				) : tab === "disasm" && viewMode === "graph" && selected ? (
 					<Suspense
 						fallback={
 							<div className="text-muted-foreground px-3 py-3 text-xs">

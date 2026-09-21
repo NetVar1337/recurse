@@ -183,6 +183,151 @@ pub fn analysis_progress(state: State<'_, AppState>) -> Result<Value, String> {
     }))
 }
 
+/// Core of [`recon`]; see [`open_binary_impl`]. The engine supplies the
+/// hardening report, libraries and analysis counts; the host adds file hashes,
+/// entropy and size, so the page works on any backend.
+pub async fn recon_impl(state: &AppState) -> Result<Value, String> {
+    let (path, engine_recon, engine_info, counts) = {
+        let guard = session_of(state)?;
+        let engine = with_sess(&guard)?;
+        (
+            engine.path().to_path_buf(),
+            engine.recon()?,
+            engine.info()?,
+            serde_json::json!({
+                "functions": engine.functions()?.len(),
+                "strings": engine.strings()?.len(),
+                "imports": engine.imports()?.len(),
+            }),
+        )
+    };
+
+    let hash_path = path.clone();
+    let (hashes, entropy, size, mode) =
+        tauri::async_runtime::spawn_blocking(move || file_stats(&hash_path))
+            .await
+            .map_err(|e| format!("hashing task failed: {e}"))??;
+
+    // Info: engine `info().bin` (arch/bits/…), overlaid with the backend's
+    // richer recon info, then the host's file-level fields.
+    let mut info = engine_info
+        .get("bin")
+        .cloned()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(extra) = engine_recon.get("info").and_then(Value::as_object) {
+        for (k, v) in extra {
+            info[k] = v.clone();
+        }
+    }
+    info["file"] = serde_json::json!(path.display().to_string());
+    info["size"] = serde_json::json!(size);
+    info["mode"] = serde_json::json!(mode);
+
+    let mut analysis = engine_recon
+        .get("analysis")
+        .cloned()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    if analysis
+        .get("functions")
+        .map(Value::is_null)
+        .unwrap_or(true)
+    {
+        analysis["functions"] = counts["functions"].clone();
+    }
+    analysis["strings"] = counts["strings"].clone();
+    analysis["imports"] = counts["imports"].clone();
+
+    Ok(serde_json::json!({
+        "info": info,
+        "checksec": engine_recon
+            .get("checksec")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+        "libraries": engine_recon
+            .get("libraries")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+        "analysis": analysis,
+        "hashes": hashes,
+        "entropy": entropy,
+        "temperature": entropy / 8.0,
+    }))
+}
+
+#[tauri::command]
+pub async fn recon(state: State<'_, AppState>) -> Result<Value, String> {
+    recon_impl(&state).await
+}
+
+/// Hashes, Shannon entropy, size and permission string for the recon page.
+/// Reads the file once, off the UI thread.
+fn file_stats(path: &std::path::Path) -> Result<(Value, f64, u64, String), String> {
+    use md5::Digest;
+    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let hashes = serde_json::json!({
+        "md5": hex(md5::Md5::digest(&bytes).as_slice()),
+        "sha1": hex(sha1::Sha1::digest(&bytes).as_slice()),
+        "sha256": hex(sha2::Sha256::digest(&bytes).as_slice()),
+        "crc32": format!("{:08x}", crc32fast::hash(&bytes)),
+    });
+    Ok((hashes, entropy(&bytes), bytes.len() as u64, file_mode(path)))
+}
+
+/// Lowercase hex encoding.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Shannon entropy of the file, in bits per byte (0–8).
+fn entropy(bytes: &[u8]) -> f64 {
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u64; 256];
+    for &b in bytes {
+        counts[b as usize] += 1;
+    }
+    let len = bytes.len() as f64;
+    let mut e = 0.0;
+    for &c in &counts {
+        if c > 0 {
+            let p = c as f64 / len;
+            e -= p * p.log2();
+        }
+    }
+    e
+}
+
+#[cfg(unix)]
+fn file_mode(path: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| {
+            let bits = m.permissions().mode();
+            let mut s = String::with_capacity(9);
+            for shift in [6, 3, 0] {
+                let p = (bits >> shift) & 7;
+                s.push(if p & 4 != 0 { 'r' } else { '-' });
+                s.push(if p & 2 != 0 { 'w' } else { '-' });
+                s.push(if p & 1 != 0 { 'x' } else { '-' });
+            }
+            s
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(not(unix))]
+fn file_mode(_path: &std::path::Path) -> String {
+    String::new()
+}
+
 #[tauri::command]
 pub fn disassemble(addr: u64, count: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;

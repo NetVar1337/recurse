@@ -377,6 +377,15 @@ pub trait Engine: Send + Sync {
     /// Raw engine metadata, shaped for the UI.
     fn info(&self) -> Result<Value, String>;
 
+    /// Backend-specific reconnaissance summary for the recon page: linked
+    /// libraries, a self-contained hardening report (RELRO / PIE / NX / …),
+    /// reference and call counts, symbol count, analysis coverage, and extra
+    /// binary info. The host adds file hashes and entropy itself, so a backend
+    /// that cannot compute a field simply omits it.
+    fn recon(&self) -> Result<Value, String> {
+        Ok(Value::Object(serde_json::Map::new()))
+    }
+
     /// All discovered functions.
     fn functions(&self) -> Result<Vec<FunctionInfo>, String>;
 

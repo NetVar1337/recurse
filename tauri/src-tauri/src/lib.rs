@@ -98,6 +98,7 @@ pub fn run() {
             commands::binary_info,
             commands::functions,
             commands::analysis_progress,
+            commands::recon,
             commands::disassemble,
             commands::function_at,
             commands::function_disasm,

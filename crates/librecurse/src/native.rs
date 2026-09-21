@@ -571,6 +571,73 @@ impl NativeEngine {
         })
     }
 
+    /// Self-contained hardening report (the checksec-style fields), computed
+    /// from the object itself — no external tool is invoked.
+    fn checksec(&self, file: &object::File<'_>) -> serde_json::Value {
+        let imports: Vec<String> = file
+            .imports()
+            .map(|it| {
+                it.into_iter()
+                    .map(|i| String::from_utf8_lossy(i.name()).into_owned())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        let canary = imports.iter().any(|n| n == "__stack_chk_fail");
+        let fortified = imports
+            .iter()
+            .filter(|n| n.ends_with("_chk") && n.as_str() != "__stack_chk_fail")
+            .count();
+        let fortifiable = imports
+            .iter()
+            .filter(|n| FORTIFIABLE.contains(&n.as_str()))
+            .count();
+        let (relro, pie, nx, rpath, runpath) = if file.format() == BinaryFormat::Elf {
+            self.elf_hardening()
+        } else {
+            (
+                "N/A".to_string(),
+                if matches!(file.kind(), ObjectKind::Dynamic) {
+                    "PIE enabled".to_string()
+                } else {
+                    "No PIE".to_string()
+                },
+                "unknown".to_string(),
+                "No RPATH".to_string(),
+                "No RUNPATH".to_string(),
+            )
+        };
+        json!({
+            "relro": relro,
+            "canary": if canary { "Canary found" } else { "No canary found" },
+            "nx": nx,
+            "pie": pie,
+            "rpath": rpath,
+            "runpath": runpath,
+            "fortify": if fortified > 0 { "Yes" } else { "No" },
+            "fortified": fortified,
+            "fortifiable": fortifiable,
+        })
+    }
+
+    /// RELRO / PIE / NX / RPATH / RUNPATH from the ELF program headers and
+    /// `.dynamic` entries.
+    fn elf_hardening(&self) -> (String, String, String, String, String) {
+        let data = &self.data[..];
+        if let Ok(elf) = object::read::elf::ElfFile64::<object::Endianness>::parse(data) {
+            return elf_checksec(&elf);
+        }
+        if let Ok(elf) = object::read::elf::ElfFile32::<object::Endianness>::parse(data) {
+            return elf_checksec(&elf);
+        }
+        (
+            "N/A".into(),
+            "unknown".into(),
+            "unknown".into(),
+            "No RPATH".into(),
+            "No RUNPATH".into(),
+        )
+    }
+
     /// Build the name/string index once (after discovery).
     fn ensure_labels(&self) -> Result<(), String> {
         {
@@ -1999,6 +2066,298 @@ impl Drop for NativeEngine {
     }
 }
 
+/// libc functions that have a FORTIFY (`_chk`) variant; used for the
+/// "fortifiable" count on the recon page.
+const FORTIFIABLE: &[&str] = &[
+    "memcpy",
+    "memmove",
+    "memset",
+    "memcmp",
+    "strcpy",
+    "strncpy",
+    "strcat",
+    "strncat",
+    "sprintf",
+    "snprintf",
+    "vsprintf",
+    "vsnprintf",
+    "gets",
+    "fgets",
+    "printf",
+    "fprintf",
+    "vfprintf",
+    "vprintf",
+    "syslog",
+    "read",
+    "pread",
+    "realpath",
+    "getcwd",
+    "asprintf",
+    "dprintf",
+    "fread",
+    "readlink",
+    "stpcpy",
+    "stpncpy",
+    "swprintf",
+    "ttyname_r",
+    "vasprintf",
+    "vdprintf",
+    "wcscpy",
+    "wcsncpy",
+    "wmemcpy",
+    "wmemmove",
+    "wmemset",
+];
+
+/// Distinct libraries an object links against, from its imports (ELF
+/// `DT_NEEDED` names, PE import directory).
+fn libraries(file: &object::File<'_>) -> Vec<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    if let Ok(imports) = file.imports() {
+        for imp in imports {
+            let lib = String::from_utf8_lossy(imp.library());
+            if !lib.is_empty() {
+                out.insert(lib.into_owned());
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// Fraction of executable bytes that belong to a discovered function.
+fn coverage(functions: &BTreeMap<u64, FunctionInfo>, file: &object::File<'_>) -> f64 {
+    let text = text_ranges(file);
+    let total: u64 = text.iter().map(|(lo, hi)| hi - lo).sum();
+    if total == 0 {
+        return 0.0;
+    }
+    let mut covered = 0u64;
+    for f in functions.values() {
+        let Some(size) = f.size else { continue };
+        let end = f.addr.saturating_add(size);
+        for (lo, hi) in &text {
+            if f.addr >= *lo && f.addr < *hi {
+                covered += end.min(*hi).saturating_sub(f.addr);
+                break;
+            }
+        }
+    }
+    (covered as f64 / total as f64).clamp(0.0, 1.0)
+}
+
+/// Friendly CPU name for the recon page.
+fn machine_name(arch: Architecture) -> &'static str {
+    match arch {
+        Architecture::X86_64 | Architecture::X86_64_X32 => "AMD x86-64",
+        Architecture::I386 => "Intel 80386",
+        Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => "AArch64",
+        Architecture::Arm => "ARM",
+        Architecture::Mips | Architecture::Mips64 | Architecture::Mips64_N32 => "MIPS",
+        Architecture::PowerPc | Architecture::PowerPc64 => "PowerPC",
+        Architecture::Riscv32 | Architecture::Riscv64 => "RISC-V",
+        Architecture::Sparc | Architecture::Sparc32Plus | Architecture::Sparc64 => "SPARC",
+        Architecture::S390x => "IBM S/390",
+        Architecture::M68k => "Motorola 68000",
+        Architecture::Bpf => "eBPF",
+        _ => arch_name(arch),
+    }
+}
+
+/// ELF object type, in the `readelf` phrasing.
+fn object_type(file: &object::File<'_>) -> &'static str {
+    match file.kind() {
+        ObjectKind::Executable => "EXEC (Executable file)",
+        ObjectKind::Dynamic => "DYN (Shared object file)",
+        ObjectKind::Relocatable => "REL (Relocatable file)",
+        ObjectKind::Core => "CORE (Core file)",
+        _ => "unknown",
+    }
+}
+
+/// The `.comment` section as one string (compiler identification).
+fn comment_string(file: &object::File<'_>) -> Option<String> {
+    let section = file.section_by_name(".comment")?;
+    let data = section.data().ok()?;
+    let text = String::from_utf8_lossy(data);
+    let parts: Vec<&str> = text.split('\0').filter(|s| !s.trim().is_empty()).collect();
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// Best-effort source language, from symbols and the compiler comment.
+fn guess_language(file: &object::File<'_>) -> &'static str {
+    if comment_string(file).is_some_and(|c| c.contains("rustc")) {
+        return "rust";
+    }
+    let mut cpp = false;
+    for sym in file.symbols().chain(file.dynamic_symbols()) {
+        let Ok(name) = sym.name() else { continue };
+        if name.starts_with("_R") || name.contains("rust") {
+            return "rust";
+        }
+        if name.starts_with("_Z") {
+            cpp = true;
+        }
+    }
+    if cpp {
+        "c++"
+    } else {
+        "c"
+    }
+}
+
+/// True when the object references common crypto routines.
+fn has_crypto(file: &object::File<'_>) -> bool {
+    const NEEDLES: [&str; 8] = [
+        "aes", "sha1", "sha256", "sha512", "md5", "rc4", "chacha", "evp_",
+    ];
+    let matches = |name: &str| {
+        let lower = name.to_ascii_lowercase();
+        NEEDLES.iter().any(|n| lower.contains(n))
+    };
+    if let Ok(imports) = file.imports() {
+        for imp in imports {
+            if matches(&String::from_utf8_lossy(imp.name())) {
+                return true;
+            }
+        }
+    }
+    file.symbols()
+        .chain(file.dynamic_symbols())
+        .filter_map(|s| s.name().ok())
+        .any(matches)
+}
+
+/// Read a NUL-terminated string at `offset` in a string table.
+fn read_cstr(data: &[u8], offset: usize) -> Option<String> {
+    let rest = data.get(offset..)?;
+    let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+    Some(String::from_utf8_lossy(&rest[..end]).into_owned())
+}
+
+/// RELRO / PIE / NX / RPATH / RUNPATH for an ELF file, from its program headers
+/// and `.dynamic` section. Self-contained: no external tool is run.
+#[allow(clippy::type_complexity)]
+fn elf_checksec<'d, Elf, R>(
+    elf: &object::read::elf::ElfFile<'d, Elf, R>,
+) -> (String, String, String, String, String)
+where
+    Elf: object::read::elf::FileHeader<Endian = object::Endianness>,
+    R: object::ReadRef<'d>,
+{
+    use object::read::elf::{Dyn, ProgramHeader};
+    let endian = elf.endian();
+    let mut has_relro = false;
+    let mut stack_exec: Option<bool> = None;
+    let mut has_interp = false;
+    for ph in elf.elf_program_headers() {
+        match ph.p_type(endian) {
+            object::elf::PT_GNU_RELRO => has_relro = true,
+            object::elf::PT_GNU_STACK => {
+                stack_exec = Some(ph.p_flags(endian) & object::elf::PF_X != 0);
+            }
+            object::elf::PT_INTERP => has_interp = true,
+            _ => {}
+        }
+    }
+    let mut bind_now = false;
+    let mut rpath: Option<String> = None;
+    let mut runpath: Option<String> = None;
+    if let Some(section) = elf.section_by_name(".dynamic") {
+        if let Ok(data) = section.data() {
+            // `size_of::<Elf::Dyn>()` is a non-zero constant (16 for ELF64,
+            // 8 for ELF32), so the divisor is never zero.
+            let size = core::mem::size_of::<Elf::Dyn>();
+            if let Ok((entries, _)) =
+                object::pod::slice_from_bytes::<Elf::Dyn>(data, data.len() / size)
+            {
+                let dynstr = elf.section_by_name(".dynstr").and_then(|s| s.data().ok());
+                for d in entries {
+                    let tag: u64 = d.d_tag(endian).into();
+                    let val: u64 = d.d_val(endian).into();
+                    match tag as u32 {
+                        object::elf::DT_BIND_NOW => bind_now = true,
+                        object::elf::DT_FLAGS => {
+                            if val as u32 & object::elf::DF_BIND_NOW != 0 {
+                                bind_now = true;
+                            }
+                        }
+                        object::elf::DT_FLAGS_1 => {
+                            if val as u32 & object::elf::DF_1_NOW != 0 {
+                                bind_now = true;
+                            }
+                        }
+                        object::elf::DT_RPATH => {
+                            rpath = dynstr.and_then(|s| read_cstr(s, val as usize));
+                        }
+                        object::elf::DT_RUNPATH => {
+                            runpath = dynstr.and_then(|s| read_cstr(s, val as usize));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    let relro = if !has_relro {
+        "No RELRO"
+    } else if bind_now {
+        "Full RELRO"
+    } else {
+        "Partial RELRO"
+    };
+    let pie = match elf.elf_header().e_type(endian) {
+        object::elf::ET_DYN if has_interp => "PIE enabled",
+        object::elf::ET_DYN => "DSO",
+        _ => "No PIE",
+    };
+    let nx = match stack_exec {
+        Some(true) => "NX disabled",
+        // Absent or non-executable `GNU_STACK` is the modern non-exec default.
+        _ => "NX enabled",
+    };
+    (
+        relro.to_string(),
+        pie.to_string(),
+        nx.to_string(),
+        rpath.unwrap_or_else(|| "No RPATH".into()),
+        runpath.unwrap_or_else(|| "No RUNPATH".into()),
+    )
+}
+
+/// Extended binary info for the recon page (fields the generic `info()` omits).
+fn recon_info(file: &object::File<'_>) -> serde_json::Value {
+    let bits = arch_bits(file.architecture()).unwrap_or(0);
+    let format = format_name(file.format());
+    let dynamic = file.dynamic_symbols().next().is_some();
+    let canary = file
+        .imports()
+        .map(|it| {
+            it.into_iter()
+                .any(|i| i.name() == b"__stack_chk_fail".as_slice())
+        })
+        .unwrap_or(false);
+    json!({
+        "format": format,
+        "arch": arch_name(file.architecture()),
+        "bits": bits,
+        "machine": machine_name(file.architecture()),
+        "os": std::env::consts::OS,
+        "class": format!("{}{bits}", format.to_uppercase()),
+        "endian": if file.is_little_endian() { "LE" } else { "BE" },
+        "type": object_type(file),
+        "stripped": file.symbols().next().is_none(),
+        "static": !dynamic,
+        "pic": matches!(file.kind(), ObjectKind::Dynamic | ObjectKind::Relocatable),
+        "relocs": file.dynamic_relocations().is_some(),
+        "canary": canary,
+        "crypto": has_crypto(file),
+        "language": guess_language(file),
+        "compiler": comment_string(file).unwrap_or_else(|| "N/A".into()),
+        "base_addr": format!("{:#x}", file.relative_address_base()),
+        "virtual_addr": true,
+    })
+}
+
 impl Engine for NativeEngine {
     fn indexing(&self) -> bool {
         self.state.lock().map(|s| s.indexing).unwrap_or(false)
@@ -2047,6 +2406,36 @@ impl Engine for NativeEngine {
     fn info(&self) -> Result<serde_json::Value, String> {
         let file = self.parse()?;
         Ok(self.info_value(&file))
+    }
+
+    fn recon(&self) -> Result<serde_json::Value, String> {
+        let file = self.parse()?;
+        self.discover()?;
+        let (functions, xrefs, calls, symbols, coverage) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            (
+                state.functions.len(),
+                state.xrefs.len(),
+                state.xrefs.iter().filter(|r| r.kind == "CALL").count(),
+                file.symbols().filter(|s| s.is_definition()).count(),
+                coverage(&state.functions, &file),
+            )
+        };
+        Ok(json!({
+            "libraries": libraries(&file),
+            "checksec": self.checksec(&file),
+            "analysis": {
+                "functions": functions,
+                "xrefs": xrefs,
+                "calls": calls,
+                "symbols": symbols,
+                "coverage": coverage,
+            },
+            "info": recon_info(&file),
+        }))
     }
 
     fn functions(&self) -> Result<Vec<FunctionInfo>, String> {
