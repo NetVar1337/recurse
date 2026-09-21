@@ -259,6 +259,11 @@ pub struct Instruction {
     /// Fall-through destination for a conditional branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail: Option<u64>,
+    /// Instruction byte length. Not part of the wire format; used to resolve
+    /// RIP-relative operands when annotating disassembly with symbol/string
+    /// names.
+    #[serde(skip)]
+    pub len: u32,
 }
 
 /// A function's disassembly.

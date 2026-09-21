@@ -51,6 +51,10 @@ Honest scope:
 - ELF / PE / Mach-O parsing, symbols, imports, strings.
 - Multi-architecture disassembly and control-flow recovery (Capstone):
   x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, M68K, BPF.
+- r2-style disassembly annotation: direct call/jump targets are named
+  (`call readInput()`), `[rip+X]`/absolute references resolve to strings,
+  globals and imported GOT slots (`; "Enter key: "`, `; __libc_start_main`),
+  and PLT stubs are named after the import they forward to (`imp.exit`).
 - Functions are discovered from symbols, the entry point, and direct call
   targets.
 - No decompiler (`capabilities().decompile == false`) and no raw console. The

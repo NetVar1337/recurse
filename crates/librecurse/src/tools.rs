@@ -211,9 +211,15 @@ async fn read_path(
         }));
     }
     // file
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| format!("failed to read {file_path}: {e}"))?;
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(format!(
+                "{file_path} is not UTF-8 text (likely a binary); use the `analyze` tool to inspect binaries"
+            ));
+        }
+        Err(e) => return Err(format!("failed to read {file_path}: {e}")),
+    };
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let off = offset.unwrap_or(1).saturating_sub(1) as usize;

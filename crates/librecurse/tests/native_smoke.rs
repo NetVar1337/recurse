@@ -93,3 +93,43 @@ fn native_resolves_demangled_cpp_names() {
         engine.resolve("_Z9readInputv").unwrap()
     );
 }
+
+#[test]
+fn native_annotates_disassembly_and_names_imports() {
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
+    if !bin.is_file() {
+        return;
+    }
+    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    engine.analyze().expect("analyze");
+    // PLT stubs are named after the import they forward to, like r2's imp.*.
+    assert!(
+        engine
+            .functions()
+            .expect("functions")
+            .iter()
+            .any(|f| f.name.starts_with("imp.")),
+        "PLT stubs are named"
+    );
+    // Disassembly carries string/symbol comments and named call targets.
+    let main = engine.resolve("main").expect("resolve").expect("main");
+    let ops = engine.function_disasm(main).expect("disasm").ops;
+    assert!(
+        ops.iter().any(|o| o.disasm.contains("; \"")),
+        "string reference annotated"
+    );
+    assert!(
+        ops.iter().any(|o| {
+            o.disasm.contains("; failed()")
+                || o.disasm.contains("; readInput()")
+                || o.disasm.contains("; main")
+        }),
+        "call target annotated"
+    );
+    // A data address gives an actionable error, not a bare rejection.
+    let err = engine
+        .disassemble(&Target::Addr(0), Some(1))
+        .expect_err("0 is not code");
+    assert!(err.contains("not in an executable section"), "got: {err}");
+}

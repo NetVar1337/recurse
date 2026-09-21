@@ -128,6 +128,7 @@ impl R2Engine {
                 .map(str::to_string),
             jump: value.get("jump").and_then(Value::as_u64),
             fail: value.get("fail").and_then(Value::as_u64),
+            len: 0,
         })
     }
 }

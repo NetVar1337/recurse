@@ -55,6 +55,19 @@ struct NativeState {
     functions: BTreeMap<u64, FunctionInfo>,
     /// Decoded basic blocks per function entry, cached across queries.
     blocks: HashMap<u64, Vec<BasicBlock>>,
+    /// Names + strings for disassembly annotation, built once after discovery.
+    labels: Option<Labels>,
+    /// Cached string scan (`strings()` and annotation share it).
+    strings: Option<Vec<StringRef>>,
+}
+
+/// Address indexes used to annotate disassembly the way r2 does.
+#[derive(Default)]
+struct Labels {
+    /// address -> best-known name (symbol, imported GOT slot, function).
+    names: HashMap<u64, String>,
+    /// string vaddr -> text.
+    strings: HashMap<u64, String>,
 }
 
 impl NativeState {
@@ -63,6 +76,8 @@ impl NativeState {
             analyzed: false,
             functions: BTreeMap::new(),
             blocks: HashMap::new(),
+            labels: None,
+            strings: None,
         }
     }
 }
@@ -228,8 +243,7 @@ impl NativeEngine {
     fn decode_linear(&self, addr: u64, count: usize) -> Result<Vec<Instruction>, String> {
         let file = self.parse()?;
         let cs = build_capstone(&file)?;
-        let section = Self::text_section(&file, addr)
-            .ok_or_else(|| format!("no executable section contains {addr:#x}"))?;
+        let section = Self::text_section(&file, addr).ok_or_else(|| missing_code(addr))?;
         let data = section.data().map_err(|e| e.to_string())?;
         let offset = (addr - section.address()) as usize;
         if offset >= data.len() {
@@ -276,6 +290,8 @@ impl NativeEngine {
         }
         let file = self.parse()?;
         let cs = build_capstone(&file)?;
+        // Imported GOT slots, so PLT stubs and indirect calls can be named.
+        let got = import_got_labels(&file);
         // Named seeds first: they carry the real symbol names.
         let mut names: HashMap<u64, String> = HashMap::new();
         for sym in file.symbols().chain(file.dynamic_symbols()) {
@@ -328,10 +344,11 @@ impl NativeEngine {
                     }
                 }
             }
-            let name = names
-                .get(&addr)
-                .cloned()
-                .unwrap_or_else(|| format!("fcn_{addr:x}"));
+            let name = names.get(&addr).cloned().unwrap_or_else(|| {
+                plt_import_name(&blocks, &got)
+                    .map(|imported| format!("imp.{imported}"))
+                    .unwrap_or_else(|| format!("fcn_{addr:x}"))
+            });
             discovered.insert(
                 addr,
                 FunctionInfo {
@@ -395,6 +412,83 @@ impl NativeEngine {
             "core": { "type": object_kind_name(file.kind()) },
         })
     }
+
+    /// Build the name/string index once (after discovery).
+    fn ensure_labels(&self) -> Result<(), String> {
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            if state.labels.is_some() {
+                return Ok(());
+            }
+        }
+        self.discover()?;
+        let file = self.parse()?;
+        let strings = scan_all_strings(&file);
+        let mut names: HashMap<u64, String> = HashMap::new();
+        for sym in file.symbols().chain(file.dynamic_symbols()) {
+            if sym.address() == 0 {
+                continue;
+            }
+            if let Ok(name) = sym.name() {
+                if !name.is_empty() {
+                    names.entry(sym.address()).or_insert_with(|| demangle(name));
+                }
+            }
+        }
+        for (addr, name) in import_got_labels(&file) {
+            names.insert(addr, name);
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        // Discovered function names are the friendliest, so they win.
+        for f in state.functions.values() {
+            names.insert(f.addr, f.name.clone());
+        }
+        let string_map = strings.iter().map(|s| (s.addr, s.string.clone())).collect();
+        state.labels = Some(Labels {
+            names,
+            strings: string_map,
+        });
+        state.strings = Some(strings);
+        Ok(())
+    }
+
+    /// Append `; name` / `; "string"` comments to `ops` (r2-style), so the
+    /// model does not have to cross-reference addresses by hand.
+    fn annotate_ops(&self, ops: &mut [Instruction]) {
+        if self.ensure_labels().is_err() {
+            return;
+        }
+        let Ok(state) = self.state.lock() else {
+            return;
+        };
+        let Some(labels) = state.labels.as_ref() else {
+            return;
+        };
+        for op in ops.iter_mut() {
+            let mut comment: Option<String> = op.jump.and_then(|t| labels.names.get(&t).cloned());
+            if comment.is_none() {
+                for ea in memory_references(op) {
+                    if let Some(name) = labels.names.get(&ea) {
+                        comment = Some(name.clone());
+                        break;
+                    }
+                    if let Some(text) = labels.strings.get(&ea) {
+                        comment = Some(format!("\"{}\"", truncate_str(text, 48)));
+                        break;
+                    }
+                }
+            }
+            if let Some(c) = comment {
+                op.disasm = format!("{} ; {}", op.disasm, c);
+            }
+        }
+    }
 }
 
 /// Decode up to `max` instructions from a byte slice that begins at `ip`.
@@ -440,6 +534,7 @@ fn decode_with(
                 kind,
                 jump,
                 fail,
+                len: insn.bytes().len() as u32,
             });
             if (stop_at_terminator && terminator) || out.len() >= max {
                 return out;
@@ -461,8 +556,8 @@ fn decode_blocks(
     cs: &Capstone,
     func_addr: u64,
 ) -> Result<Vec<BasicBlock>, String> {
-    let section = NativeEngine::text_section(file, func_addr)
-        .ok_or_else(|| format!("no executable section contains {func_addr:#x}"))?;
+    let section =
+        NativeEngine::text_section(file, func_addr).ok_or_else(|| missing_code(func_addr))?;
     let data = section.data().map_err(|e| e.to_string())?;
     let base = section.address();
     let mut visited: HashSet<u64> = HashSet::new();
@@ -539,6 +634,113 @@ fn sweep_call_targets(file: &object::File<'_>, cs: &Capstone, max_insns: usize) 
         }
     }
     out
+}
+
+/// Map every imported GOT slot to its (demangled) name, from dynamic
+/// relocations. This is what turns `call qword ptr [rip + 0x2fe2]` into
+/// `... ; __libc_start_main`, and lets PLT stubs be named.
+fn import_got_labels(file: &object::File<'_>) -> HashMap<u64, String> {
+    // Dynamic relocations index `.dynsym` directly (`SymbolIndex(1)` is the
+    // first entry yielded by `dynamic_symbols()`), so build index -> name.
+    let mut dyn_names: HashMap<usize, String> = HashMap::new();
+    for (i, sym) in file.dynamic_symbols().enumerate() {
+        if let Ok(name) = sym.name() {
+            if !name.is_empty() {
+                dyn_names.insert(i + 1, demangle(name));
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    if let Some(iter) = file.dynamic_relocations() {
+        for (addr, rel) in iter {
+            if let object::RelocationTarget::Symbol(index) = rel.target() {
+                if let Some(name) = dyn_names.get(&index.0) {
+                    out.insert(addr, name.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// If the first instruction is an indirect jump through a known GOT slot, the
+/// block is a PLT stub; return the imported name it forwards to.
+fn plt_import_name(blocks: &[BasicBlock], got: &HashMap<u64, String>) -> Option<String> {
+    let first = blocks.first()?.ops.first()?;
+    if first.kind.as_deref() != Some("jmp") {
+        return None;
+    }
+    memory_references(first)
+        .into_iter()
+        .find_map(|ea| got.get(&ea).cloned())
+}
+
+/// Candidate absolute addresses referenced by an instruction, for annotation:
+/// the effective address of a `[rip + disp]` operand, or any bare `0x` operand
+/// (non-PIE string addresses). Exact lookups filter out false positives.
+fn memory_references(op: &Instruction) -> Vec<u64> {
+    let text = &op.disasm;
+    if let Some(idx) = text.find("[rip") {
+        return rip_displacement(&text[idx..])
+            .map(|disp| {
+                vec![op
+                    .addr
+                    .wrapping_add(op.len as u64)
+                    .wrapping_add(disp as u64)]
+            })
+            .unwrap_or_default();
+    }
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter_map(|token| token.strip_prefix("0x"))
+        .filter_map(|hex| u64::from_str_radix(hex, 16).ok())
+        .collect()
+}
+
+/// Scan every loadable section for ASCII/UTF-16 strings, deduplicated and
+/// sorted by address. Shared by `strings()` and disassembly annotation.
+fn scan_all_strings(file: &object::File<'_>) -> Vec<StringRef> {
+    let mut out: Vec<StringRef> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for section in file.sections() {
+        if !matches!(
+            section.kind(),
+            SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData
+        ) {
+            continue;
+        }
+        let Ok(data) = section.data() else {
+            continue;
+        };
+        let base = section.address();
+        for (addr, s, kind) in scan_strings(data, base) {
+            if seen.insert(s.clone()) {
+                out.push(StringRef {
+                    addr,
+                    string: s,
+                    kind: Some(kind),
+                });
+            }
+        }
+    }
+    out.sort_by_key(|s| s.addr);
+    out
+}
+
+/// Error text for an address outside any executable section.
+fn missing_code(addr: u64) -> String {
+    format!(
+        "{addr:#x} is not in an executable section (it may be data); use `strings`, `xrefs`, or a function address"
+    )
+}
+
+/// Cap a string for an inline disassembly comment.
+fn truncate_str(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut s: String = text.chars().take(max).collect();
+    s.push('…');
+    s
 }
 
 /// Recover `main` from a glibc `_start` prologue on x86/x86-64: the entry
@@ -629,6 +831,7 @@ fn parse_number(token: &str) -> Option<u64> {
 /// assert!(name_matches("readInput", "readInput()"));
 /// assert!(name_matches("success", "success()"));
 /// assert!(name_matches("main", "sym.main__"));
+/// assert!(name_matches("exit", "imp.exit"));
 /// assert!(!name_matches("success", "_Z7successv")); // demangle first (resolve does)
 /// assert!(!name_matches("main", "domain"));
 /// assert!(!name_matches("", "anything"));
@@ -639,6 +842,7 @@ pub fn name_matches(query: &str, candidate: &str) -> bool {
             .next()
             .unwrap_or(s)
             .trim_start_matches("sym.")
+            .trim_start_matches("imp.")
             .trim_end_matches('_')
             .to_string()
     };
@@ -858,7 +1062,8 @@ impl Engine for NativeEngine {
         };
         match count {
             Some(n) => {
-                let ops = self.decode_linear(addr, n)?;
+                let mut ops = self.decode_linear(addr, n)?;
+                self.annotate_ops(&mut ops);
                 let name = self
                     .function_at(addr)?
                     .map(|f| f.name)
@@ -882,6 +1087,7 @@ impl Engine for NativeEngine {
         let mut ops: Vec<Instruction> = blocks.into_iter().flat_map(|b| b.ops).collect();
         ops.sort_by_key(|o| o.addr);
         ops.dedup_by_key(|o| o.addr);
+        self.annotate_ops(&mut ops);
         Ok(Disassembly {
             addr: entry,
             name: func
@@ -897,7 +1103,10 @@ impl Engine for NativeEngine {
         self.discover()?;
         let func = self.function_at(addr)?;
         let entry = func.as_ref().map(|f| f.addr).unwrap_or(addr);
-        let blocks = self.blocks_for(entry)?;
+        let mut blocks = self.blocks_for(entry)?;
+        for block in &mut blocks {
+            self.annotate_ops(&mut block.ops);
+        }
         Ok(FunctionGraph {
             addr: entry,
             name: func
@@ -908,32 +1117,12 @@ impl Engine for NativeEngine {
     }
 
     fn strings(&self) -> Result<Vec<StringRef>, String> {
-        let file = self.parse()?;
-        let mut out: Vec<StringRef> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        for section in file.sections() {
-            if !matches!(
-                section.kind(),
-                SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData
-            ) {
-                continue;
-            }
-            let Ok(data) = section.data() else {
-                continue;
-            };
-            let base = section.address();
-            for (addr, s, kind) in scan_strings(data, base) {
-                if seen.insert(s.clone()) {
-                    out.push(StringRef {
-                        addr,
-                        string: s,
-                        kind: Some(kind),
-                    });
-                }
-            }
-        }
-        out.sort_by_key(|s| s.addr);
-        Ok(out)
+        self.ensure_labels()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        Ok(state.strings.clone().unwrap_or_default())
     }
 
     fn imports(&self) -> Result<Vec<Import>, String> {
@@ -1314,6 +1503,7 @@ mod tests {
     fn name_matches_is_loose() {
         assert!(name_matches("readInput", "readInput()"));
         assert!(name_matches("main", "sym.main__"));
+        assert!(name_matches("exit", "imp.exit"));
         assert!(name_matches("checkPassword", "checkPassword(int)"));
         assert!(!name_matches("main", "domain"));
         assert!(!name_matches("", "anything"));
