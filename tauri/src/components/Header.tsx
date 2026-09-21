@@ -13,15 +13,12 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useBinaryStore } from "@/store/binaryStore";
-import { useAnalysisStore } from "@/store/analysisStore";
 import { useProjectStore } from "@/store/projectStore";
 import { useUiStore } from "@/store/uiStore";
 import { useSettingsStore } from "@/store/settingsStore";
 export function Header() {
 	const binary = useBinaryStore((s) => s.binary);
 	const busy = useBinaryStore((s) => s.busy);
-	const funcs = useAnalysisStore((s) => s.funcs);
-	const strings = useAnalysisStore((s) => s.strings);
 	const project = useProjectStore((s) => s.current);
 	const close = useProjectStore((s) => s.close);
 	const chatOpen = useUiStore((s) => s.chatOpen);
@@ -38,7 +35,6 @@ export function Header() {
 		void initBackend();
 	}, [initBackend]);
 
-	const bin = binary?.info?.bin;
 	const file = binary?.path.split(/[\\/]/).pop();
 	const zoomPct = Math.round(Math.pow(1.2, zoomLevel) * 100);
 
@@ -68,12 +64,6 @@ export function Header() {
 					>
 						{file}
 					</Badge>
-					<Badge variant="secondary">{bin?.arch ?? "?"}</Badge>
-					<Badge variant="secondary">
-						{bin?.bits ? `${bin.bits}bit` : "?"}
-					</Badge>
-					<Badge variant="secondary">{funcs.length} funcs</Badge>
-					<Badge variant="secondary">{strings.length} strings</Badge>
 					<Badge variant="outline" className="font-mono">
 						{backend}
 					</Badge>
