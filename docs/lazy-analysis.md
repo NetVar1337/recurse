@@ -12,16 +12,17 @@ Measured on a stripped 8 MB binary (`youki`, x86-64):
 
 | operation | eager (before) | lazy (now) |
 | --- | --- | --- |
-| open + summary (info, function list, string count) | **~160 s** | **~3.6 s** |
+| open + summary (info, function list, string count) | **~160 s** | **~3.8 s** |
+| functions discovered (stripped 8 MB binary) | ~4 k | **~7.5 k** (unwind tables) |
 | `functions()` (repeat) | — | ~0.5 ms |
 | `xrefs` to/from any address | **stall** (re-decoded every function) | **< 1 ms** |
 | `function_disasm(one)` | — | ~0.19 ms |
 | `function_graph(main)` | — | ~3.4 ms |
 
-The remaining ~3.6 s is the one-time linear sweep: Capstone decoding up to a
-million instructions to find function entries in a stripped binary, indexing
-every code/data reference it sees, plus the string scan. Everything after that
-is per-function, cached, and O(1) for cross-references.
+The remaining ~3.8 s is the one-time linear sweep: Capstone decoding up to a
+million instructions to find function entries and index every code/data
+reference, plus the unwind-table and string scans. Everything after that is
+per-function, cached, and O(1) for cross-references.
 
 ## The problem with eager analysis
 
@@ -53,6 +54,11 @@ Analysis is split into two phases.
   - defined `Text` symbols (the real names),
   - the entry point, plus the `_start`→`main` heuristic (stripped binaries pass
     `main` to libc as a pointer rather than calling it),
+  - **unwind tables** — every Frame Description Entry in `.eh_frame` (or every
+    `RUNTIME_FUNCTION` in a PE `.pdata`) is a function with an exact
+    `(start, length)`. This is the main source on stripped Rust/C++/Windows
+    binaries and lifts the discovered count from ~4 k to ~7.5 k on the test
+    binary. FDE-derived sizes override the neighbour heuristic.
   - a bounded **linear sweep** of the executable sections collecting direct
     `call` targets, CET landing pads (`endbr64`/`endbr32`), classic
     `push rbp; mov rbp, rsp` prologues, and every `call`/`jmp` whose target is
@@ -90,18 +96,21 @@ analyst actually opens.
 
 Discovery is deliberately complete-enough to show the UI instantly, not to be
 final. Once Phase 1 finishes, `discover()` spawns a low-priority background
-thread (`background_index`) that walks the discovered functions, decodes their
-blocks (warming the cache the UI reads), promotes any additional `call`/`icall`
-target into a function, and recomputes sizes — repeating to a fixpoint. It
-locks the state only briefly per function, sleeps every 32 functions so it
-yields to live queries, and stops immediately when the engine is dropped
-(`NativeEngine::cancel`).
+thread (`background_index`) that walks functions of **unknown** size (those not
+already bounded by an unwind table), decodes their blocks, promotes any
+additional `call`/`icall` target into a function, and recomputes sizes —
+repeating to a fixpoint. It locks the state only briefly per function, sleeps
+every 32 functions so it yields to live queries, and stops immediately when the
+engine is dropped (`NativeEngine::cancel`).
 
-The effect: `functions()` returns a usable list at once and the list *grows*
-as the indexer finds things the cheap sweep could not — on `youki`, from 3,885
-functions at open to ~4,800 once indexing settles. `Engine::indexing()` reports
-whether the pass is still running, and the UI shows a `N+` count with an
-“indexing in the background — more may appear” hint until it finishes.
+On a binary with unwind tables the discovered set is already bounded, so the
+indexer has almost nothing to do and finishes at once. On a binary without them
+(hand-written, or built with unwind tables off) it does the recursive descent
+that recovers the call graph — on a stripped 8 MB binary without unwind data it
+takes the count from ~3.9 k at open to ~4.8 k once indexing settles.
+`Engine::indexing()` reports whether the pass is still running, and the UI shows
+a `N+` count with an “indexing in the background — more may appear” hint until
+it finishes.
 
 ## Bounds
 
@@ -129,6 +138,8 @@ immediately:
 - **Strings** — the string table is scanned once and cached; the UI shows the
   count on open.
 - **Function index** — Phase 1 above.
+- **Unwind tables** — `.eh_frame`/`.pdata` are parsed once (milliseconds) for
+  exact function bounds.
 - **Cross-reference index** — built by the same sweep, for O(1) `xrefs`.
 - **Annotation labels** — the name/string index used to comment disassembly is
   built lazily, the first time annotated output is produced, and cached.

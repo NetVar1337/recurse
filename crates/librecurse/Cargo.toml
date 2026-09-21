@@ -24,6 +24,10 @@ object = "0.36"
 # Multi-architecture disassembly. Capstone (BSD-3) covers x86, x86-64, ARM,
 # AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, and more behind one API.
 capstone = "0.14"
+# Unwind-table (.eh_frame) parsing: every function with unwind info has an FDE
+# carrying its exact start and length, which recovers function boundaries on
+# stripped binaries. Pure Rust, MIT/Apache.
+gimli = "0.31"
 rustc-demangle = "0.1"
 cpp_demangle = "0.4"
 # Managed-bytecode decoders: WebAssembly modules. Pure Rust, permissive.

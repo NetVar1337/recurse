@@ -9,12 +9,13 @@
 //!
 //! Scope, stated honestly:
 //!
-//! * Functions are discovered from the symbol table, the entry point, a linear
-//!   sweep of the code (call targets, CET pads, prologues), and the indirect
-//!   targets of calls whose pointer is read from a data slot. A stripped binary
-//!   still yields fewer functions than a heavier analysis engine would, so the
-//!   result is treated as a starting index: a low-priority background pass
-//!   (see [`NativeEngine::indexing`]) keeps expanding it after open.
+//! * Functions are discovered from the symbol table, the entry point, the
+//!   unwind tables (`.eh_frame` / PE `.pdata`, one exact range per function on
+//!   stripped Rust/C++/Windows binaries), a linear sweep of the code (call
+//!   targets, CET pads, prologues), and the indirect targets of calls whose
+//!   pointer is read from a data slot. Where none of these cover the code, a
+//!   low-priority background pass (see [`NativeEngine::indexing`]) recurses
+//!   through functions of unknown size to expand the index after open.
 //! * Cross-references are indexed during the same sweep, so `xrefs` is a
 //!   lookup over an in-memory table rather than a re-decode of the binary.
 //! * Branch targets and fall-through edges are recovered from instruction
@@ -32,6 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use capstone::prelude::*;
 use capstone::{Endian, InsnGroupType};
+use gimli::{BaseAddresses, CieOrFde, EhFrame, RunTimeEndian, UnwindSection};
 use object::{
     Architecture, BinaryFormat, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionKind,
     SymbolKind,
@@ -90,6 +92,10 @@ struct NativeState {
     labels: Option<Labels>,
     /// Cached string scan (`strings()` and annotation share it).
     strings: Option<Vec<StringRef>>,
+    /// Functions whose bounds came from an unwind table (`.eh_frame`/
+    /// `.pdata`). The background indexer skips these — their extent is already
+    /// exact, so it only needs to recurse into functions of unknown size.
+    fde_sized: HashSet<u64>,
     /// Every code and data reference seen by the linear sweep, sorted by source
     /// address. Built once so a cross-reference query never has to re-decode
     /// the binary (which would stall the UI on a large target).
@@ -118,6 +124,7 @@ impl NativeState {
             blocks: HashMap::new(),
             labels: None,
             strings: None,
+            fde_sized: HashSet::new(),
             xrefs: Vec::new(),
             xrefs_by_target: HashMap::new(),
             indexing: false,
@@ -470,13 +477,39 @@ impl NativeEngine {
                 .unwrap_or_else(|| format!("fcn_{seed:x}"));
             add_function(&mut functions, &file, seed, name);
         }
+        // Unwind tables recover the exact bounds of every function that can
+        // unwind — most of a stripped Rust/C++ binary's code — so this is what
+        // brings the function list close to a full analysis engine on a
+        // symbol-free target.
+        let mut fde_sized: HashSet<u64> = HashSet::new();
+        let mut fde_sizes: Vec<(u64, u64)> = Vec::new();
+        for (start, len) in eh_frame_functions(&file)
+            .into_iter()
+            .chain(pdata_functions(&file))
+        {
+            fde_sized.insert(start);
+            fde_sizes.push((start, len));
+            if functions.contains_key(&start) {
+                continue;
+            }
+            let name = plt_name_at(&file, &cs, start, &got)
+                .map(|imported| format!("imp.{imported}"))
+                .unwrap_or_else(|| format!("fcn_{start:x}"));
+            add_function(&mut functions, &file, start, name);
+        }
         // Keep the lowest-addressed functions when a huge binary overflows.
         if functions.len() > MAX_FUNCTIONS {
             let keep: BTreeSet<u64> = functions.keys().copied().take(MAX_FUNCTIONS).collect();
             functions.retain(|addr, _| keep.contains(addr));
         }
-        // Sizes from the sorted neighbour addresses.
+        // Sizes from the sorted neighbour addresses, then exact unwind bounds
+        // where the unwind table knows them.
         assign_sizes(&mut functions, &file);
+        for (start, len) in &fde_sizes {
+            if let Some(f) = functions.get_mut(start) {
+                f.size = Some(*len);
+            }
+        }
 
         refs.sort_by_key(|r| r.from);
         let mut xrefs_by_target: HashMap<u64, Vec<u32>> = HashMap::new();
@@ -491,6 +524,7 @@ impl NativeEngine {
             state.functions = functions;
             state.xrefs = refs;
             state.xrefs_by_target = xrefs_by_target;
+            state.fde_sized = fde_sized;
             state.analyzed = true;
             state.indexing = true;
         }
@@ -1040,6 +1074,95 @@ fn assign_sizes(functions: &mut BTreeMap<u64, FunctionInfo>, file: &object::File
     }
 }
 
+/// Function boundaries recovered from the unwind tables (`.eh_frame`, or
+/// `__eh_frame` on Mach-O). Every function that can unwind has a Frame
+/// Description Entry carrying its exact start and length, so this recovers
+/// boundaries on stripped binaries — e.g. Rust and C++ binaries, which always
+/// emit unwind data. Each returned pair is `(start, len)` in executable code.
+fn eh_frame_functions(file: &object::File<'_>) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    let Some(section) = file
+        .sections()
+        .find(|s| matches!(s.name(), Ok(".eh_frame") | Ok("__eh_frame")))
+    else {
+        return out;
+    };
+    let Ok(data) = section.data() else {
+        return out;
+    };
+    let endian = if file.is_little_endian() {
+        RunTimeEndian::Little
+    } else {
+        RunTimeEndian::Big
+    };
+    let mut eh_frame = EhFrame::new(data, endian);
+    eh_frame.set_address_size(if file.is_64() { 8 } else { 4 });
+    let bases = BaseAddresses::default().set_eh_frame(section.address());
+    let text = text_ranges(file);
+    let mut entries = eh_frame.entries(&bases);
+    loop {
+        match entries.next() {
+            Ok(Some(CieOrFde::Fde(partial))) => {
+                // One CIE per FDE group; parse it on demand.
+                let parsed =
+                    partial.parse(|section, bases, offset| section.cie_from_offset(bases, offset));
+                if let Ok(fde) = parsed {
+                    let start = fde.initial_address();
+                    let len = fde.len();
+                    if len > 0 && in_text_ranges(&text, start) {
+                        out.push((start, len));
+                    }
+                }
+            }
+            Ok(Some(CieOrFde::Cie(_))) => {}
+            Ok(None) | Err(_) => break,
+        }
+    }
+    out
+}
+
+/// Function boundaries from a PE exception table (`.pdata`). Each x64
+/// `RUNTIME_FUNCTION` holds begin/end RVAs; ARM64 packs two per 8 bytes. Covers
+/// Windows binaries, which have no `.eh_frame`.
+fn pdata_functions(file: &object::File<'_>) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    if file.format() != BinaryFormat::Pe {
+        return out;
+    }
+    let Some(section) = file.sections().find(|s| matches!(s.name(), Ok(".pdata"))) else {
+        return out;
+    };
+    let Ok(data) = section.data() else {
+        return out;
+    };
+    let base = file.relative_address_base();
+    let text = text_ranges(file);
+    // x64 entries are 12 bytes (begin, end, unwind info); ARM64 are 8.
+    let entry = if file.architecture() == Architecture::Aarch64 {
+        8
+    } else {
+        12
+    };
+    for chunk in data.chunks_exact(entry) {
+        let Ok(begin) = <[u8; 4]>::try_from(&chunk[0..4]) else {
+            continue;
+        };
+        let Ok(end) = <[u8; 4]>::try_from(&chunk[4..8]) else {
+            continue;
+        };
+        let begin = u32::from_le_bytes(begin) as u64;
+        let end = u32::from_le_bytes(end) as u64;
+        if begin == 0 || end <= begin {
+            continue;
+        }
+        let start = base.wrapping_add(begin);
+        if in_text_ranges(&text, start) {
+            out.push((start, end - begin));
+        }
+    }
+    out
+}
+
 /// Background half of discovery: decode every known function's blocks (warming
 /// the cache the UI reads), promote any code target those blocks reference into
 /// a function, and recompute sizes. Bounded by [`MAX_FUNCTIONS`], stopped early
@@ -1067,7 +1190,7 @@ fn background_index(data: Arc<Vec<u8>>, state: Arc<Mutex<NativeState>>, cancel: 
                 .functions
                 .keys()
                 .copied()
-                .filter(|a| !s.blocks.contains_key(a))
+                .filter(|a| !s.blocks.contains_key(a) && !s.fde_sized.contains(a))
                 .collect(),
             Err(_) => break,
         };

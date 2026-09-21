@@ -1586,6 +1586,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimli"
+version = "0.31.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
+dependencies = [
+ "fallible-iterator",
+ "indexmap 2.14.2",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "gio"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2400,6 +2411,7 @@ version = "0.1.0"
 dependencies = [
  "capstone",
  "cpp_demangle",
+ "gimli",
  "nix 0.31.3",
  "object",
  "reqwest 0.12.28",
