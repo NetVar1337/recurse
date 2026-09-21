@@ -19,6 +19,7 @@ import dagre from "@dagrejs/dagre";
 import { api } from "@/api";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
+import { DisasmComment, splitComment } from "@/lib/disasm";
 import { useAnalysisStore } from "@/store/analysisStore";
 import type { Function, FunctionGraph, GraphOp } from "@/types";
 
@@ -66,6 +67,7 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 			<div className="py-0.5">
 				{data.ops.map((op, i) => {
 					const clickable = !!op.target;
+					const { instr, comment } = splitComment(op.disasm ?? "");
 					return (
 						<div
 							key={i}
@@ -109,7 +111,8 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 								)}
 								title="Disassembly (mnemonic + operands)"
 							>
-								{op.disasm ?? ""}
+								{instr}
+								<DisasmComment comment={comment} />
 							</span>
 						</div>
 					);
