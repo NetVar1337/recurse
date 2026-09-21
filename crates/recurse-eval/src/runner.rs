@@ -17,7 +17,7 @@ pub struct EvalOpts {
     pub model: String,
     pub endpoint: String,
     pub api_key: String,
-    /// Analysis backend the agent drives: `r2` or `native`. Resolved from
+    /// Analysis backend the agent drives: `native` or an external engine. Resolved from
     /// `EVAL_BACKEND`, then `RECURSE_BACKEND`, then the app default (native).
     pub backend: BackendKind,
     pub max_turns: usize,
@@ -153,7 +153,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                 Box::new(e) as Box<dyn Engine>
             ))),
             Err(e) => {
-                eprintln!("[eval] r2 backend unavailable ({e}); falling back to bash only");
+                eprintln!("[eval] external engine unavailable ({e}); falling back to bash only");
                 None
             }
         },

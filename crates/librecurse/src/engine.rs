@@ -1,26 +1,26 @@
 //! Backend-agnostic binary-analysis engine.
 //!
-//! Recurse originally spoke radare2 directly: the agent tool sent r2 command
-//! strings and the UI consumed r2's JSON shapes. That couples the whole
-//! product to one LGPL tool for *analysis* even though only some installs want
-//! it. This module defines the seam instead:
+//! Analysis is not tied to any single implementation. This module defines the
+//! seam:
 //!
 //! * [`Engine`] — one trait with a method per analysis operation (info,
 //!   functions, disassembly, CFG, strings, imports, xrefs, decompilation,
 //!   raw console). Every method returns owned, backend-neutral results.
 //! * Canonical result types ([`FunctionInfo`], [`Instruction`], [`Xref`], …)
-//!   whose JSON field names match what the UI already renders, so swapping the
+//!   whose JSON field names are exactly what the UI renders, so swapping the
 //!   backend does not ripple into the frontend.
-//! * [`BackendKind`] — which implementation to build. `r2` shells out to the
-//!   radare2 executable; `native` is a pure-Rust parser/disassembler with no
-//!   external process and no copyleft dependency.
+//! * [`BackendKind`] — which implementation to build. `native` is the pure-Rust
+//!   parser/disassembler and the default; an external engine is available
+//!   opt-in and runs as a separate process.
 //! * [`tool_schema`] / [`execute_tool`] — a single backend-neutral agent tool
-//!   (`analyze`) with a small, structured `op` vocabulary instead of raw r2
-//!   syntax. `op:"raw"` remains for backend-specific console commands.
+//!   (`analyze`) with a small, structured `op` vocabulary instead of any
+//!   engine-specific command syntax. `op:"raw"` remains for engine console
+//!   commands.
 //!
-//! Hosts own the concrete engine (it needs a target path and, for r2, a child
-//! process) and hand a `&dyn Engine` to the tool runtime. Everything here is
-//! pure data and pure functions, unit-tested without either backend installed.
+//! Hosts own the concrete engine (it needs a target path, and an external
+//! backend needs a child process) and hand a `&dyn Engine` to the tool runtime.
+//! Everything here is pure data and pure functions, unit-tested without any
+//! backend installed.
 
 use std::path::Path;
 
@@ -34,12 +34,12 @@ pub const TOOL_NAME: &str = "analyze";
 ///
 /// Selected at runtime from `RECURSE_BACKEND` (or the host's config store).
 /// The default is [`BackendKind::Native`]: the in-process, permissive,
-/// multi-architecture backend. Opt into radare2 with `RECURSE_BACKEND=r2` or
-/// the stored config.
+/// multi-architecture backend. Opt into an external engine with
+/// `RECURSE_BACKEND` or the stored config.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
-    /// The radare2 executable, driven over its `-q0` pipe.
+    /// The external engine, driven over its pipe as a child process.
     R2,
     /// Pure-Rust ELF/PE/Mach-O parsing and disassembly.
     Native,
@@ -60,7 +60,8 @@ impl Default for BackendKind {
 }
 
 impl BackendKind {
-    /// Parse a backend name. Accepts `r2`/`radare2` and `native`.
+    /// Parse a backend name. Accepts `native` and the external engine's
+    /// names.
     ///
     /// ```
     /// use librecurse::engine::BackendKind;
@@ -116,7 +117,8 @@ impl BackendKind {
 /// `op:"decompile"` with a precise message instead of a generic failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
-    /// In-process decompilation (r2 + r2ghidra; the native backend does not).
+    /// Decompilation, when the selected engine provides it (the native
+    /// engine does not).
     pub decompile: bool,
     /// A raw, backend-specific console passthrough.
     pub raw: bool,
@@ -144,7 +146,8 @@ impl Capabilities {
         }
     }
 
-    /// Every optional feature available. The r2 backend advertises this, and
+    /// Every optional feature available. The external engine advertises this,
+    /// and
     /// it is the permissive default for callers that have not built an engine
     /// yet (e.g. schema previews and tests).
     ///
@@ -229,8 +232,8 @@ pub enum XrefDirection {
     From,
 }
 
-/// A function as the UI and agent see it. Field names match the r2 JSON the
-/// frontend already renders (`addr`, `name`, `size`, `signature`).
+/// A function as the UI and agent see it. Field names are exactly what the
+/// frontend renders (`addr`, `name`, `size`, `signature`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct FunctionInfo {
     pub addr: u64,
@@ -371,7 +374,7 @@ pub trait Engine: Send + Sync {
     /// (`{path, info:{bin:{...}}, function_count, string_count}`).
     fn summary(&self) -> Result<Value, String>;
 
-    /// Raw backend metadata (`ij` on r2), shaped for the UI.
+    /// Raw engine metadata, shaped for the UI.
     fn info(&self) -> Result<Value, String>;
 
     /// All discovered functions.
@@ -402,7 +405,7 @@ pub trait Engine: Send + Sync {
     /// Decompile the function containing `addr`.
     fn decompile(&self, addr: u64) -> Result<Decompilation, String>;
 
-    /// Backend-specific console passthrough (r2 command syntax on r2). Returns
+    /// Engine-specific console passthrough. Returns
     /// the backend's structured or textual output unchanged.
     fn raw(&self, cmd: &str) -> Result<Value, String>;
 
@@ -471,7 +474,7 @@ pub fn tool_schema(capabilities: Capabilities) -> Value {
     );
     if capabilities.raw {
         description.push_str(
-            " `raw` runs a backend console command (radare2 syntax when the r2 backend is active).",
+            " `raw` runs an engine console command, available only when the selected engine provides one.",
         );
     }
     json!({
@@ -632,7 +635,7 @@ pub fn execute_call(engine: &dyn Engine, name: &str, args: &Value) -> Result<Str
     }
 }
 
-/// Default items per list, matching the historical r2 tool.
+/// Default items per list.
 pub const DEFAULT_LIMIT: usize = 60;
 
 /// Serialize an envelope compactly. Minified on purpose: whitespace in a
@@ -712,8 +715,8 @@ fn list_envelope(op: &str, total: usize, showing: usize, items: Value) -> Value 
 /// JSON result the model reads.
 ///
 /// This is the single routing point between the backend-neutral tool schema
-/// and whichever [`Engine`] the host selected, so the agent never encodes r2
-/// (or native) specifics in its own logic.
+/// and whichever [`Engine`] the host selected, so the agent never encodes
+/// engine-specific specifics in its own logic.
 ///
 /// ```
 /// use librecurse::engine::{execute_tool, BackendKind, Capabilities};
@@ -827,7 +830,7 @@ pub fn execute_tool(engine: &dyn Engine, args: &Value) -> Result<String, String>
             let addr = required_addr(engine, args)?;
             if !engine.capabilities().decompile {
                 return Err(format!(
-                    "the {} backend has no decompiler; install radare2 + r2ghidra and set RECURSE_BACKEND=r2",
+                    "the {} backend has no decompiler",
                     engine.backend().as_str()
                 ));
             }
@@ -911,7 +914,7 @@ pub fn execute_tool(engine: &dyn Engine, args: &Value) -> Result<String, String>
         "raw" => {
             if !engine.capabilities().raw {
                 return Err(format!(
-                    "the {} backend has no console; use the r2 backend for raw commands",
+                    "the {} backend has no console",
                     engine.backend().as_str()
                 ));
             }

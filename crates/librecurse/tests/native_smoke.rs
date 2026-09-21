@@ -102,7 +102,7 @@ fn native_annotates_disassembly_and_names_imports() {
     }
     let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
-    // PLT stubs are named after the import they forward to, like r2's imp.*.
+    // PLT stubs are named after the import they forward to (imp.<name>).
     assert!(
         engine
             .functions()
@@ -143,7 +143,7 @@ fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
     let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     let main = engine.resolve("main").expect("resolve").expect("main");
-    // UI-facing disassembly carries hex bytes (parity with r2).
+    // UI-facing disassembly carries hex bytes.
     let ops = engine.function_disasm(main).expect("disasm").ops;
     assert!(
         ops.iter()

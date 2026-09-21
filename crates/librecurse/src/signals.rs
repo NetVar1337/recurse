@@ -1,6 +1,6 @@
 //! Best-effort process signals for interrupting a wedged analysis backend.
 //!
-//! Only the r2 backend needs this (the native backend is in-process). On
+//! Only the external engine needs this (the native engine is in-process). On
 //! non-Unix targets the functions report failure instead of pretending to act.
 
 #[cfg(unix)]
@@ -8,7 +8,8 @@ use nix::sys::signal::{kill, killpg, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
 
-/// Send `SIGINT` to `pid`, mirroring Ctrl-C: a blocked r2 command unwinds and
+/// Send `SIGINT` to `pid`, mirroring Ctrl-C: a blocked external command
+/// unwinds and
 /// the pipe produces its response. Returns false when `pid` is 0 or the
 /// signal could not be delivered.
 ///
@@ -63,7 +64,8 @@ pub fn terminate(_pid: u32) -> bool {
 
 /// Shared Unix delivery path, implemented with `nix` so no `unsafe` is needed
 /// in this crate. A pid of 0 is "no known child", never signal it. The signal
-/// goes to the process *group* first (the session sets one at spawn) so r2's
+/// goes to the process *group* first (the session sets one at spawn) so the
+/// engine's
 /// own children are covered; if that fails the single pid is signalled
 /// instead.
 #[cfg(unix)]

@@ -322,7 +322,7 @@ export function CenterPanel() {
 						<TabsTrigger value="strings">Strings</TabsTrigger>
 						<TabsTrigger value="imports">Imports</TabsTrigger>
 						{capabilities?.raw !== false && (
-							<TabsTrigger value="console">r2</TabsTrigger>
+							<TabsTrigger value="console">Console</TabsTrigger>
 						)}
 						<TabsTrigger value="shell">Shell</TabsTrigger>
 					</TabsList>
@@ -696,11 +696,11 @@ export function CenterPanel() {
 						tab !== "console" && "hidden",
 					)}
 				>
-					<PanelErrorBoundary label="r2 Console">
+					<PanelErrorBoundary label="Engine Console">
 						<Suspense
 							fallback={
 								<div className="text-muted-foreground px-3 py-3 text-xs">
-									loading r2 console…
+									loading engine console…
 								</div>
 							}
 						>

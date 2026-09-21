@@ -2,10 +2,10 @@
 
 Agentic reverse engineering environment — a Ghidra-class desktop app in the spirit of
 "Cursor for reverse engineering". Built with **Tauri 2** (React + TypeScript frontend) on top
-of a **pluggable analysis backend**: a **pure-Rust native engine** (the default — no
-external process, no copyleft dependency, multi-architecture via Capstone) or optionally
-**[radare2](https://rada.re/n/)** (full feature set including **r2ghidra** decompilation).
-The agent tool and the UI are backend-agnostic — see [docs/backends.md](docs/backends.md).
+of a **pluggable analysis backend**. The default is a **pure-Rust native engine** — no
+external process, no copyleft dependency, multi-architecture via Capstone. An external
+engine is available opt-in for installs that want its full feature set. The agent tool and
+the UI are backend-agnostic — see [docs/backends.md](docs/backends.md).
 
 ![Recurse demo](tauri/public/recurse_demo.png)
 
@@ -16,7 +16,7 @@ Cargo workspace at the root; the desktop app is one package in it.
 ```
 tauri/                   desktop app (Tauri + React)
   src/                     React frontend
-  src-tauri/               Tauri Rust backend (r2 sessions, agent wiring)
+  src-tauri/               Tauri Rust backend (engine sessions, agent wiring)
   package.json             app scripts (Vite, Vitest, Tauri CLI)
 crates/
   librecurse/              agent framework: LLM loop, tool runtime, SQLite memory
@@ -50,21 +50,22 @@ engine is a choice, not a hard dependency:
 
 - **`native`** (default) — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly
   (`object` + `capstone`): x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ,
-  M68K, BPF. No child process, no external tool, no LGPL in the build. No decompiler.
-- **`r2`** (opt-in) — drives the radare2 executable over its `-q0` pipe. Everything,
-  including r2ghidra decompilation.
+  M68K, BPF. No child process, no external tool, no LGPL in the build.
+- An **external engine** is supported as an **opt-in** alternative for installs that want its
+  full feature set (including decompilation). It runs as a separate process and is never
+  linked or bundled.
 
-Pick with the settings menu, the `RECURSE_BACKEND` environment variable
-(`r2` | `native`), or the stored config. The agent gets one backend-neutral `analyze` tool
-(`functions`, `disasm`, `graph`, `decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw`
-for the backend console) — filtered to the ops the active backend actually supports, so native
-never advertises `decompile`/`raw`. The UI consumes canonical result types rather than r2 JSON.
+Pick with the settings menu, the `RECURSE_BACKEND` environment variable, or the stored
+config. The agent gets one backend-neutral `analyze` tool (`functions`, `disasm`, `graph`,
+`decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw` for the engine console) —
+filtered to the ops the active engine actually supports, so `decompile`/`raw` are only
+advertised when available. The UI consumes canonical result types, not any engine's JSON.
 See [docs/backends.md](docs/backends.md) for the trait, the crate choices, and the licensing
 rationale.
 
 ## Why not just MCP-to-IDA / yolo it in Claude Code?
 
-Stapling an MCP server onto IDA/Ghidra, or pasting `r2` output into a CLI agent,
+Stapling an MCP server onto IDA/Ghidra, or pasting disassembly into a CLI agent,
 works for 5-function CTFs and falls apart on real binaries. Recurse is a
 purpose-built environment, not a chatbot wrapper:
 
@@ -76,9 +77,9 @@ purpose-built environment, not a chatbot wrapper:
   instantly, so a human confirms or rejects in one click.
 - **Built for scale.** Real malware is 10k functions. Demand-driven tools +
   persistent memory beat dumping full decompiles until context OOMs.
-- **Agentable engine.** radare2 is free, scriptable and pipeable — agents can run 100 turns, fork,
-  reset and diff. And you can actually ship it. If you would rather not depend on it at all, the
-  native backend does the same job in-process with permissive crates.
+- **Agentable engine.** A scriptable, pipeable engine means agents can run 100 turns, fork,
+  reset and diff — and you can actually ship it. The default native engine needs no external
+  tool at all.
 - **Malware-safe by default.** Local-first, BYO-key/OpenRouter routing, and a path
   to offline models — no forced exfil of samples to a cloud chatbot.
 
@@ -99,28 +100,11 @@ Verify:
 node --version && npm --version && rustc --version && cargo --version
 ```
 
-### 2. radare2 (analysis engine)
+### 2. Analysis engine — nothing to install
 
-`r2` must be on `PATH`. **Build from source** (recommended) — distro packages are often
-outdated and incompatible with the r2pm plugin registry (see r2ghidra below):
-
-```bash
-# 1. Clone and install the latest radare2
-git clone https://github.com/radareorg/radare2
-cd radare2
-./sys/install.sh
-
-# 2. Confirm the install
-r2 -v
-```
-
-> **Compatibility:** Recurse targets **radare2 6.x** (tested on **6.2.1**).
-
-For a quick non-recommended option, distro packages also exist:
-
-```bash
-sudo apt install -y radare2
-```
+The default **native** engine is pure Rust and needs no external tool. An **opt-in external
+engine** is available for installs that want its full feature set; it is a separate program
+on your `PATH` and is not required by the native engine or the build.
 
 ### 3. Tauri Linux system dependencies
 
@@ -135,18 +119,11 @@ sudo apt install -y libwebkit2gtk-4.1-dev build-essential \
 Other distros: follow the official
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
-### 4. r2ghidra (optional — decompiler view)
+### 4. Optional decompiler
 
-If the previous step failed (e.g. the `r2pm` registry couldn't find plugins), it's because
-the distro `radare2` is too old — rebuild from source as above, then install the plugin:
-
-```bash
-# From the radare2 repo directory (must be on the latest radare2 built from source):
-r2pm -i          # update / initialize the plugin registry
-r2pm -ci r2ghidra
-```
-
-Without it, the Decompile tab surfaces a graceful error; everything else works.
+The native engine has no decompiler. The opt-in external engine can provide one when its
+plugin is installed; without it, the Decompile tab surfaces a graceful error and everything
+else works.
 
 ## Build
 
@@ -215,7 +192,7 @@ just eval-run     # run the tier — the only way to execute an eval YAML
 the agent. Endpoint + key go in `crates/recurse-eval/.env` (copy `.env.example`).
 Each run writes `target/eval-traces/<tier>/<backend>/run.log` (the full narrative)
 plus one `<hexid>.json` per task with the complete per-turn conversation. The
-backend (`r2` or `native`) is selectable per run — see the eval README.
+backend (`native` or the opt-in external engine) is selectable per run — see the eval README.
 
 ## Agent LLM
 
@@ -230,8 +207,8 @@ export RECURSE_LLM_MODEL=openrouter/auto  # optional
 
 Without credentials it falls back to an echo client so the wiring stays exercisable.
 
-The agent sees live binary context (arch, bits, type) and can drive any radare2
-command (disassembly, xrefs, strings, imports, decompilation) through the session.
+The agent sees live binary context (arch, bits, type) and can drive the full analysis
+surface (disassembly, xrefs, strings, imports, decompilation) through the session.
 
 ## License
 

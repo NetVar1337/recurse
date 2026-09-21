@@ -245,7 +245,7 @@ pub fn get_backend() -> BackendStatus {
     }
 }
 
-/// Persist the selected analysis backend (`r2` or `native`). Takes effect on
+/// Persist the selected analysis backend (`native` or an external engine). Takes
 /// the next binary open.
 #[tauri::command]
 pub fn set_backend(backend: String) -> Result<(), String> {
@@ -296,8 +296,8 @@ pub async fn agent_chat(
         .map_err(|e| format!("llm lock poisoned: {e}"))?
         .clone();
     let agent = state.agent.clone();
-    // Arc clone: the worker task can't hold `State`, but it needs the live r2
-    // session to serve the `r2` tool from the UI's own analysis state.
+    // Arc clone: the worker task can't hold `State`, but it needs the live
+    // engine session to serve the analysis tool from the UI's own analysis state.
     let session_state = state.session.clone();
     let project = current_project(&state)?;
     let project_storage = project.clone();
@@ -316,7 +316,7 @@ pub async fn agent_chat(
         let memory = crate::db::memory_store()
             .and_then(|s| s.summary(&mem_project, 4000))
             .unwrap_or_default();
-        // r2's `ij` shape stays on the host side: the library only ever
+        // The engine's metadata shape stays on the host side: the library only ever
         // sees the normalized PromptTarget interface.
         let target = librecurse::agent::PromptTarget {
             path,

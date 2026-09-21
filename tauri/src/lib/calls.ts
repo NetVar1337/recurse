@@ -1,8 +1,8 @@
 import type { Function } from "@/types";
 
 /**
- * Minimal shape we need to detect a direct call to a function. r2 normalizes
- * call instructions to `type: "call"` across all architectures (x86 `call`,
+ * Minimal shape we need to detect a direct call to a function. The engine
+ * tags call instructions `type: "call"` across architectures (x86 `call`,
  * ARM `bl`, RISC-V `jal`, …); for direct calls the resolved target is carried
  * in `jump`.
  */

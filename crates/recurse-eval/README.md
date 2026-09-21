@@ -23,7 +23,7 @@ select:
   seed: 7                # deterministic sampling
 run:
   model: ""              # empty = app default
-  backend: r2            # or native; EVAL_BACKEND overrides per run
+  backend: native        # or an external engine; EVAL_BACKEND overrides per run
   max_turns: 40
   timeout_secs: 480
 ```
@@ -44,14 +44,12 @@ so results are directly comparable. Precedence:
 4. `native` (default).
 
 ```bash
-EVAL_BACKEND=native just eval-run   # pure Rust, no radare2 required
-EVAL_BACKEND=r2 just eval-run       # radare2 (full features, r2ghidra)
+EVAL_BACKEND=native just eval-run   # pure Rust (the default)
 just eval-run-native                # the same, as a recipe
-just eval-run-r2
 ```
 
-radare2 is only required when the **r2** backend is selected; the native
-backend is in-process. The resolved backend is recorded in the run header and
+The external engine is only required when it is selected; the native
+engine is in-process. The resolved backend is recorded in the run header and
 on every task line in `run.log`, and the task prompt drops the `decompile` op
 when the backend cannot serve it.
 
@@ -86,7 +84,7 @@ Traces default under the workspace target dir, so both live at
 Next to it, one `target/eval-traces/<tier>/<backend>/<hexid>.json` per task holds
 the full conversation with per-turn detail: exact request messages, reasoning,
 content, tool calls and tool results. The backend in the path means a native run
-and an r2 run of the same tier never overwrite each other.
+and an external-engine run of the same tier never overwrite each other.
 
 ### Trace layout
 

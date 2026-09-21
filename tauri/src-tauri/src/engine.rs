@@ -1,7 +1,7 @@
 //! Analysis-backend selection.
 //!
 //! The host no longer knows which engine it holds: [`build`] reads the
-//! configured backend (`r2` or `native`) and returns a boxed
+//! configured backend (`native` or an external engine) and returns a boxed
 //! [`librecurse::engine::Engine`]. Every command and the agent tool route
 //! through that trait, so adding a backend is a change here only.
 
@@ -11,15 +11,15 @@ use librecurse::engine::{BackendKind, Engine};
 
 /// Build the configured analysis backend for `path`.
 ///
-/// * `r2` — spawn the radare2 executable (LGPL, invoked as a separate
-///   program). Requires `r2` on `PATH`.
+/// * an external engine — spawn its executable (independently licensed,
+///   invoked as a separate program). Requires it on `PATH`.
 /// * `native` — pure-Rust in-process parsing/disassembly. No external
 ///   process and no copyleft dependency, but x86/x86-64 disassembly only and
 ///   no decompiler.
 ///
 /// # Errors
 /// Returns the backend's own error when the target cannot be opened (missing
-/// file, unparsable format, missing `r2` binary).
+/// file, unparsable format, missing external binary).
 pub fn build(path: &Path) -> Result<Box<dyn Engine>, String> {
     match crate::config::backend() {
         BackendKind::R2 => Ok(Box::new(librecurse::r2_backend::R2Engine::open(path)?)),
