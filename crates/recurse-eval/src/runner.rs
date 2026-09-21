@@ -94,6 +94,9 @@ pub struct TaskOutcome {
     pub models: Vec<String>,
     /// Analysis backend this task ran against.
     pub backend: BackendKind,
+    /// Total wall-clock time spent inside analysis tool calls (ms) — separates
+    /// backend latency from model-turn latency.
+    pub tool_ms: u64,
     pub error: Option<String>,
     pub trace_path: PathBuf,
     /// Kept workdir (temp task dir) for post-mortems.
@@ -263,6 +266,16 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         .iter()
         .map(|t| t.est_output_tokens)
         .sum();
+    // Analysis (not bash/memory) time, so backend latency is separable from
+    // the model's own latency in a post-mortem.
+    let tool_ms: u64 = agent
+        .trace()
+        .turns
+        .iter()
+        .flat_map(|t| t.tool_results.iter())
+        .filter(|r| librecurse::engine::is_op(&r.name))
+        .map(|r| r.duration_ms)
+        .sum();
 
     std::fs::create_dir_all(&opts.trace_dir).map_err(|e| format!("trace dir: {e}"))?;
     let trace_path = opts.trace_dir.join(format!("{}.json", task.hexid));
@@ -287,6 +300,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         cost_usd: cost_usd(&opts.model, est_in_tokens, est_out_tokens),
         models,
         backend: opts.backend,
+        tool_ms,
         error,
         trace_path,
         workdir,

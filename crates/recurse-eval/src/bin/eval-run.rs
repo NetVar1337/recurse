@@ -178,6 +178,7 @@ async fn main() {
     let mut total_in = 0u64;
     let mut total_out = 0u64;
     let mut total_cost = 0.0;
+    let mut total_tool_ms = 0u64;
 
     for task in &tasks {
         let binary = match fetch_binary(&corpus_dir, task, &mut log).await {
@@ -193,15 +194,17 @@ async fn main() {
                 total_in += o.est_in_tokens;
                 total_out += o.est_out_tokens;
                 total_cost += o.cost_usd;
+                total_tool_ms += o.tool_ms;
                 let status = if o.pass { "PASS" } else { "FAIL" };
                 log.log(format!(
-                    "[{status}] {} {} turns={} tools_in={} out={} ${:.3} err={}",
+                    "[{status}] {} {} turns={} tools_in={} out={} ${:.3} analyze={}ms err={}",
                     o.hexid,
                     o.name,
                     o.turns,
                     o.est_in_tokens,
                     o.est_out_tokens,
                     o.cost_usd,
+                    o.tool_ms,
                     o.error.as_deref().unwrap_or("-")
                 ));
                 if !o.models.is_empty() {
@@ -228,7 +231,7 @@ async fn main() {
 
     let elapsed = started.elapsed().as_secs();
     log.log(format!(
-        "\n=== {}: {passed}/{} passed in {}s ({:.0}s/task) ===\nin={total_in} out={total_out} cost=${total_cost:.2} ({})",
+        "\n=== {}: {passed}/{} passed in {}s ({:.0}s/task) ===\nin={total_in} out={total_out} cost=${total_cost:.2} analyze={total_tool_ms}ms ({})",
         cfg.tier,
         tasks.len(),
         elapsed,

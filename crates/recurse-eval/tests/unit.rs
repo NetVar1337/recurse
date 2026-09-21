@@ -446,6 +446,9 @@ async fn mock_loop_records_exact_turns() {
         value["turns"][0]["request"][0].is_u64(),
         "request holds pool indices"
     );
+    // Every tool call records its wall-clock duration (backend vs model time).
+    assert_eq!(value["turns"][0]["tool_results"][0]["name"], "bash");
+    assert!(value["turns"][0]["tool_results"][0]["duration_ms"].is_u64());
     let _ = std::fs::remove_file(&path);
 }
 

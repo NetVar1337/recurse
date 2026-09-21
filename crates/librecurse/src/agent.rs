@@ -724,6 +724,11 @@ pub struct TraceToolResult {
     pub id: String,
     pub name: String,
     pub result: String,
+    /// Wall-clock time the tool call took, in milliseconds. Separates backend
+    /// latency from model-turn latency in post-mortems. Defaults to 0 for
+    /// traces written before it existed.
+    #[serde(default)]
+    pub duration_ms: u64,
 }
 
 /// Exact record of a single model turn: the input the model saw
@@ -1082,9 +1087,11 @@ impl Agent {
                         name: tc.function.name.clone(),
                         arguments: tc.function.arguments.clone(),
                     });
+                    let started = std::time::Instant::now();
                     let result = exec(tc)
                         .await
                         .unwrap_or_else(|e| format!("tool error: {e}"));
+                    let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     // An empty tool result is legal in the OpenAI wire format but
                     // not portable: Cohere (reached through OpenRouter) rejects
                     // `tool_results` entries without an `outputs` property, which
@@ -1107,6 +1114,7 @@ impl Agent {
                         id: tc.id.clone(),
                         name: tc.function.name.clone(),
                         result: result.clone(),
+                        duration_ms,
                     });
                     self.messages.push(ChatMessage::tool(tc.id.clone(), result));
                 }
