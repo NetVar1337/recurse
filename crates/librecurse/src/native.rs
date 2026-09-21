@@ -20,7 +20,7 @@
 
 pub mod wasm;
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -40,9 +40,12 @@ use crate::engine::{
 /// Maximum functions discovered per binary; guards recursive descent.
 const MAX_FUNCTIONS: usize = 4096;
 /// Maximum basic blocks decoded per function.
-const MAX_BLOCKS: usize = 2048;
+const MAX_BLOCKS: usize = 512;
+/// Maximum instructions decoded for one function before decoding stops, so a
+/// runaway tail-call chain cannot consume the whole pass.
+const MAX_FUNCTION_INSNS: usize = 50_000;
 /// Maximum instructions decoded per block.
-const MAX_BLOCK_INSNS: usize = 4096;
+const MAX_BLOCK_INSNS: usize = 512;
 /// Linear-sweep budget for call-target seeding on stripped binaries. Decoding
 /// a whole huge `.text` is bounded so `analyze` stays predictable.
 const SWEEP_MAX_INSNS: usize = 1_000_000;
@@ -342,7 +345,14 @@ impl NativeEngine {
         if offset >= data.len() {
             return Err(format!("{addr:#x} is past the end of its section"));
         }
-        Ok(decode_with(&cs, &data[offset..], addr, count.max(1), false))
+        Ok(decode_with(
+            &cs,
+            &data[offset..],
+            addr,
+            count.max(1),
+            false,
+            true,
+        ))
     }
 
     /// Decode the basic blocks of the function at `func_addr`, caching the
@@ -371,6 +381,9 @@ impl NativeEngine {
 
     /// Run discovery: seed from symbols + entry, then follow direct call
     /// targets. Idempotent.
+    /// Run discovery: seed from symbols, the entry point, and a linear sweep of
+    /// the text sections, then assign names and sizes. Block decoding is lazy
+    /// (see [`NativeEngine::blocks_for`]) so this stays fast on large binaries.
     fn discover(&self) -> Result<(), String> {
         {
             let state = self
@@ -383,82 +396,45 @@ impl NativeEngine {
         }
         let file = self.parse()?;
         let cs = build_capstone(&file)?;
-        // Imported GOT slots, so PLT stubs and indirect calls can be named.
         let got = import_got_labels(&file);
+
+        let mut functions: BTreeMap<u64, FunctionInfo> = BTreeMap::new();
         // Named seeds first: they carry the real symbol names.
-        let mut names: HashMap<u64, String> = HashMap::new();
         for sym in file.symbols().chain(file.dynamic_symbols()) {
             if sym.kind() != SymbolKind::Text || sym.address() == 0 || !sym.is_definition() {
                 continue;
             }
             if let Ok(name) = sym.name() {
-                let addr = code_addr(&file, sym.address());
-                names.entry(addr).or_insert_with(|| shorten_name(name));
+                add_function(&mut functions, &file, sym.address(), shorten_name(name));
             }
         }
         let entry = code_addr(&file, file.entry());
-        let mut queue: VecDeque<u64> = VecDeque::new();
-        for addr in names.keys().copied().collect::<Vec<_>>() {
-            if Self::in_text(&file, addr) {
-                queue.push_back(addr);
-            }
-        }
-        if entry != 0 && Self::in_text(&file, entry) {
-            queue.push_back(entry);
-            // Stripped binaries often expose only `_start`, and they pass
-            // `main` to libc as a pointer rather than calling it directly.
-            // Recover it from the entry's argument setup (x86/x86-64).
+        if entry != 0 && NativeEngine::in_text(&file, entry) {
+            add_function(&mut functions, &file, entry, format!("fcn_{entry:x}"));
+            // Stripped binaries often expose only the entry, which passes `main`
+            // to libc as a pointer rather than calling it directly.
             if let Some(main) = entry_main_seed(&file, &cs, entry) {
-                names.entry(main).or_insert_with(|| "main".to_string());
-                queue.push_back(main);
+                add_function(&mut functions, &file, main, "main".to_string());
             }
         }
-        // A linear sweep adds every direct call target as a candidate. This is
-        // what finds internal functions when the entry only calls through the
-        // PLT (the common stripped-binary case), where recursive descent from
-        // symbols alone yields just `_start`.
-        for target in sweep_seeds(&file, &cs, SWEEP_MAX_INSNS) {
-            queue.push_back(target);
-        }
-
-        let mut discovered: BTreeMap<u64, FunctionInfo> = BTreeMap::new();
-        let mut seen: HashSet<u64> = HashSet::new();
-        let mut cache: HashMap<u64, Vec<BasicBlock>> = HashMap::new();
-        while let Some(addr) = queue.pop_front() {
-            if !seen.insert(addr) || discovered.len() >= MAX_FUNCTIONS {
+        // A linear sweep adds every direct call target, CET landing pad, and
+        // classic prologue as a function entry.
+        for seed in sweep_seeds(&file, &cs, SWEEP_MAX_INSNS) {
+            if functions.contains_key(&seed) {
                 continue;
             }
-            let blocks = decode_blocks(&file, &cs, addr)?;
-            for op in blocks.iter().flat_map(|b| b.ops.iter()) {
-                if op.kind.as_deref() == Some("call") {
-                    if let Some(t) = op.jump {
-                        if Self::in_text(&file, t) && !seen.contains(&t) {
-                            queue.push_back(t);
-                        }
-                    }
-                }
-            }
-            let name = names.get(&addr).cloned().unwrap_or_else(|| {
-                plt_import_name(&blocks, &got)
-                    .map(|imported| format!("imp.{imported}"))
-                    .unwrap_or_else(|| format!("fcn_{addr:x}"))
-            });
-            discovered.insert(
-                addr,
-                FunctionInfo {
-                    addr,
-                    name,
-                    size: None,
-                    nbbs: Some(blocks.len() as u64),
-                    edges: None,
-                    signature: None,
-                },
-            );
-            cache.insert(addr, blocks);
+            let name = plt_name_at(&file, &cs, seed, &got)
+                .map(|imported| format!("imp.{imported}"))
+                .unwrap_or_else(|| format!("fcn_{seed:x}"));
+            add_function(&mut functions, &file, seed, name);
         }
-
-        // Fill in sizes from the sorted neighbour addresses.
-        let addrs: Vec<u64> = discovered.keys().copied().collect();
+        // Keep the lowest-addressed functions when a huge binary overflows.
+        if functions.len() > MAX_FUNCTIONS {
+            let keep: BTreeSet<u64> = functions.keys().copied().take(MAX_FUNCTIONS).collect();
+            functions.retain(|addr, _| keep.contains(addr));
+        }
+        // Sizes from the sorted neighbour addresses.
+        let addrs: Vec<u64> = functions.keys().copied().collect();
         for (i, addr) in addrs.iter().enumerate() {
             let end = addrs
                 .get(i + 1)
@@ -467,7 +443,7 @@ impl NativeEngine {
                     Self::text_section(&file, *addr).map(|s| s.address().saturating_add(s.size()))
                 })
                 .unwrap_or(*addr);
-            if let Some(f) = discovered.get_mut(addr) {
+            if let Some(f) = functions.get_mut(addr) {
                 f.size = Some(end.saturating_sub(*addr));
             }
         }
@@ -476,8 +452,7 @@ impl NativeEngine {
             .state
             .lock()
             .map_err(|e| format!("native state poisoned: {e}"))?;
-        state.functions = discovered;
-        state.blocks = cache;
+        state.functions = functions;
         state.analyzed = true;
         Ok(())
     }
@@ -601,6 +576,7 @@ fn decode_with(
     ip: u64,
     max: usize,
     stop_at_terminator: bool,
+    format: bool,
 ) -> Vec<Instruction> {
     /// Instructions requested per Capstone call.
     const BATCH: usize = 32;
@@ -626,7 +602,19 @@ fn decode_with(
             consumed += insn.bytes().len();
             out.push(Instruction {
                 addr: insn.address(),
-                disasm: format_insn(insn),
+                disasm: if format {
+                    format_insn(insn)
+                } else {
+                    // Cheap text (mnemonic + operands) for scans that only need
+                    // to recognise call/prologue mnemonics, not formatted asm.
+                    format!(
+                        "{} {}",
+                        insn.mnemonic().unwrap_or(""),
+                        insn.op_str().unwrap_or("")
+                    )
+                    .trim_end()
+                    .to_string()
+                },
                 bytes: Some(hex_bytes(insn.bytes())),
                 kind,
                 jump,
@@ -648,6 +636,20 @@ fn decode_with(
 /// Recover the basic blocks of the function at `func_addr` by following
 /// branch and fall-through edges. Pure over the parsed file and Capstone
 /// handle, so callers share one handle across many functions.
+/// Executable address ranges, computed once so hot paths can test membership
+/// without rescanning every section per instruction.
+fn text_ranges(file: &object::File<'_>) -> Vec<(u64, u64)> {
+    file.sections()
+        .filter(|s| s.kind() == SectionKind::Text)
+        .map(|s| (s.address(), s.address().saturating_add(s.size())))
+        .collect()
+}
+
+/// True when `addr` is inside an executable range from [`text_ranges`].
+fn in_text_ranges(ranges: &[(u64, u64)], addr: u64) -> bool {
+    ranges.iter().any(|(lo, hi)| addr >= *lo && addr < *hi)
+}
+
 fn decode_blocks(
     file: &object::File<'_>,
     cs: &Capstone,
@@ -658,9 +660,13 @@ fn decode_blocks(
         NativeEngine::text_section(file, func_addr).ok_or_else(|| missing_code(func_addr))?;
     let data = section.data().map_err(|e| e.to_string())?;
     let base = section.address();
+    let text = text_ranges(file);
     let mut visited: HashSet<u64> = HashSet::new();
     let mut queue: VecDeque<u64> = VecDeque::new();
     let mut blocks: Vec<BasicBlock> = Vec::new();
+    // Blocks already examined by the switch post-pass, so it never rescans.
+    let mut scanned: HashSet<u64> = HashSet::new();
+    let mut insn_budget = MAX_FUNCTION_INSNS;
     queue.push_back(func_addr);
 
     loop {
@@ -672,16 +678,17 @@ fn decode_blocks(
                 continue;
             }
             let offset = (start - base) as usize;
-            let mut ops = decode_with(cs, &data[offset..], start, MAX_BLOCK_INSNS, true);
+            let mut ops = decode_with(cs, &data[offset..], start, MAX_BLOCK_INSNS, true, true);
             if ops.is_empty() {
                 continue;
             }
+            insn_budget = insn_budget.saturating_sub(ops.len());
             // Follow indirect calls/jumps through data slots to their target,
             // so a tail call or function-pointer dispatch becomes an edge and a
             // cross-reference instead of a dead end.
             for op in ops.iter_mut() {
                 if op.jump.is_none() && matches!(op.kind.as_deref(), Some("call") | Some("jmp")) {
-                    if let Some(target) = resolve_indirect(file, op) {
+                    if let Some(target) = resolve_indirect(file, &text, op) {
                         op.jump = Some(target);
                     }
                 }
@@ -696,7 +703,7 @@ fn decode_blocks(
             // An indexed-memory jump table is fully described by the one
             // instruction, so it can be resolved immediately.
             let targets = if jump.is_none() && last.kind.as_deref() == Some("jmp") {
-                jump_table_targets(file, &ops, last)
+                jump_table_targets(file, &text, &ops, last)
             } else {
                 Vec::new()
             };
@@ -704,7 +711,7 @@ fn decode_blocks(
                 .into_iter()
                 .chain(fail)
                 .chain(targets.iter().copied())
-                .filter(|t| NativeEngine::in_text(file, *t));
+                .filter(|t| in_text_ranges(&text, *t));
             for target in successors {
                 queue.push_back(target);
             }
@@ -719,13 +726,28 @@ fn decode_blocks(
         }
 
         // Second pass: a computed `jmp reg` is often its own block, separate
-        // from the table setup that precedes it. Search the function's
-        // preceding ops for the switch idiom and pull in the case blocks.
+        // from the table setup that precedes it. Search a bounded window of the
+        // function's preceding ops for the switch idiom. Each block is examined
+        // once and the window is a slice (no per-block clone), so this is linear
+        // in the block count rather than quadratic.
         blocks.sort_by_key(|b| b.addr);
-        let flat: Vec<Instruction> = blocks.iter().flat_map(|b| b.ops.iter().cloned()).collect();
+        // Only build the flat op view when some block ends in a computed jump;
+        // otherwise there is nothing for the switch matcher to do.
+        let has_indirect = blocks.iter().any(|b| {
+            b.ops
+                .last()
+                .is_some_and(|o| o.kind.as_deref() == Some("jmp") && o.jump.is_none())
+        });
+        if !has_indirect {
+            break;
+        }
+        let mut flat: Vec<Instruction> =
+            blocks.iter().flat_map(|b| b.ops.iter().cloned()).collect();
+        flat.sort_by_key(|o| o.addr);
+        let mut found: Vec<(usize, Vec<u64>)> = Vec::new();
         let mut discovered = false;
-        for block in blocks.iter_mut() {
-            if !block.targets.is_empty() {
+        for (i, block) in blocks.iter().enumerate() {
+            if !scanned.insert(block.addr) || !block.targets.is_empty() {
                 continue;
             }
             let Some(last) = block.ops.last() else {
@@ -734,22 +756,20 @@ fn decode_blocks(
             if !(last.kind.as_deref() == Some("jmp") && last.jump.is_none()) {
                 continue;
             }
-            let window: Vec<Instruction> = flat
-                .iter()
-                .filter(|o| o.addr <= last.addr)
-                .cloned()
-                .collect();
-            let targets = switch_targets(file, &window);
+            let targets = switch_targets(file, &text, lookback(&flat, last.addr, 64));
             if targets.is_empty() {
                 continue;
             }
-            for target in targets.iter().filter(|t| NativeEngine::in_text(file, **t)) {
+            for target in targets.iter().filter(|t| in_text_ranges(&text, **t)) {
                 if !visited.contains(target) {
                     queue.push_back(*target);
                     discovered = true;
                 }
             }
-            block.targets = targets;
+            found.push((i, targets));
+        }
+        for (i, targets) in found {
+            blocks[i].targets = targets;
         }
         if !discovered {
             break;
@@ -780,7 +800,7 @@ fn sweep_seeds(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Vec<
         if data.is_empty() {
             continue;
         }
-        let ops = decode_with(cs, data, section.address(), budget, false);
+        let ops = decode_with(cs, data, section.address(), budget, false, false);
         budget = budget.saturating_sub(ops.len().max(1));
         for (i, op) in ops.iter().enumerate() {
             if op.kind.as_deref() == Some("call") {
@@ -833,14 +853,53 @@ fn import_got_labels(file: &object::File<'_>) -> HashMap<u64, String> {
 
 /// If the first instruction is an indirect jump through a known GOT slot, the
 /// block is a PLT stub; return the imported name it forwards to.
-fn plt_import_name(blocks: &[BasicBlock], got: &HashMap<u64, String>) -> Option<String> {
-    let first = blocks.first()?.ops.first()?;
+fn plt_import_name(ops: &[Instruction], got: &HashMap<u64, String>) -> Option<String> {
+    let first = ops.first()?;
     if first.kind.as_deref() != Some("jmp") {
         return None;
     }
     memory_references(first)
         .into_iter()
         .find_map(|ea| got.get(&ea).cloned())
+}
+
+/// Name a forwarding stub: decode one instruction at `addr` and, if it is an
+/// indirect jump through a known imported slot, return the import name.
+fn plt_name_at(
+    file: &object::File<'_>,
+    cs: &Capstone,
+    addr: u64,
+    got: &HashMap<u64, String>,
+) -> Option<String> {
+    let section = NativeEngine::text_section(file, addr)?;
+    let data = section.data().ok()?;
+    let off = (addr - section.address()) as usize;
+    if off >= data.len() {
+        return None;
+    }
+    let ops = decode_with(cs, &data[off..], addr, 1, false, false);
+    plt_import_name(&ops, got)
+}
+
+/// Add `addr` (mapping a name) to the function map, skipping non-code.
+fn add_function(
+    functions: &mut BTreeMap<u64, FunctionInfo>,
+    file: &object::File<'_>,
+    addr: u64,
+    name: String,
+) {
+    let addr = code_addr(file, addr);
+    if addr == 0 || !NativeEngine::in_text(file, addr) {
+        return;
+    }
+    functions.entry(addr).or_insert(FunctionInfo {
+        addr,
+        name,
+        size: None,
+        nbbs: None,
+        edges: None,
+        signature: None,
+    });
 }
 
 /// Candidate absolute addresses referenced by an instruction, for annotation:
@@ -889,18 +948,25 @@ fn memory_operand_address(op: &Instruction) -> Option<u64> {
 /// Resolve an indirect call/jump through a data slot: read the pointer stored
 /// at the operand address and return it when it points into executable code —
 /// a tail call through a GOT slot, an ifunc stub, or a function-pointer table.
-fn resolve_indirect(file: &object::File<'_>, op: &Instruction) -> Option<u64> {
+fn resolve_indirect(file: &object::File<'_>, text: &[(u64, u64)], op: &Instruction) -> Option<u64> {
     let slot = memory_operand_address(op)?;
-    if !in_data(file, slot) {
+    let section = file
+        .sections()
+        .find(|s| slot >= s.address() && slot < s.address().saturating_add(s.size()))?;
+    if !matches!(
+        section.kind(),
+        SectionKind::Data | SectionKind::ReadOnlyData | SectionKind::UninitializedData
+    ) {
         return None;
     }
-    let (data, base) = section_at(file, slot)?;
+    let base = section.address();
+    let data = section.data().ok()?;
     let off = (slot - base) as usize;
     if off + 8 > data.len() {
         return None;
     }
     let value = u64::from_le_bytes(data[off..off + 8].try_into().ok()?);
-    NativeEngine::in_text(file, value).then_some(value)
+    in_text_ranges(text, value).then_some(value)
 }
 
 /// Find the section containing `addr`, returning its bytes and base address.
@@ -933,7 +999,12 @@ enum TableBase {
 /// Recover the case targets of a jump table: the base is named in the computed
 /// jump operand (`jmp qword ptr [rax*8 + 0x4020]` or `jmp [rdx + rax*8]`), and
 /// entries are either absolute pointers or offsets relative to the base.
-fn jump_table_targets(file: &object::File<'_>, ops: &[Instruction], op: &Instruction) -> Vec<u64> {
+fn jump_table_targets(
+    file: &object::File<'_>,
+    text: &[(u64, u64)],
+    ops: &[Instruction],
+    op: &Instruction,
+) -> Vec<u64> {
     let Some((entry_size, base)) = parse_jump_table(&op.disasm) else {
         return Vec::new();
     };
@@ -949,15 +1020,15 @@ fn jump_table_targets(file: &object::File<'_>, ops: &[Instruction], op: &Instruc
     };
     let mut off = (base - data_addr) as usize;
     let mut out = Vec::new();
-    while off + entry_size <= data.len() && out.len() < 1024 {
+    while off + entry_size <= data.len() && out.len() < 256 {
         let value = if entry_size == 8 {
             u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
         } else {
             u32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4])) as u64
         };
-        let target = if NativeEngine::in_text(file, value) {
+        let target = if in_text_ranges(text, value) {
             value
-        } else if NativeEngine::in_text(file, base.wrapping_add(value)) {
+        } else if in_text_ranges(text, base.wrapping_add(value)) {
             base.wrapping_add(value)
         } else {
             break;
@@ -999,12 +1070,25 @@ fn resolve_table_base(ops: &[Instruction], reg: &str) -> Option<u64> {
     None
 }
 
+/// The up-to-`n` instructions at or before `addr`, as a slice of the
+/// address-sorted `flat` list. Used by the switch matcher so it scans a bounded
+/// window instead of the whole function.
+fn lookback<T: std::borrow::Borrow<Instruction>>(flat: &[T], addr: u64, n: usize) -> &[T] {
+    let hi = flat.partition_point(|o| o.borrow().addr <= addr);
+    let lo = hi.saturating_sub(n);
+    &flat[lo..hi]
+}
+
 /// Recover switch cases from the `jmp reg` idiom compilers emit for dense
 /// matches: a table base is loaded into a register, an entry is loaded and
 /// (for position-independent tables) added to the base, then jumped to.
-fn switch_targets(file: &object::File<'_>, ops: &[Instruction]) -> Vec<u64> {
+fn switch_targets<T: std::borrow::Borrow<Instruction>>(
+    file: &object::File<'_>,
+    text: &[(u64, u64)],
+    ops: &[T],
+) -> Vec<u64> {
     match switch_table(ops) {
-        Some((table, relative)) => read_table(file, table, relative),
+        Some((table, relative)) => read_table(file, text, table, relative),
         None => Vec::new(),
     }
 }
@@ -1013,8 +1097,8 @@ fn switch_targets(file: &object::File<'_>, ops: &[Instruction]) -> Vec<u64> {
 ///
 /// * relative: `lea B,[rip+T]; movsxd R,[B + I*4]; add R, B; jmp R`
 /// * absolute: `lea B,[rip+T]; mov R,[B + I*8]; jmp R`
-fn switch_table(ops: &[Instruction]) -> Option<(u64, bool)> {
-    let last = ops.last()?;
+fn switch_table<T: std::borrow::Borrow<Instruction>>(ops: &[T]) -> Option<(u64, bool)> {
+    let last = ops.last()?.borrow();
     let reg = last.disasm.strip_prefix("jmp ")?.trim();
     if reg.is_empty() || reg.contains(['[', ',', '+']) {
         return None;
@@ -1024,11 +1108,12 @@ fn switch_table(ops: &[Instruction]) -> Option<(u64, bool)> {
     // (absolute table).
     let mut bases: Vec<String> = Vec::new();
     let mut relative = false;
+    let mut saw_load = false;
     let add = format!("add {reg}, ");
     let mov = format!("mov {reg}, ");
     let movsxd = format!("movsxd {reg}, ");
     for op in ops.iter().rev() {
-        let disasm = &op.disasm;
+        let disasm = &op.borrow().disasm;
         if let Some(rest) = disasm.strip_prefix(&add) {
             let base = rest
                 .trim()
@@ -1045,13 +1130,20 @@ fn switch_table(ops: &[Instruction]) -> Option<(u64, bool)> {
         {
             if let Some(base) = bracketed_base_register(rest) {
                 bases.push(base);
+                saw_load = true;
             }
         }
+    }
+    // A computed jump with no table load and no base addition is a plain tail
+    // call through a register, not a switch.
+    if !(relative || saw_load) {
+        return None;
     }
     bases.push(reg.to_string());
     for candidate in &bases {
         let lea = format!("lea {candidate}, [rip");
         for op in ops.iter().rev() {
+            let op = op.borrow();
             if op.disasm.starts_with(&lea) {
                 if let Some(disp) = rip_displacement(&op.disasm) {
                     let table = op
@@ -1092,7 +1184,12 @@ fn bracketed_base_register(operands: &str) -> Option<String> {
 /// Read up to 1024 case targets from a table. `relative` selects 4-byte signed
 /// offsets from the table base (position-independent) versus 8-byte absolute
 /// pointers.
-fn read_table(file: &object::File<'_>, table: u64, relative: bool) -> Vec<u64> {
+fn read_table(
+    file: &object::File<'_>,
+    text: &[(u64, u64)],
+    table: u64,
+    relative: bool,
+) -> Vec<u64> {
     let Some((data, data_addr)) = section_at(file, table) else {
         return Vec::new();
     };
@@ -1106,7 +1203,7 @@ fn read_table(file: &object::File<'_>, table: u64, relative: bool) -> Vec<u64> {
         } else {
             u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
         };
-        if !NativeEngine::in_text(file, target) {
+        if !in_text_ranges(text, target) {
             break;
         }
         out.push(target);
@@ -1392,11 +1489,13 @@ fn classify(
 ) -> (Option<String>, Option<u64>, Option<u64>) {
     let mnemonic = insn.mnemonic().unwrap_or("");
     let operands = insn.op_str().unwrap_or("");
-    let groups = cs
-        .insn_detail(insn)
-        .map(|d| d.groups().to_vec())
-        .unwrap_or_default();
-    let has = |g: u8| groups.iter().any(|x| x.0 == g);
+    let detail = cs.insn_detail(insn);
+    let has = |g: u8| {
+        detail
+            .as_ref()
+            .map(|d| d.groups().iter().any(|x| x.0 == g))
+            .unwrap_or(false)
+    };
     let next = insn.address().saturating_add(insn.bytes().len() as u64);
 
     if has(InsnGroupType::CS_GRP_RET as u8) || has(InsnGroupType::CS_GRP_IRET as u8) {
