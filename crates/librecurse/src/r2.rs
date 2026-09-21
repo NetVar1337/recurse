@@ -1,25 +1,22 @@
-//! Native radare2 access for the agent.
+//! External-engine access for the agent.
 //!
-//! One tool ([`TOOL_NAME`]) instead of steering the model through `bash` plus
-//! `r2 -q -c`, which cost roughly half of every run's input tokens:
+//! One persistent session per target, driven over a NUL-framed pipe, so analysis
+//! state survives between commands:
 //!
-//! * **One persistent session** per target. `r2 -q0` is spawned once and driven
-//!   over its NUL-framed pipe, so analysis state survives between calls. The
-//!   bash path re-ran `aa`/`aaa` on every invocation because each call was a
-//!   fresh process.
+//! * **One session.** The engine is spawned once and queried repeatedly,
+//!   instead of re-running analysis on every invocation.
 //! * **JSON-first.** Commands are upgraded to their `j` twin ([`jsonify`]),
-//!   parsed, and projected onto the fields that matter ([`normalize`]). `aflj`
-//!   carries ~30 keys per function and `pdfj` ~17 per instruction, almost none
-//!   of which the model reads.
-//! * **Colour-free.** ANSI escapes measured at 48% of all tool output (258KB of
-//!   539KB, ~287k tokens cumulatively). The session disables colour and
+//!   parsed, and projected onto the fields that matter ([`normalize`]). A
+//!   function dump carries ~30 keys and an instruction dump ~17, almost none of
+//!   which the model reads.
+//! * **Colour-free.** ANSI escapes are disabled at the source and
 //!   [`strip_ansi`] removes escapes from any output regardless of source.
 //! * **Deduplicated.** Repeating a call returns a short pointer rather than a
 //!   second copy of the same bytes.
 //!
 //! Hosts own the session: it needs a target path and a child process. They route
-//! the `r2` tool call into [`Session::call`]. Everything else here is a pure
-//! function over r2's output and is unit-tested without radare2 installed.
+//! the tool call into [`Session::call`]. Everything else here is a pure function
+//! over the engine's output and is unit-tested without it installed.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -51,10 +48,10 @@ const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The single binary-analysis tool.
 ///
-/// One tool rather than a family of `r2_disasm`/`r2_xref`/`r2_strings` tools:
-/// analysis is one permission and one UI affordance, and a lone `cmd` string
-/// keeps the schema small (the schema is re-sent with every request) while
-/// letting the model use the r2 vocabulary it already knows.
+/// One tool rather than a family of per-operation tools: analysis is one
+/// permission and one UI affordance, and a lone `cmd` string keeps the schema
+/// small (it is re-sent with every request) while letting the model use the
+/// engine vocabulary it already knows.
 ///
 /// ```
 /// use librecurse::r2::tool_schema;
@@ -63,15 +60,15 @@ const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// assert!(schema["function"]["description"]
 ///     .as_str()
 ///     .unwrap()
-///     .contains("do NOT call r2 through bash"));
+///     .contains("do NOT call the engine through bash"));
 /// ```
 pub fn tool_schema() -> Value {
     json!({
         "type": "function",
         "function": {
             "name": TOOL_NAME,
-            "description": "Run a radare2 command against the loaded binary and get structured JSON back. \
-                This is the only way to inspect the binary: do NOT call r2 through bash. \
+            "description": "Run an engine command against the loaded binary and get structured JSON back. \
+                This is the only way to inspect the binary: do NOT call the engine through bash. \
                 Analysis state persists between calls, so analyse once (`aaa`) and then query. \
                 Commands: `aaa` analyse; `afl` functions; `pdf @ <addr|name>` disassemble a function; \
                 `pd <n> @ <addr>` disassemble n instructions; `axt @ <addr>` xrefs to an address; \
@@ -84,7 +81,7 @@ pub fn tool_schema() -> Value {
                 "properties": {
                     "cmd": {
                         "type": "string",
-                        "description": "r2 command, optionally chained with `;` and located with `@ addr`, e.g. `pdf @ main`"
+                        "description": "engine command, optionally chained with `;` and located with `@ addr`, e.g. `pdf @ main`"
                     },
                     "limit": {
                         "type": "integer",
@@ -99,7 +96,7 @@ pub fn tool_schema() -> Value {
 
 /// Remove ANSI escape sequences (CSI/SGR, OSC, and two-byte escapes).
 ///
-/// r2 emits one sequence per token of coloured disassembly, which measured as
+/// The engine emits one sequence per token of coloured disassembly, which measured as
 /// 48% of all tool output before this existed.
 ///
 /// ```
@@ -147,7 +144,7 @@ pub fn strip_ansi(input: &str) -> String {
     out
 }
 
-/// True for r2 progress chatter that is noise inside a tool result.
+/// True for engine progress chatter that is noise inside a tool result.
 ///
 /// Analysis progress and relocation warnings appear once per command in the
 /// bash path and carry no information for the model. Errors are kept: they are
@@ -184,7 +181,7 @@ pub fn tidy(raw: &str) -> String {
     lines.join("\n")
 }
 
-/// Which projection to apply, inferred from the r2 command.
+/// Which projection to apply, inferred from the command.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Family {
     /// Function lists (`afl`).
@@ -236,7 +233,7 @@ pub fn family(cmd: &str) -> Family {
     Family::Other
 }
 
-/// Fields worth keeping per family. Everything else r2 emits is noise for the
+/// Fields worth keeping per family. Everything else the engine emits is noise for the
 /// model: `esil`, `family`, `type_num`, `paddr`, `ordinal`, checksums, and so on.
 ///
 /// ```
@@ -329,7 +326,7 @@ pub fn project_item(item: &Value, fields: &[&str]) -> Value {
 }
 
 /// Project the object shapes r2's JSON commands actually return, instead of
-/// handing back every field r2 happens to emit:
+/// handing back every field the engine happens to emit:
 ///
 /// * `pdfj` gives `{name, ops: [...]}`
 /// * `agfj` gives `{addr, blocks: [{addr, ninstr, ops: [...]}]}`
@@ -419,7 +416,7 @@ pub fn project_object(cmd: &str, map: &Map<String, Value>, fields: &[&str], limi
     json!({ "cmd": cmd, "count": map.len(), "items": [Value::Object(map.clone())] })
 }
 
-/// Structure one r2 response into a compact JSON envelope.
+/// Structure one engine response into a compact JSON envelope.
 ///
 /// Lists become `{cmd, count, showing, items, truncated}`; a single object is
 /// compacted; anything else is capped text. The envelope is deliberately small
@@ -541,7 +538,7 @@ pub fn compact(value: Value) -> String {
 
 /// Normalise a tool result regardless of which tool produced it.
 ///
-/// `bash` output is colour-stripped and capped the same way as r2 output, so an
+/// `bash` output is colour-stripped and capped the same way as engine output, so an
 /// escape sequence cannot reach the model from any path. Small outputs pass
 /// through untouched.
 ///
@@ -617,7 +614,7 @@ pub fn jsonify(part: &str) -> Option<String> {
     })
 }
 
-/// Split an r2 `;`-chain into its parts.
+/// Split an engine `;`-chain into its parts.
 ///
 /// Each part is run and structured separately, so a chain yields labelled parts
 /// instead of several JSON arrays concatenated into one unparseable blob.
@@ -672,7 +669,7 @@ pub fn result_key(cmd: &str, limit: usize) -> u64 {
     h.finish()
 }
 
-/// A persistent radare2 process driven over its NUL-framed `-q0` pipe.
+/// A persistent external process driven over its NUL-framed pipe.
 ///
 /// Owned by the host, which supplies the target path. Cheap enough to open per
 /// task: spawning takes milliseconds, while the analysis it preserves does not.
@@ -685,10 +682,10 @@ pub struct Session {
 }
 
 impl Session {
-    /// Spawn r2 with colour and interaction disabled.
+    /// Spawn the engine with colour and interaction disabled.
     ///
     /// A tool result never needs escapes, and turning them off at the source is
-    /// cheaper than stripping them. stderr is nulled because r2 writes analysis
+    /// cheaper than stripping them. stderr is nulled because the engine writes analysis
     /// chatter there: piping it without reading risks stalling the child.
     ///
     /// ```no_run
@@ -705,7 +702,7 @@ impl Session {
             .args(["-e", "scr.interactive=false"])
             .args(["-e", "bin.cache=true"])
             .arg(path);
-        // Own process group: lets interrupt/teardown signal r2 and any
+        // Own process group: lets interrupt/teardown signal the engine and any
         // children it spawns without touching unrelated processes. The group
         // id equals the child's pid on Unix.
         #[cfg(unix)]
@@ -718,16 +715,16 @@ impl Session {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("failed to spawn radare2: {e}"))?;
+            .map_err(|e| format!("failed to spawn the engine: {e}"))?;
 
-        let stdin = child.stdin.take().ok_or("r2 stdin unavailable")?;
-        let mut stdout = child.stdout.take().ok_or("r2 stdout unavailable")?;
+        let stdin = child.stdin.take().ok_or("engine stdin unavailable")?;
+        let mut stdout = child.stdout.take().ok_or("engine stdout unavailable")?;
 
-        // The protocol opens with one NUL byte once r2 is ready.
+        // The protocol opens with one NUL byte once the engine is ready.
         let mut nul = [0u8; 1];
         stdout
             .read_exact(&mut nul)
-            .map_err(|e| format!("r2 did not initialize: {e}"))?;
+            .map_err(|e| format!("engine did not initialize: {e}"))?;
 
         Ok(Self {
             child,
@@ -748,7 +745,7 @@ impl Session {
     pub fn run(&mut self, cmd: &str) -> Result<String, String> {
         self.stdin
             .write_all(format!("{cmd}\n").as_bytes())
-            .map_err(|e| format!("r2 write failed: {e}"))?;
+            .map_err(|e| format!("engine write failed: {e}"))?;
         self.stdin.flush().ok();
         let mut res: Vec<u8> = Vec::new();
         loop {
@@ -756,9 +753,9 @@ impl Session {
             let n = self
                 .stdout
                 .read(&mut chunk)
-                .map_err(|e| format!("r2 read failed: {e}"))?;
+                .map_err(|e| format!("engine read failed: {e}"))?;
             if n == 0 {
-                return Err("radare2 closed the pipe".into());
+                return Err("engine closed the pipe".into());
             }
             if let Some(pos) = chunk[..n].iter().position(|&b| b == 0) {
                 res.extend_from_slice(&chunk[..pos]);
@@ -858,7 +855,7 @@ impl Session {
         self.run("aa; aac").map(|_| ())
     }
 
-    /// Process id of the r2 child, for host-side interrupt or teardown.
+    /// Process id of the engine child, for host-side interrupt or teardown.
     ///
     /// ```no_run
     /// use librecurse::r2::Session;
@@ -871,7 +868,7 @@ impl Session {
 }
 
 impl Drop for Session {
-    /// Quit r2 and reap the child.
+    /// Quit the engine and reap the child.
     ///
     /// `q!` stops it immediately; the `wait` reaps it, so a dropped session
     /// never leaves a zombie process behind.
@@ -895,7 +892,7 @@ mod tests {
 
     #[test]
     fn strips_colour_and_other_escapes() {
-        // The exact shape r2 emits for coloured disassembly.
+        // The exact shape the engine emits for coloured disassembly.
         let raw = "\u{1b}[38;2;193;156;0m0x1149\u{1b}[0m  mov eax, 1";
         assert_eq!(strip_ansi(raw), "0x1149  mov eax, 1");
         // OSC title, two-byte escapes, and plain text survive correctly.
@@ -1175,6 +1172,6 @@ mod tests {
         assert!(schema["function"]["parameters"]["properties"]["cmd"].is_object());
         // The description must steer away from the bash path explicitly.
         let desc = schema["function"]["description"].as_str().unwrap();
-        assert!(desc.contains("do NOT call r2 through bash"));
+        assert!(desc.contains("do NOT call the engine through bash"));
     }
 }

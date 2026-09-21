@@ -8,14 +8,13 @@ versions are recorded in Cargo.lock and tauri/package-lock.json. Note in
 particular that the reverse-engineering engine is pluggable (see
 docs/backends.md):
 
-  * The default native backend links only permissively licensed Rust crates
+  * The default native engine links only permissively licensed Rust crates
     (object, capstone, rustc-demangle, cpp_demangle, nix) and contains no
-    copyleft component. It is selected unless `RECURSE_BACKEND`/the stored
-    config asks for `r2`.
+    copyleft component.
 
-  * radare2 and the optional r2ghidra plugin are separate programs, invoked at
-    runtime only when the r2 backend is selected, and are licensed
-    independently of this project (LGPL-3.0). They are not linked or bundled.
+  * An optional external engine is a separate program, invoked at runtime only
+    when it is selected, and is licensed independently of this project
+    (LGPL-3.0-only). It is not linked or bundled.
 
 Crackme binaries fetched by crates/recurse-eval come from crackmes.one and are
 not distributed with this repository; they remain the property of their

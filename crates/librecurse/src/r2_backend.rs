@@ -1,9 +1,9 @@
-//! radare2 behind the [`Engine`] seam.
+//! The external engine behind the [`Engine`] seam.
 //!
 //! [`R2Engine`] owns one long-lived [`Session`] (the `-q0` pipe) and
-//! translates each backend-neutral operation into the r2 command that answers
+//! translates each backend-neutral operation into the command that answers
 //! it, parsing the JSON back into the canonical result types. Nothing in the
-//! agent or UI depends on r2 syntax any more; `raw` is the only method that
+//! agent or UI depends on engine syntax any more; `raw` is the only method that
 //! speaks it, by design.
 
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ use crate::engine::{
 };
 use crate::r2::{tidy, Session};
 
-/// The radare2-backed [`Engine`].
+/// The external-engine implementation of [`Engine`].
 pub struct R2Engine {
     session: Mutex<Session>,
     path: PathBuf,
@@ -26,7 +26,7 @@ pub struct R2Engine {
 }
 
 impl R2Engine {
-    /// Spawn radare2 on `path` and return a ready engine. The child's pid is
+    /// Spawn the external engine on `path` and return a ready engine. The child's pid is
     /// captured immediately so [`Engine::interrupt`] works even while a
     /// command holds the session lock.
     ///
@@ -46,12 +46,12 @@ impl R2Engine {
         })
     }
 
-    /// Run one raw r2 command and return its tidied text output.
+    /// Run one raw engine command and return its tidied text output.
     fn run_text(&self, cmd: &str) -> Result<String, String> {
         let mut guard = self
             .session
             .lock()
-            .map_err(|e| format!("r2 session poisoned: {e}"))?;
+            .map_err(|e| format!("engine session poisoned: {e}"))?;
         guard.run(cmd).map(|raw| tidy(&raw))
     }
 
@@ -65,7 +65,7 @@ impl R2Engine {
             Ok(Value::Array(items)) => Ok(items),
             Ok(Value::Null) => Ok(Vec::new()),
             Ok(other) => Ok(vec![other]),
-            Err(e) => Err(format!("r2 `{cmd}` returned non-JSON: {e}")),
+            Err(e) => Err(format!("engine `{cmd}` returned non-JSON: {e}")),
         }
     }
 
@@ -79,8 +79,8 @@ impl R2Engine {
             .map_err(|e| format!("r2 `{cmd}` returned non-JSON: {e}"))
     }
 
-    /// Turn a [`Target`] into the r2 expression that names it (`0x..` or the
-    /// symbol verbatim, which r2 resolves itself).
+    /// Turn a [`Target`] into the operand expression that names it (`0x..` or the
+    /// symbol verbatim, which the engine resolves itself).
     fn expr(target: &Target) -> String {
         match target {
             Target::Addr(a) => format!("{a:#x}"),
@@ -272,6 +272,7 @@ impl Engine for R2Engine {
                                 .unwrap_or(ops.len() as u64),
                             jump: b.get("jump").and_then(Value::as_u64),
                             fail: b.get("fail").and_then(Value::as_u64),
+                            targets: Vec::new(),
                             ops,
                         }
                     })
@@ -386,7 +387,7 @@ impl Engine for R2Engine {
     }
 }
 
-/// Parse a number r2 prints in decimal or `0x` hex form.
+/// Parse a number the engine prints in decimal or `0x` hex form.
 fn parse_number(line: &str) -> Option<u64> {
     let t = line.trim();
     if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {

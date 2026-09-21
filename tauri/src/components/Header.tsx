@@ -119,12 +119,12 @@ export function Header() {
 							Analysis backend · {backend}
 						</DropdownMenuLabel>
 						<DropdownMenuItem onClick={() => void setBackend("r2")}>
-							{backend === "r2" ? "● " : "○ "}radare2 (r2)
+							{backend === "r2" ? "● " : "○ "}External engine
 						</DropdownMenuItem>
 						<DropdownMenuItem
 							onClick={() => void setBackend("native")}
 						>
-							{backend === "native" ? "● " : "○ "}native (no r2)
+							{backend === "native" ? "● " : "○ "}Native (default)
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuItem onClick={resetZoom}>

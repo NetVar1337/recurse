@@ -178,14 +178,16 @@ export interface GraphBlock {
 	size?: number;
 	jump?: number | null;
 	fail?: number | null;
+	/** Extra successors of a computed jump (jump-table / switch cases). */
+	targets?: number[];
 	ops?: GraphOp[];
 	[k: string]: unknown;
 }
 
 /**
- * Canonical control-flow graph. Both backends produce exactly this shape — the
- * r2 backend transforms its `agfj` JSON into it host-side — so the graph UI is
- * backend-agnostic.
+ * Canonical control-flow graph. Both engines produce exactly this shape — the
+ * external engine's output is transformed into it host-side — so the graph UI
+ * is backend-agnostic.
  */
 export interface FunctionGraph {
 	addr: number;

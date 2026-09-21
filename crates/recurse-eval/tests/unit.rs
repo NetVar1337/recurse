@@ -1,4 +1,4 @@
-//! Fast eval self-tests: no API key, no network, no r2.
+//! Fast eval self-tests: no API key, no network, no external engine.
 //! Covers config parsing, selection over dataset fields, grading, target
 //! mapping, and the debug trace against a scripted mock LLM.
 
@@ -68,8 +68,8 @@ fn run_backend_parses_from_yaml() {
     use librecurse::engine::BackendKind;
     let native: EvalConfig = serde_yaml::from_str("run:\n  backend: native\n").expect("parse");
     assert_eq!(native.run.backend, Some(BackendKind::Native));
-    let r2: EvalConfig = serde_yaml::from_str("run:\n  backend: r2\n").expect("parse");
-    assert_eq!(r2.run.backend, Some(BackendKind::R2));
+    let external: EvalConfig = serde_yaml::from_str("run:\n  backend: r2\n").expect("parse");
+    assert_eq!(external.run.backend, Some(BackendKind::R2));
     // Unknown values are a parse error, not a silent fallback.
     assert!(serde_yaml::from_str::<EvalConfig>("run:\n  backend: ida\n").is_err());
 }
@@ -582,10 +582,10 @@ async fn mock_serves_multiple_sequential_requests() {
     let client = reqwest::Client::new();
     let r1 = client.post(&endpoint).body("{}").send().await;
     println!("first: {:?}", r1.as_ref().map(|r| r.status()));
-    let r2 = client.post(&endpoint).body("{}").send().await;
-    println!("second: {:?}", r2.as_ref().map(|r| r.status()));
+    let second = client.post(&endpoint).body("{}").send().await;
+    println!("second: {:?}", second.as_ref().map(|r| r.status()));
     assert_eq!(r1.expect("first").status().as_u16(), 429);
-    assert_eq!(r2.expect("second").status().as_u16(), 200);
+    assert_eq!(second.expect("second").status().as_u16(), 200);
 }
 
 #[tokio::test]
@@ -732,7 +732,7 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
 #[tokio::test]
 async fn bash_results_are_colour_stripped_through_the_tool_runtime() {
     // The escape-stripping has to apply on the path the model actually sees,
-    // not only inside the r2 module.
+    // not only inside the external engine module.
     let tc = ToolCall {
         id: "b".into(),
         call_type: "function".into(),

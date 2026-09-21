@@ -239,7 +239,7 @@ enum ArchiveKind {
 
 fn archive_kind(path: &Path) -> Option<ArchiveKind> {
     let name = path.file_name()?.to_str()?.to_lowercase();
-    // `.jar` is a zip; expanding it surfaces the `.class` files r2 analyzes.
+    // `.jar` is a zip; expanding it surfaces the `.class` files.
     if name.ends_with(".zip") || name.ends_with(".jar") {
         Some(ArchiveKind::Zip)
     } else if name.ends_with(".7z") {
@@ -456,8 +456,8 @@ fn pick_binary_by_magic(dir: &Path) -> Option<PathBuf> {
                 continue;
             }
             let mut magic = [0u8; 4];
-            // ELF, PE/DOS (MZ), and Java class (CAFEBABE — r2 analyzes
-            // `.class` directly, which is how Java crackmes land here).
+            // ELF, PE/DOS (MZ), and Java class (CAFEBABE — `.class`
+            // directly, which is how Java crackmes land here).
             let is_bin = std::fs::File::open(&path)
                 .and_then(|mut f| {
                     use std::io::Read;

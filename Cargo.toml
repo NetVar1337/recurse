@@ -1,7 +1,7 @@
 # Recurse — Cargo workspace root.
 #
 # Members:
-#   tauri/src-tauri    desktop app (Tauri + radare2 backend)
+#   tauri/src-tauri    desktop app (Tauri + pluggable analysis backends)
 #   crates/librecurse  agent framework (LLM loop, tools, SQLite memory)
 #   crates/recurse-eval headless eval harness
 #

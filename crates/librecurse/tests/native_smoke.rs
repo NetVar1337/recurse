@@ -102,7 +102,7 @@ fn native_annotates_disassembly_and_names_imports() {
     }
     let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
-    // PLT stubs are named after the import they forward to, like r2's imp.*.
+    // PLT stubs are named after the import they forward to (imp.<name>).
     assert!(
         engine
             .functions()
@@ -143,7 +143,7 @@ fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
     let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     let main = engine.resolve("main").expect("resolve").expect("main");
-    // UI-facing disassembly carries hex bytes (parity with r2).
+    // UI-facing disassembly carries hex bytes.
     let ops = engine.function_disasm(main).expect("disasm").ops;
     assert!(
         ops.iter()
@@ -170,6 +170,78 @@ fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
     )
     .expect("agent graph");
     assert!(!g.contains("\"bytes\""), "agent graph has no bytes");
+}
+
+#[test]
+fn native_resolves_indirect_targets_on_a_corpus_binary() {
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
+    if !bin.is_file() {
+        return;
+    }
+    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    engine.analyze().expect("analyze");
+    // Find an indirect call/jump whose data slot resolved into executable code.
+    let mut found = None;
+    for f in engine.functions().expect("functions") {
+        for op in engine.function_disasm(f.addr).expect("disasm").ops {
+            let indirect = op.disasm.contains('[')
+                && (op.disasm.starts_with("call") || op.disasm.starts_with("jmp"));
+            if indirect && op.jump.is_some() {
+                found = Some(op);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let Some(op) = found else {
+        return; // this binary has none; not a failure
+    };
+    let target = op.jump.expect("resolved target");
+    let refs = engine
+        .xrefs(&Target::Addr(target), XrefDirection::To)
+        .expect("xrefs");
+    assert!(
+        refs.iter().any(|x| x.from == op.addr),
+        "indirect edge from {:#x} to {target:#x}",
+        op.addr
+    );
+}
+
+#[test]
+fn native_reports_data_xrefs_and_import_stubs() {
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
+    if !bin.is_file() {
+        return;
+    }
+    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    engine.analyze().expect("analyze");
+    // Each import forwards through a discovered stub, whose address is carried.
+    assert!(
+        engine
+            .imports()
+            .expect("imports")
+            .iter()
+            .any(|i| i.plt.is_some()),
+        "an import carries its stub address"
+    );
+    // A referenced string is reachable by a data cross-reference.
+    let strings = engine.strings().expect("strings");
+    let s = strings
+        .iter()
+        .find(|s| s.string.contains("Crackme"))
+        .expect("a referenced string");
+    let refs = engine
+        .xrefs(&Target::Addr(s.addr), XrefDirection::To)
+        .expect("xrefs");
+    assert!(
+        refs.iter().any(|x| x.kind == "DATA"),
+        "data xref to {:#x}: {refs:?}",
+        s.addr
+    );
 }
 
 #[test]

@@ -16,57 +16,63 @@ engine never touches the agent loop, the storefront, or the eval harness.
   `resolve`, plus `pid`/`interrupt`/`force_kill` for out-of-process engines.
 - Canonical result types (`FunctionInfo`, `Instruction`, `Disassembly`,
   `FunctionGraph`, `StringRef`, `Import`, `Xref`, `Decompilation`). Their JSON
-  field names match what the UI already rendered from radare2, so the frontend
-  is backend-agnostic too.
-- `BackendKind` (`r2` | `native`), selected from `RECURSE_BACKEND` or the
-  stored config. The default is `native` (the in-process, permissive,
-  multi-architecture backend); `r2` is opt-in.
+  field names are exactly what the UI renders, so the frontend is
+  backend-agnostic too.
+- `BackendKind` (`native` | external), selected from `RECURSE_BACKEND` or the
+  stored config. The default is `native`: the in-process, permissive,
+  multi-architecture engine.
 - The backend-neutral agent tool (`analyze`) and its dispatcher,
   `execute_tool(&dyn Engine, args)`. Its `op` vocabulary is
   `analyze | functions | disasm | graph | decompile | xrefs | strings | imports
-  | info | raw`. The vocabulary is filtered by `Engine::capabilities()`: a
-  backend with no decompiler or console (native) never advertises those ops in
-  the schema or the system prompt, and `execute_tool` rejects them up front.
-  `raw` is the documented escape hatch for backend consoles (radare2 syntax
-  when the r2 backend is active).
+  | info | raw`. The vocabulary is filtered by `Engine::capabilities()`: an
+  engine without a decompiler or console never advertises those ops in the
+  schema or the system prompt, and `execute_tool` rejects them up front. `raw`
+  is the escape hatch for an engine console, present only when the selected
+  engine provides one.
 
-Hosts own the concrete engine (it needs a target path, and r2 needs a child
-process) and box it as `Box<dyn Engine>` (see `tauri/src-tauri/src/engine.rs`).
+Hosts own the concrete engine (it needs a target path, and an external engine
+needs a child process) and box it as `Box<dyn Engine>` (see
+`tauri/src-tauri/src/engine.rs`).
 
 ## Backends
 
-### `r2` — radare2 (opt-in, full features)
-
-`librecurse::r2_backend::R2Engine` drives the `r2` executable over its `-q0`
-NUL-framed pipe, one long-lived session per target. Full feature set including
-`r2ghidra` decompilation. radare2 is a separate program invoked at runtime and
-is **not** linked or bundled, so it stays under its own LGPL-3.0 terms.
-
-### `native` — pure Rust (default, no copyleft)
+### `native` — pure Rust (default)
 
 `librecurse::native::NativeEngine` parses and disassembles in-process. No child
 process, no external tool, and no copyleft dependency anywhere in the chain.
-Honest scope:
+Scope, stated honestly:
 
 - ELF / PE / Mach-O parsing, symbols, imports, strings.
 - Multi-architecture disassembly and control-flow recovery (Capstone):
-  x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, M68K, BPF.
-- r2-style disassembly annotation: direct call/jump targets are named
-  (`call readInput()`), `[rip+X]`/absolute references resolve to strings,
-  globals and imported GOT slots (`; "Enter key: "`, `; __libc_start_main`),
-  and PLT stubs are named after the import they forward to (`imp.exit`).
+  x86/x86-64, ARM (Arm and Thumb), AArch64, MIPS, PowerPC, RISC-V, SPARC,
+  SystemZ, M68K, BPF.
+- Disassembly annotation: direct call/jump targets are named
+  (`call readInput`), `[rip+X]`/absolute references resolve to strings, globals,
+  and imported data slots (`; "Enter key: "`, `; __libc_start_main`), and
+  forwarding stubs are named after the import they resolve (`imp.exit`).
 - Symbol names are demangled with template arguments and parameter lists
   stripped and capped at 64 chars: C++ STL symbols demangle to hundreds of
   characters (one `std::iter_swap` is 496), which otherwise dominates the
   model's context. Shortened names can collide; `resolve` returns the first
   match and the function list still carries addresses.
-- Functions are discovered from symbols, the entry point, and direct call
-  targets.
-- No decompiler (`capabilities().decompile == false`) and no raw console. The
-  agent tool answers `op:"decompile"` with a precise "install r2 + r2ghidra and
-  set `RECURSE_BACKEND=r2`" message rather than a generic failure.
+- Function discovery: symbols, the entry point, CET landing pads and classic
+  prologues, direct call targets, and resolved indirect targets.
+- Cross-references include data references (string/global loads), not just
+  branch targets.
+- Jump tables / switches are recovered (indexed-memory and base+offset idioms)
+  and shown as `case` edges in the graph.
+- No built-in decompiler (`capabilities().decompile == false`). The agent tool
+  reports that precisely rather than failing generically.
 - Architectures Capstone does not cover (AVR, CSky, LoongArch, Xtensa, …) are
   detected and reported, not disassembled.
+
+### External engine (opt-in)
+
+An external engine is supported as an **opt-in alternative** for installs that
+want a full-featured engine, including decompilation and a command console. It
+runs as a separate program, is never linked or bundled, and is selected through
+the config or `RECURSE_BACKEND`. When selected, the `decompile` and `raw` ops
+become available and its capabilities are advertised to the agent and UI.
 
 ## Crates and why
 
@@ -76,21 +82,21 @@ Honest scope:
 | `capstone` | BSD-3-Clause | Multi-architecture disassembly + instruction groups (jump/call/ret) for CFG and xref recovery: x86, x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ, M68K, BPF, and more. Vendors the Capstone C library (permissive), used behind a safe API. |
 | `rustc-demangle` | Apache-2.0 / MIT | Rust v0/legacy symbol demangling. |
 | `cpp_demangle` | Apache-2.0 / MIT | Itanium C++ symbol demangling. |
-| `nix` | MIT | Safe wrappers (`killpg`/`kill`) for `Engine::interrupt` / `force_kill` (r2 backend only). Replaces any raw `libc` FFI. |
+| `nix` | MIT | Safe wrappers (`killpg`/`kill`) for `Engine::interrupt` / `force_kill` (external engine only). Replaces any raw `libc` FFI. |
 
 Already-present crates that also serve analysis: `serde`/`serde_json` (canonical
 envelopes), `regex` (host-side scans).
 
 ### Crates considered and rejected
 
-| Candidate | Why not (for the native backend) |
+| Candidate | Why not (for the native engine) |
 | --- | --- |
-| `iced-x86` | MIT and excellent, but x86-only. Capstone supersedes it for a multi-arch backend behind one API; keeps a single decode path. |
+| `iced-x86` | MIT and excellent, but x86-only. Capstone supersedes it for a multi-arch engine behind one API; keeps a single decode path. |
 | `yaxpeax-*` | 0BSD/MIT pure-Rust multi-arch decoders. Kept as the fallback if linking the Capstone C library (via `cc`) is ever undesirable; coverage is currently narrower. |
 | `goblin` | MIT, but `object` is the ecosystem standard and what `gimli`/`addr2line` use. |
 | `zydis` | MIT but x86-only and bindgen over C++. No advantage over Capstone. |
 | `petgraph` | MIT/Apache, but the CFG is a small `Vec<BasicBlock>` and needs no graph library. |
-| RetDec / Ghidra / snowman | Decompilers. RetDec is MIT but a large C++ sidecar; Ghidra is Apache but a JVM; snowman is GPL. Decompilation stays with r2ghidra, behind the capability flag. |
+| RetDec / Ghidra / snowman | Decompilers. RetDec is MIT but a large C++ sidecar; Ghidra is Apache but a JVM; snowman is GPL. Decompilation is not built in — the opt-in external engine provides it behind the capability flag. |
 
 If linking a C library at all is unacceptable, swap `capstone` for the
 `yaxpeax-*` decoders behind the same `Engine` methods; nothing above the trait
@@ -100,11 +106,9 @@ changes.
 
 Because the engine is a trait:
 
-- The repository can ship the native backend and build/run with **no LGPL
-  component present**. radare2 is an optional runtime dependency of one
-  implementation, invoked as a separate program (mere aggregation), never
-  linked.
-- The r2-specific code is isolated in one module (`r2.rs` command layer and
-  `r2_backend.rs` adapter), never links radare2, and only runs when the r2
-  backend is selected — so a distribution can omit r2 without touching the
-  rest of the tree.
+- The repository ships the native engine and builds/runs with **no copyleft
+  component present**.
+- An external engine is an optional runtime dependency of one implementation,
+  invoked as a separate program (mere aggregation), never linked. Its code is
+  isolated in its own modules and only runs when it is selected — so a
+  distribution can omit it without touching the rest of the tree.

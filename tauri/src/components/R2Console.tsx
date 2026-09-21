@@ -26,7 +26,7 @@ function loadHistory(): string[] {
 }
 
 /**
- * Raw r2 passthrough console — the escape hatch exposing the full radare2
+ * Raw engine console — the escape hatch exposing the full analysis
  * command surface from the UI. Commands run against the analysis session.
  */
 export function R2Console() {
@@ -109,7 +109,7 @@ export function R2Console() {
 			<div className="scroll-host min-h-0 flex-1 overflow-auto font-mono text-xs">
 				{lines.length === 0 && (
 					<div className="text-muted-foreground px-3 py-3">
-						Raw radare2 passthrough. Examples: <code>aflj</code>,{" "}
+						Raw engine console. Examples: <code>aflj</code>,{" "}
 						<code>pdf @ sym.main</code>,{" "}
 						<code>axtj @ 0x401000</code>, <code>iz~password</code>.
 						Output is JSON when the command ends in <code>j</code>.
@@ -141,7 +141,7 @@ export function R2Console() {
 					onChange={(e) => setInput(e.target.value)}
 					onKeyDown={onKeyDown}
 					rows={1}
-					placeholder="r2 command…"
+					placeholder="command…"
 					className="h-8 min-h-8 resize-none bg-transparent px-1 py-1 font-mono text-xs focus-visible:ring-0"
 				/>
 				<Button
