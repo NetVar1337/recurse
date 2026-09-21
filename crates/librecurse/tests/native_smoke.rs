@@ -134,6 +134,45 @@ fn native_annotates_disassembly_and_names_imports() {
 }
 
 #[test]
+fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
+    if !bin.is_file() {
+        return;
+    }
+    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    engine.analyze().expect("analyze");
+    let main = engine.resolve("main").expect("resolve").expect("main");
+    // UI-facing disassembly carries hex bytes (parity with r2).
+    let ops = engine.function_disasm(main).expect("disasm").ops;
+    assert!(
+        ops.iter()
+            .all(|o| o.bytes.as_deref().is_some_and(|b| !b.is_empty())),
+        "every UI instruction has bytes"
+    );
+    assert!(
+        ops.iter().any(|o| o.bytes.as_deref() == Some("55")),
+        "push rbp is 0x55"
+    );
+    // The agent tool strips them (bulky, re-derivable).
+    let out = librecurse::engine::execute_tool(
+        &engine,
+        &serde_json::json!({"op": "disasm", "addr": main}),
+    )
+    .expect("agent disasm");
+    assert!(
+        !out.contains("\"bytes\""),
+        "agent disasm has no bytes: {out}"
+    );
+    let g = librecurse::engine::execute_tool(
+        &engine,
+        &serde_json::json!({"op": "graph", "addr": main}),
+    )
+    .expect("agent graph");
+    assert!(!g.contains("\"bytes\""), "agent graph has no bytes");
+}
+
+#[test]
 fn native_strings_by_address_and_mangled_resolve() {
     let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");

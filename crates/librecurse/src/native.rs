@@ -535,6 +535,7 @@ fn decode_with(
             out.push(Instruction {
                 addr: insn.address(),
                 disasm: format_insn(insn),
+                bytes: Some(hex_bytes(insn.bytes())),
                 kind,
                 jump,
                 fail,
@@ -901,6 +902,16 @@ pub fn shorten_name(raw: &str) -> String {
     let no_params = base.split('(').next().unwrap_or("");
     let collapsed = no_params.split_whitespace().collect::<Vec<_>>().join(" ");
     truncate_str(collapsed.trim(), 64)
+}
+
+/// Render bytes as lowercase hex (`554889e5`).
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// Render one Capstone instruction as `mnemonic operand, operand`.

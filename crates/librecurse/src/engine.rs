@@ -250,6 +250,10 @@ pub struct FunctionInfo {
 pub struct Instruction {
     pub addr: u64,
     pub disasm: String,
+    /// Raw instruction bytes as hex, when known. Populated for the UI's byte
+    /// column; stripped from agent tool output (bulky and re-derivable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<String>,
     /// Instruction category (`call`, `jmp`, `ret`, `cjmp`, …) when known.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
@@ -639,6 +643,26 @@ pub fn compact(value: Value) -> String {
     serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
+/// Remove `bytes` from every object in an agent-facing result. The model does
+/// not need instruction bytes (bulky, re-derivable from the address); the UI
+/// does, and reads them from the host commands, not this tool.
+fn strip_bytes(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("bytes");
+            for v in map.values_mut() {
+                strip_bytes(v);
+            }
+        }
+        Value::Array(items) => {
+            for v in items.iter_mut() {
+                strip_bytes(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Keep at most `limit` items, reporting how many were dropped.
 ///
 /// ```
@@ -776,7 +800,8 @@ pub fn execute_tool(engine: &dyn Engine, args: &Value) -> Result<String, String>
             let dis = engine.disassemble(&target, count)?;
             let total = dis.ops.len();
             let (kept, _) = take(&dis.ops, limit);
-            let items = serde_json::to_value(kept).map_err(|e| e.to_string())?;
+            let mut items = serde_json::to_value(kept).map_err(|e| e.to_string())?;
+            strip_bytes(&mut items);
             let mut env = list_envelope(
                 "disasm",
                 total,
@@ -790,9 +815,9 @@ pub fn execute_tool(engine: &dyn Engine, args: &Value) -> Result<String, String>
         "graph" => {
             let addr = required_addr(engine, args)?;
             let graph = engine.function_graph(addr)?;
-            Ok(compact(
-                serde_json::to_value(graph).map_err(|e| e.to_string())?,
-            ))
+            let mut value = serde_json::to_value(graph).map_err(|e| e.to_string())?;
+            strip_bytes(&mut value);
+            Ok(compact(value))
         }
         "decompile" => {
             let addr = required_addr(engine, args)?;

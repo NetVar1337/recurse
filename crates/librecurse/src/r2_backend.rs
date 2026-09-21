@@ -122,6 +122,11 @@ impl R2Engine {
         Some(Instruction {
             addr,
             disasm,
+            bytes: value
+                .get("bytes")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             kind: value
                 .get("type")
                 .and_then(Value::as_str)
