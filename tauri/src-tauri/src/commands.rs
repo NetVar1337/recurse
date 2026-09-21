@@ -566,7 +566,7 @@ pub fn sessions_rename(project: String, session_id: String, name: String) -> Res
 }
 
 // ---------------------------------------------------------------------------
-// LLM / projects / shells
+// LLM / projects
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -1045,39 +1045,6 @@ pub fn project_write_file(name: String, path: String, content: String) -> Result
 #[tauri::command]
 pub fn project_list_files(name: String) -> Result<Vec<String>, String> {
     project::list_files(&name)
-}
-
-#[tauri::command]
-pub fn shell_spawn(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<crate::shell::SpawnedShell, String> {
-    state.shell.spawn(app)
-}
-
-#[tauri::command]
-pub fn shell_write(id: u32, data: String, state: State<'_, AppState>) -> Result<(), String> {
-    state.shell.write(id, &data)
-}
-
-#[tauri::command]
-pub fn shell_resize(
-    id: u32,
-    rows: u16,
-    cols: u16,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    state.shell.resize(id, rows, cols)
-}
-
-#[tauri::command]
-pub fn shell_kill(id: u32, state: State<'_, AppState>) -> Result<(), String> {
-    state.shell.kill(id)
-}
-
-#[tauri::command]
-pub fn shell_list(state: State<'_, AppState>) -> Vec<u32> {
-    state.shell.list()
 }
 
 #[cfg(test)]

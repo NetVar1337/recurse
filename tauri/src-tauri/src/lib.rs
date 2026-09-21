@@ -4,7 +4,6 @@ pub mod db;
 pub mod engine;
 pub mod project;
 pub mod sessions;
-pub mod shell;
 /// Test-only helpers (HOME isolation) for the storage modules' unit tests.
 #[doc(hidden)]
 pub mod testhome;
@@ -54,7 +53,6 @@ pub struct AppState {
     pub models: Mutex<Option<Vec<ModelInfo>>>,
     pub project: Mutex<Option<crate::project::Project>>,
     pub current_session: Mutex<Option<String>>,
-    pub shell: shell::ShellManager,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -92,7 +90,6 @@ pub fn run() {
             models: Mutex::new(None),
             project: Mutex::new(None),
             current_session: Mutex::new(None),
-            shell: shell::ShellManager::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::open_binary,
@@ -139,11 +136,6 @@ pub fn run() {
             commands::project_read_file,
             commands::project_write_file,
             commands::project_list_files,
-            commands::shell_spawn,
-            commands::shell_write,
-            commands::shell_resize,
-            commands::shell_kill,
-            commands::shell_list,
         ]);
 
     die_on_failure(builder.run(tauri::generate_context!()));

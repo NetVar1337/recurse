@@ -16,7 +16,6 @@ import type {
 	R2String,
 	FunctionGraph,
 	Session,
-	ShellInfo,
 	Xref,
 } from "./types";
 
@@ -101,10 +100,4 @@ export const api = {
 			query,
 			limit,
 		}),
-	shellSpawn: () => invoke<ShellInfo>("shell_spawn"),
-	shellWrite: (id: number, data: string) =>
-		invoke<void>("shell_write", { id, data }),
-	shellResize: (id: number, rows: number, cols: number) =>
-		invoke<void>("shell_resize", { id, rows, cols }),
-	shellKill: (id: number) => invoke<void>("shell_kill", { id }),
 };

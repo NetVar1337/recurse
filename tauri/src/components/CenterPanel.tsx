@@ -22,10 +22,6 @@ import { useContextStore } from "@/store/contextStore";
 import { useUiStore } from "@/store/uiStore";
 import type { CenterTab, DecompileAnnotation, Function, Xref } from "@/types";
 
-const ShellPanel = lazy(() =>
-	import("@/components/ShellPanel").then((m) => ({ default: m.ShellPanel })),
-);
-
 const R2Console = lazy(() =>
 	import("@/components/R2Console").then((m) => ({ default: m.R2Console })),
 );
@@ -183,7 +179,6 @@ export function CenterPanel() {
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
-	const [shellMounted, setShellMounted] = useState(false);
 	const [consoleMounted, setConsoleMounted] = useState(false);
 	const [viewMode, setViewMode] = useState<"linear" | "graph">("linear");
 	const [xrefs, setXrefs] = useState<Xref[]>([]);
@@ -223,12 +218,9 @@ export function CenterPanel() {
 		return m;
 	}, [funcs]);
 
-	// Mount (and keep mounted) the shell panel the first time the Shell tab is
-	// opened, so its terminals survive tab switches. Adjusting state during
-	// render is the documented React pattern here (guarded, no effect).
-	if (tab === "shell" && !shellMounted) {
-		setShellMounted(true);
-	}
+	// Mount (and keep mounted) the console the first time its tab is opened, so
+	// its state survives tab switches. Adjusting state during render is the
+	// documented React pattern here (guarded, no effect).
 	if (tab === "console" && !consoleMounted) {
 		setConsoleMounted(true);
 	}
@@ -324,7 +316,6 @@ export function CenterPanel() {
 						{capabilities?.raw !== false && (
 							<TabsTrigger value="console">Console</TabsTrigger>
 						)}
-						<TabsTrigger value="shell">Shell</TabsTrigger>
 					</TabsList>
 				</Tabs>
 				{tab === "disasm" && (
@@ -390,12 +381,7 @@ export function CenterPanel() {
 				)}
 			</div>
 
-			<div
-				className={cn(
-					"min-h-0 min-w-0 flex-1 flex-col",
-					tab === "shell" ? "hidden" : "flex",
-				)}
-			>
+			<div className="flex min-h-0 min-w-0 flex-1 flex-col">
 				{tab === "disasm" && viewMode === "graph" && selected ? (
 					<Suspense
 						fallback={
@@ -705,27 +691,6 @@ export function CenterPanel() {
 							}
 						>
 							<R2Console />
-						</Suspense>
-					</PanelErrorBoundary>
-				</div>
-			)}
-
-			{shellMounted && (
-				<div
-					className={cn(
-						"min-h-0 min-w-0 flex-1",
-						tab !== "shell" && "hidden",
-					)}
-				>
-					<PanelErrorBoundary label="Shell">
-						<Suspense
-							fallback={
-								<div className="text-muted-foreground px-3 py-3 text-xs">
-									loading shell…
-								</div>
-							}
-						>
-							<ShellPanel active={tab === "shell"} />
 						</Suspense>
 					</PanelErrorBoundary>
 				</div>
