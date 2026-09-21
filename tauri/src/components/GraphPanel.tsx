@@ -57,8 +57,10 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 					"text-muted-foreground border-border border-b px-1.5 py-0.5 text-[8px] font-semibold tracking-wider uppercase",
 				)}
 			>
-				<span>Addr</span>
-				<span>Bytes</span>
+				<span className="text-sky-600 dark:text-sky-400">Addr</span>
+				<span className="text-emerald-600 dark:text-emerald-400">
+					Bytes
+				</span>
 				<span>Instruction</span>
 			</div>
 			<div className="py-0.5">
@@ -88,13 +90,13 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 							}
 						>
 							<span
-								className="text-primary"
+								className="text-sky-600 dark:text-sky-400"
 								title="Virtual address"
 							>
 								{fmtAddr(op.addr)}
 							</span>
 							<span
-								className="text-muted-foreground truncate"
+								className="truncate text-emerald-600 dark:text-emerald-400"
 								title="Machine code bytes (hex)"
 							>
 								{op.bytes ?? ""}

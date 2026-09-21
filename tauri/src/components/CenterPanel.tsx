@@ -112,13 +112,13 @@ function OpRow({
 			}
 		>
 			<span
-				className="text-primary w-[9ch] shrink-0"
+				className="w-[9ch] shrink-0 text-sky-600 dark:text-sky-400"
 				title="Virtual address"
 			>
 				{fmtAddr(op.addr)}
 			</span>
 			<span
-				className="text-muted-foreground w-[16ch] shrink-0 overflow-hidden"
+				className="w-[16ch] shrink-0 overflow-hidden text-emerald-600 dark:text-emerald-400"
 				title="Machine code bytes (hex)"
 			>
 				{op.bytes ?? ""}
@@ -548,10 +548,10 @@ export function CenterPanel() {
 											!asmLoading &&
 											(asm?.ops?.length ?? 0) > 0 && (
 												<div className="border-border text-muted-foreground bg-card flex gap-3 border-b px-3 py-1 text-[10px] font-semibold tracking-wider uppercase">
-													<span className="w-[9ch] shrink-0">
+													<span className="w-[9ch] shrink-0 text-sky-600 dark:text-sky-400">
 														Address
 													</span>
-													<span className="w-[16ch] shrink-0">
+													<span className="w-[16ch] shrink-0 text-emerald-600 dark:text-emerald-400">
 														Bytes
 													</span>
 													<span>Instruction</span>
