@@ -3,6 +3,7 @@ import { MessageSquare, Settings, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { LogoMark } from "@/components/Logo";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -43,8 +44,8 @@ export function Header() {
 
 	return (
 		<header className="border-border bg-card flex items-center gap-3 border-b px-3 py-2">
-			<div className="flex items-baseline gap-2">
-				<span className="text-primary text-lg leading-none">◈</span>
+			<div className="flex items-center gap-2">
+				<LogoMark className="h-9 w-auto" />
 				<span className="text-sm font-bold tracking-wide">Recurse</span>
 				<span className="text-muted-foreground text-[11px]">
 					agentic reverse engineering

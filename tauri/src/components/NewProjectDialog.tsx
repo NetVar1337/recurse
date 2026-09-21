@@ -3,6 +3,7 @@ import { ArrowRight, Binary } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { LogoMark } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 import { pickBinary } from "@/api";
 import { useProjectStore } from "@/store/projectStore";
@@ -51,9 +52,7 @@ export function NewProjectDialog() {
 			<DialogContent className="max-w-md gap-0 overflow-hidden p-0">
 				<div className="border-border border-b px-6 py-5">
 					<div className="flex items-center gap-2.5">
-						<span className="text-primary text-xl leading-none">
-							◈
-						</span>
+						<LogoMark className="h-7 w-auto" />
 						<DialogTitle className="text-lg">
 							New project
 						</DialogTitle>

@@ -1,6 +1,7 @@
 import { ChevronRight, FolderOpen, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Logo, LogoMark } from "@/components/Logo";
 import { useProjectStore } from "@/store/projectStore";
 import { useUiStore } from "@/store/uiStore";
 
@@ -29,7 +30,7 @@ export function ProjectScreen() {
 	return (
 		<div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center overflow-auto px-6 py-14">
 			<div className="flex flex-col items-center text-center">
-				<div className="text-primary text-5xl leading-none">◈</div>
+				<Logo className="h-32 w-auto" />
 				<h1 className="mt-5 text-3xl font-bold tracking-tight">
 					Recurse
 				</h1>
@@ -78,9 +79,7 @@ export function ProjectScreen() {
 										onClick={() => openProject(p.name)}
 										className="hover:bg-accent flex min-w-0 flex-1 items-center gap-3 rounded px-2 py-1.5 text-left transition-colors"
 									>
-										<span className="text-primary text-sm leading-none">
-											◈
-										</span>
+										<LogoMark className="h-5 w-auto shrink-0" />
 										<div className="min-w-0 flex-1">
 											<div className="truncate text-sm font-medium">
 												{p.name}
