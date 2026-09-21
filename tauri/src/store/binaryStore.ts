@@ -68,6 +68,8 @@ export const useBinaryStore = create<BinaryState>((set) => ({
 		try {
 			const info = await api.openBinary(path);
 			set({ binary: info });
+			// A freshly opened binary starts on the recon page.
+			useUiStore.getState().setTab("recon");
 			await api.analyze();
 			const [f, s, i] = await Promise.all([
 				api.functions(),

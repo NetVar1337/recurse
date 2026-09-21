@@ -17,7 +17,7 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-	tab: "disasm",
+	tab: "recon",
 	setTab: (tab) => set({ tab }),
 	chatOpen: true,
 	setChatOpen: (chatOpen) => set({ chatOpen }),

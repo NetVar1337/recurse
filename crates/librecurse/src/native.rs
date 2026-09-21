@@ -459,7 +459,7 @@ impl NativeEngine {
         }
         let entry = code_addr(&file, file.entry());
         if entry != 0 && NativeEngine::in_text(&file, entry) {
-            add_function(&mut functions, &file, entry, format!("fcn_{entry:x}"));
+            add_function(&mut functions, &file, entry, "entry0".to_string());
             // Stripped binaries often expose only the entry, which passes `main`
             // to libc as a pointer rather than calling it directly.
             if let Some(main) = entry_main_seed(&file, &cs, entry) {
@@ -566,6 +566,7 @@ impl NativeEngine {
                 "endian": endian,
                 "stripped": file.symbols().next().is_none(),
                 "class": format!("{kind}{bits}"),
+                "entry": file.entry(),
             },
             "core": { "type": object_kind_name(file.kind()) },
         })
@@ -2354,6 +2355,7 @@ fn recon_info(file: &object::File<'_>) -> serde_json::Value {
         "language": guess_language(file),
         "compiler": comment_string(file).unwrap_or_else(|| "N/A".into()),
         "base_addr": format!("{:#x}", file.relative_address_base()),
+        "entry": file.entry(),
         "virtual_addr": true,
     })
 }

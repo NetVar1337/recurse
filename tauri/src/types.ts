@@ -12,6 +12,8 @@ export interface BinaryInfo {
 			arch?: string;
 			bits?: number;
 			type?: string | null;
+			/** Entry-point address, when the backend reports one. */
+			entry?: number;
 			[k: string]: unknown;
 		};
 		[k: string]: unknown;

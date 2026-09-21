@@ -6,9 +6,36 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
+import type { Function } from "@/types";
 
 function fmtAddr(a: number) {
 	return `0x${a.toString(16)}`;
+}
+
+/** Lower rank sorts first: entry points and `main` above everything else. */
+function fnRank(f: Function, entry?: number): number {
+	if (typeof entry === "number" && f.addr === entry) return 0;
+	const name = (f.name ?? f.realname ?? f.signature ?? "")
+		.toLowerCase()
+		.replace(/^(sym\.|imp\.|fcn_)/, "");
+	if (name === "main" || name === "__main") return 1;
+	if (
+		name === "_start" ||
+		name === "start" ||
+		name === "entry" ||
+		name === "entry0" ||
+		name === "_entry"
+	)
+		return 2;
+	if (name.includes("libc_start_main")) return 3;
+	if (
+		name === "_init" ||
+		name === "init" ||
+		name === "_fini" ||
+		name === "fini"
+	)
+		return 4;
+	return 5;
 }
 
 export function FunctionList() {
@@ -17,6 +44,7 @@ export function FunctionList() {
 	const selectFn = useAnalysisStore((s) => s.selectFn);
 	const busy = useBinaryStore((s) => s.busy);
 	const indexing = useBinaryStore((s) => s.indexing);
+	const entry = useBinaryStore((s) => s.binary?.info?.bin?.entry);
 	const [query, setQuery] = useState("");
 	const [prevFuncs, setPrevFuncs] = useState(funcs);
 	if (prevFuncs !== funcs) {
@@ -24,15 +52,25 @@ export function FunctionList() {
 		setQuery("");
 	}
 
+	// Entry points and `main` float to the top; the rest stay in address order.
+	const ordered = useMemo(
+		() =>
+			[...funcs].sort(
+				(a, b) =>
+					fnRank(a, entry) - fnRank(b, entry) || a.addr - b.addr,
+			),
+		[funcs, entry],
+	);
+
 	const filtered = useMemo(() => {
 		const q = query.trim().toLowerCase();
-		if (!q) return funcs;
-		return funcs.filter((f) =>
+		if (!q) return ordered;
+		return ordered.filter((f) =>
 			(f.name ?? f.realname ?? f.signature ?? "")
 				.toLowerCase()
 				.includes(q),
 		);
-	}, [funcs, query]);
+	}, [ordered, query]);
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
