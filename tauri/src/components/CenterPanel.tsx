@@ -111,10 +111,16 @@ function OpRow({
 					: undefined
 			}
 		>
-			<span className="text-primary w-[9ch] shrink-0">
+			<span
+				className="text-primary w-[9ch] shrink-0"
+				title="Virtual address"
+			>
 				{fmtAddr(op.addr)}
 			</span>
-			<span className="text-muted-foreground w-[16ch] shrink-0 overflow-hidden">
+			<span
+				className="text-muted-foreground w-[16ch] shrink-0 overflow-hidden"
+				title="Machine code bytes (hex)"
+			>
 				{op.bytes ?? ""}
 			</span>
 			<span
@@ -123,6 +129,7 @@ function OpRow({
 					clickable &&
 						"text-primary underline decoration-dotted underline-offset-2",
 				)}
+				title="Disassembly (mnemonic + operands)"
 			>
 				{text}
 				{typeof op.jump === "number" && (
@@ -535,6 +542,19 @@ export function CenterPanel() {
 												asm.ops.length === 0) && (
 												<div className="text-muted-foreground px-3 py-3">
 													No instructions.
+												</div>
+											)}
+										{selected &&
+											!asmLoading &&
+											(asm?.ops?.length ?? 0) > 0 && (
+												<div className="border-border text-muted-foreground bg-card flex gap-3 border-b px-3 py-1 text-[10px] font-semibold tracking-wider uppercase">
+													<span className="w-[9ch] shrink-0">
+														Address
+													</span>
+													<span className="w-[16ch] shrink-0">
+														Bytes
+													</span>
+													<span>Instruction</span>
 												</div>
 											)}
 										{asm?.ops?.map((op) => (

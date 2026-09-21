@@ -74,7 +74,10 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 							<span className="text-primary w-[60px] shrink-0">
 								{fmtAddr(op.addr)}
 							</span>
-							<span className="text-muted-foreground w-[90px] shrink-0 truncate">
+							<span
+								className="text-muted-foreground w-[90px] shrink-0 truncate"
+								title="Machine code bytes (hex)"
+							>
 								{op.bytes ?? ""}
 							</span>
 							<span
@@ -83,6 +86,7 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 									clickable &&
 										"text-primary underline decoration-dotted underline-offset-2",
 								)}
+								title="Disassembly (mnemonic + operands)"
 							>
 								{op.disasm ?? ""}
 							</span>
