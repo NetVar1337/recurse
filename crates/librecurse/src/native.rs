@@ -1,4 +1,5 @@
-//! Pure-Rust analysis backend: no radare2 process, no copyleft dependency.
+//! Pure-Rust analysis backend: in-process, no external tool, no copyleft
+//! dependency.
 //!
 //! Parsing (ELF/PE/Mach-O) comes from [`object`](https://docs.rs/object).
 //! Disassembly and control-flow recovery come from
@@ -10,7 +11,7 @@
 //!
 //! * Functions are discovered from the symbol table, the entry point, and
 //!   direct call targets (recursive descent). A stripped binary therefore
-//!   yields fewer functions than radare2's heuristics.
+//!   yields fewer functions than a heavier analysis engine would.
 //! * Branch targets and fall-through edges are recovered from instruction
 //!   details, so the CFG covers reachable code; exotic architectures whose
 //!   conditionality we cannot classify exactly are treated as conditional.
@@ -61,7 +62,7 @@ struct NativeState {
     strings: Option<Vec<StringRef>>,
 }
 
-/// Address indexes used to annotate disassembly the way r2 does.
+/// Address indexes used to annotate disassembly with names.
 #[derive(Default)]
 struct Labels {
     /// address -> best-known name (symbol, imported GOT slot, function).
@@ -325,7 +326,7 @@ impl NativeEngine {
         // what finds internal functions when the entry only calls through the
         // PLT (the common stripped-binary case), where recursive descent from
         // symbols alone yields just `_start`.
-        for target in sweep_call_targets(&file, &cs, SWEEP_MAX_INSNS) {
+        for target in sweep_seeds(&file, &cs, SWEEP_MAX_INSNS) {
             queue.push_back(target);
         }
 
@@ -462,8 +463,8 @@ impl NativeEngine {
         Ok(())
     }
 
-    /// Append `; name` / `; "string"` comments to `ops` (r2-style), so the
-    /// model does not have to cross-reference addresses by hand.
+    /// Append `; name` / `; "string"` comments to `ops`, so the model does not
+    /// have to cross-reference addresses by hand.
     fn annotate_ops(&self, ops: &mut [Instruction]) {
         if self.ensure_labels().is_err() {
             return;
@@ -570,47 +571,98 @@ fn decode_blocks(
     let mut blocks: Vec<BasicBlock> = Vec::new();
     queue.push_back(func_addr);
 
-    while let Some(start) = queue.pop_front() {
-        if !visited.insert(start) || blocks.len() >= MAX_BLOCKS {
-            continue;
-        }
-        if start < base || start >= base.saturating_add(data.len() as u64) {
-            continue;
-        }
-        let offset = (start - base) as usize;
-        let ops = decode_with(cs, &data[offset..], start, MAX_BLOCK_INSNS, true);
-        if ops.is_empty() {
-            continue;
-        }
-        let Some(last) = ops.last() else {
-            continue;
-        };
-        let (jump, fail) = match last.kind.as_deref() {
-            Some("jmp") | Some("call") => (last.jump, None),
-            Some("cjmp") => (last.jump, last.fail),
-            _ => (last.jump, None),
-        };
-        for target in [jump, fail].into_iter().flatten() {
-            if NativeEngine::in_text(file, target) {
+    loop {
+        while let Some(start) = queue.pop_front() {
+            if !visited.insert(start) || blocks.len() >= MAX_BLOCKS {
+                continue;
+            }
+            if start < base || start >= base.saturating_add(data.len() as u64) {
+                continue;
+            }
+            let offset = (start - base) as usize;
+            let ops = decode_with(cs, &data[offset..], start, MAX_BLOCK_INSNS, true);
+            if ops.is_empty() {
+                continue;
+            }
+            let Some(last) = ops.last() else {
+                continue;
+            };
+            let (jump, fail) = match last.kind.as_deref() {
+                Some("cjmp") => (last.jump, last.fail),
+                _ => (last.jump, None),
+            };
+            // An indexed-memory jump table is fully described by the one
+            // instruction, so it can be resolved immediately.
+            let targets = if jump.is_none() && last.kind.as_deref() == Some("jmp") {
+                jump_table_targets(file, &ops, last)
+            } else {
+                Vec::new()
+            };
+            let successors = jump
+                .into_iter()
+                .chain(fail)
+                .chain(targets.iter().copied())
+                .filter(|t| NativeEngine::in_text(file, *t));
+            for target in successors {
                 queue.push_back(target);
             }
+            blocks.push(BasicBlock {
+                addr: start,
+                ninstr: ops.len() as u64,
+                jump,
+                fail,
+                targets,
+                ops,
+            });
         }
-        blocks.push(BasicBlock {
-            addr: start,
-            ninstr: ops.len() as u64,
-            jump,
-            fail,
-            ops,
-        });
+
+        // Second pass: a computed `jmp reg` is often its own block, separate
+        // from the table setup that precedes it. Search the function's
+        // preceding ops for the switch idiom and pull in the case blocks.
+        blocks.sort_by_key(|b| b.addr);
+        let flat: Vec<Instruction> = blocks.iter().flat_map(|b| b.ops.iter().cloned()).collect();
+        let mut discovered = false;
+        for block in blocks.iter_mut() {
+            if !block.targets.is_empty() {
+                continue;
+            }
+            let Some(last) = block.ops.last() else {
+                continue;
+            };
+            if !(last.kind.as_deref() == Some("jmp") && last.jump.is_none()) {
+                continue;
+            }
+            let window: Vec<Instruction> = flat
+                .iter()
+                .filter(|o| o.addr <= last.addr)
+                .cloned()
+                .collect();
+            let targets = switch_targets(file, &window);
+            if targets.is_empty() {
+                continue;
+            }
+            for target in targets.iter().filter(|t| NativeEngine::in_text(file, **t)) {
+                if !visited.contains(target) {
+                    queue.push_back(*target);
+                    discovered = true;
+                }
+            }
+            block.targets = targets;
+        }
+        if !discovered {
+            break;
+        }
     }
     blocks.sort_by_key(|b| b.addr);
     Ok(blocks)
 }
 
-/// Decode the executable sections linearly and collect every direct call
-/// target. A bounded, cheap complement to recursive descent: it finds internal
-/// functions whose only reference is an indirect call through the PLT.
-fn sweep_call_targets(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Vec<u64> {
+/// Decode the executable sections linearly and collect function-entry seeds:
+/// every direct call target, plus CET landing pads and classic `push rbp; mov
+/// rbp, rsp` prologues. A bounded, cheap complement to recursive descent: it
+/// finds functions the call graph alone misses (indirect-only callers, no
+/// symbols).
+fn sweep_seeds(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Vec<u64> {
     let mut out = Vec::new();
     let mut budget = max_insns;
     for section in file.sections() {
@@ -628,13 +680,22 @@ fn sweep_call_targets(file: &object::File<'_>, cs: &Capstone, max_insns: usize) 
         }
         let ops = decode_with(cs, data, section.address(), budget, false);
         budget = budget.saturating_sub(ops.len().max(1));
-        for op in &ops {
+        for (i, op) in ops.iter().enumerate() {
             if op.kind.as_deref() == Some("call") {
                 if let Some(target) = op.jump {
                     if NativeEngine::in_text(file, target) {
                         out.push(target);
                     }
                 }
+            }
+            let is_entry = op.disasm.starts_with("endbr64")
+                || op.disasm.starts_with("endbr32")
+                || (op.disasm == "push rbp"
+                    && ops
+                        .get(i + 1)
+                        .is_some_and(|n| n.disasm.starts_with("mov rbp, rsp")));
+            if is_entry {
+                out.push(op.addr);
             }
         }
     }
@@ -699,6 +760,259 @@ fn memory_references(op: &Instruction) -> Vec<u64> {
         .filter_map(|token| token.strip_prefix("0x"))
         .filter_map(|hex| u64::from_str_radix(hex, 16).ok())
         .collect()
+}
+
+/// Find the section containing `addr`, returning its bytes and base address.
+fn section_at<'f>(file: &'f object::File<'f>, addr: u64) -> Option<(&'f [u8], u64)> {
+    file.sections()
+        .find(|s| addr >= s.address() && addr < s.address().saturating_add(s.size()))
+        .and_then(|s| s.data().ok().map(|data| (data, s.address())))
+}
+
+/// True when `addr` lands in a data section (used to tell a real data
+/// reference from an ordinary immediate).
+fn in_data(file: &object::File<'_>, addr: u64) -> bool {
+    file.sections().any(|s| {
+        matches!(
+            s.kind(),
+            SectionKind::Data | SectionKind::ReadOnlyData | SectionKind::UninitializedData
+        ) && addr >= s.address()
+            && addr < s.address().saturating_add(s.size())
+    })
+}
+
+/// Where a jump table lives: a fixed address, or a register set earlier in the
+/// block (the position-independent case: `lea rdx, [rip + table]`).
+#[derive(Clone, Debug, PartialEq)]
+enum TableBase {
+    Abs(u64),
+    Reg(String),
+}
+
+/// Recover the case targets of a jump table: the base is named in the computed
+/// jump operand (`jmp qword ptr [rax*8 + 0x4020]` or `jmp [rdx + rax*8]`), and
+/// entries are either absolute pointers or offsets relative to the base.
+fn jump_table_targets(file: &object::File<'_>, ops: &[Instruction], op: &Instruction) -> Vec<u64> {
+    let Some((entry_size, base)) = parse_jump_table(&op.disasm) else {
+        return Vec::new();
+    };
+    let base = match base {
+        TableBase::Abs(addr) => addr,
+        TableBase::Reg(reg) => match resolve_table_base(ops, &reg) {
+            Some(addr) => addr,
+            None => return Vec::new(),
+        },
+    };
+    let Some((data, data_addr)) = section_at(file, base) else {
+        return Vec::new();
+    };
+    let mut off = (base - data_addr) as usize;
+    let mut out = Vec::new();
+    while off + entry_size <= data.len() && out.len() < 1024 {
+        let value = if entry_size == 8 {
+            u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+        } else {
+            u32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4])) as u64
+        };
+        let target = if NativeEngine::in_text(file, value) {
+            value
+        } else if NativeEngine::in_text(file, base.wrapping_add(value)) {
+            base.wrapping_add(value)
+        } else {
+            break;
+        };
+        out.push(target);
+        off += entry_size;
+    }
+    out
+}
+
+/// Resolve a jump-table base register from an earlier instruction in the same
+/// block: `lea reg, [rip + X]` (position-independent) or `mov reg, imm`.
+fn resolve_table_base(ops: &[Instruction], reg: &str) -> Option<u64> {
+    let lea = format!("lea {reg}, [rip");
+    let mov = format!("mov {reg}, ");
+    let movabs = format!("movabs {reg}, ");
+    for op in ops.iter().rev() {
+        let disasm = &op.disasm;
+        if disasm.starts_with(&lea) {
+            if let Some(disp) = rip_displacement(disasm) {
+                return Some(
+                    op.addr
+                        .wrapping_add(op.len as u64)
+                        .wrapping_add(disp as u64),
+                );
+            }
+        } else if let Some(rest) = disasm
+            .strip_prefix(&mov)
+            .or_else(|| disasm.strip_prefix(&movabs))
+        {
+            let imm = rest.split(',').next().unwrap_or("").trim();
+            if let Some(addr) = parse_number(imm) {
+                if addr != 0 {
+                    return Some(addr);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Recover switch cases from the `jmp reg` idiom compilers emit for dense
+/// matches: a table base is loaded into a register, an entry is loaded and
+/// (for position-independent tables) added to the base, then jumped to.
+fn switch_targets(file: &object::File<'_>, ops: &[Instruction]) -> Vec<u64> {
+    match switch_table(ops) {
+        Some((table, relative)) => read_table(file, table, relative),
+        None => Vec::new(),
+    }
+}
+
+/// Recognise the switch idiom and return `(table_base, relative_entries)`.
+///
+/// * relative: `lea B,[rip+T]; movsxd R,[B + I*4]; add R, B; jmp R`
+/// * absolute: `lea B,[rip+T]; mov R,[B + I*8]; jmp R`
+fn switch_table(ops: &[Instruction]) -> Option<(u64, bool)> {
+    let last = ops.last()?;
+    let reg = last.disasm.strip_prefix("jmp ")?.trim();
+    if reg.is_empty() || reg.contains(['[', ',', '+']) {
+        return None;
+    }
+    // Collect candidate table-base registers from the setup instructions:
+    // `add reg, base` (relative table) and `mov/movsxd reg, [base + idx*scale]`
+    // (absolute table).
+    let mut bases: Vec<String> = Vec::new();
+    let mut relative = false;
+    let add = format!("add {reg}, ");
+    let mov = format!("mov {reg}, ");
+    let movsxd = format!("movsxd {reg}, ");
+    for op in ops.iter().rev() {
+        let disasm = &op.disasm;
+        if let Some(rest) = disasm.strip_prefix(&add) {
+            let base = rest
+                .trim()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .next()
+                .unwrap_or("");
+            if !base.is_empty() {
+                bases.push(base.to_string());
+                relative = true;
+            }
+        } else if let Some(rest) = disasm
+            .strip_prefix(&mov)
+            .or_else(|| disasm.strip_prefix(&movsxd))
+        {
+            if let Some(base) = bracketed_base_register(rest) {
+                bases.push(base);
+            }
+        }
+    }
+    bases.push(reg.to_string());
+    for candidate in &bases {
+        let lea = format!("lea {candidate}, [rip");
+        for op in ops.iter().rev() {
+            if op.disasm.starts_with(&lea) {
+                if let Some(disp) = rip_displacement(&op.disasm) {
+                    let table = op
+                        .addr
+                        .wrapping_add(op.len as u64)
+                        .wrapping_add(disp as u64);
+                    return Some((table, relative));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The base register of a memory operand — the register that is not the scaled
+/// index — e.g. `[rdx + rax*8]` yields `rdx`.
+fn bracketed_base_register(operands: &str) -> Option<String> {
+    let start = operands.find('[')?;
+    let end = operands[start..].find(']')? + start;
+    let inner = &operands[start + 1..end];
+    let tokens: Vec<&str> = inner
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let index = tokens
+        .iter()
+        .enumerate()
+        .find(|(i, t)| matches!(**t, "8" | "4" | "2") && *i > 0)
+        .map(|(i, _)| tokens[i - 1]);
+    tokens
+        .iter()
+        .find(|t| {
+            t.chars().any(|c| c.is_ascii_alphabetic()) && Some(**t) != index && !t.starts_with("0x")
+        })
+        .map(|t| (*t).to_string())
+}
+
+/// Read up to 1024 case targets from a table. `relative` selects 4-byte signed
+/// offsets from the table base (position-independent) versus 8-byte absolute
+/// pointers.
+fn read_table(file: &object::File<'_>, table: u64, relative: bool) -> Vec<u64> {
+    let Some((data, data_addr)) = section_at(file, table) else {
+        return Vec::new();
+    };
+    let entry_size = if relative { 4 } else { 8 };
+    let mut off = (table - data_addr) as usize;
+    let mut out = Vec::new();
+    while off + entry_size <= data.len() && out.len() < 1024 {
+        let target = if relative {
+            let delta = i32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4])) as i64;
+            table.wrapping_add(delta as u64)
+        } else {
+            u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+        };
+        if !NativeEngine::in_text(file, target) {
+            break;
+        }
+        out.push(target);
+        off += entry_size;
+    }
+    out
+}
+
+/// Parse `jmp ... [reg*8 + 0xADDR]` / `[0xADDR + reg*8]` into
+/// `(entry_size, table_base)`. A register-indexed table with a RIP-relative
+/// base is not statically resolvable here and yields `None`.
+fn parse_jump_table(disasm: &str) -> Option<(usize, TableBase)> {
+    let start = disasm.find('[')?;
+    let end = disasm[start..].find(']')? + start;
+    let inner = &disasm[start + 1..end];
+    let entry_size = if inner.contains("*8") {
+        8
+    } else if inner.contains("*4") {
+        4
+    } else {
+        return None;
+    };
+    let tokens: Vec<&str> = inner
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    // A fixed table base (non-position-independent code).
+    for token in &tokens {
+        if let Some(hex) = token.strip_prefix("0x") {
+            if let Ok(v) = u64::from_str_radix(hex, 16) {
+                return Some((entry_size, TableBase::Abs(v)));
+            }
+        }
+    }
+    // Register-indexed: the index is the token before the scale; the base is the
+    // other register, resolved from an earlier `lea`/`mov` in the block.
+    let mut index = None;
+    for (i, token) in tokens.iter().enumerate() {
+        if (*token == "8" || *token == "4") && i > 0 {
+            index = Some(tokens[i - 1]);
+            break;
+        }
+    }
+    let base = tokens.iter().find(|t| {
+        t.chars().any(|c| c.is_ascii_alphabetic()) && Some(**t) != index && !t.starts_with("0x")
+    })?;
+    Some((entry_size, TableBase::Reg((*base).to_string())))
 }
 
 /// Scan every loadable section for ASCII/UTF-16 strings, deduplicated and
@@ -828,7 +1142,7 @@ fn parse_number(token: &str) -> Option<u64> {
 }
 
 /// Loose symbol-name match for [`Engine::resolve`]: ignores C++ template
-/// arguments and argument list, an r2 `sym.`/`imp.` prefix and trailing
+/// arguments and argument list, a `sym.`/`imp.` prefix and trailing
 /// underscores, so `readInput` matches `readInput()`, `readInput__`, or the
 /// mangled `_Z9readInputv` once demangled.
 ///
@@ -1194,13 +1508,17 @@ impl Engine for NativeEngine {
         let mut out: Vec<Import> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for imp in file.imports().map_err(|e| e.to_string())? {
-            let name = String::from_utf8_lossy(imp.name()).into_owned();
-            if name.is_empty() || !seen.insert(name.clone()) {
+            let raw = String::from_utf8_lossy(imp.name()).into_owned();
+            if raw.is_empty() {
+                continue;
+            }
+            let name = shorten_name(&raw);
+            if !seen.insert(name.clone()) {
                 continue;
             }
             let bind = String::from_utf8_lossy(imp.library()).into_owned();
             out.push(Import {
-                name: shorten_name(&name),
+                name,
                 plt: None,
                 bind: (!bind.is_empty()).then_some(bind),
                 kind: Some("import".to_string()),
@@ -1212,16 +1530,36 @@ impl Engine for NativeEngine {
                 if !sym.is_undefined() {
                     continue;
                 }
-                if let Ok(name) = sym.name() {
-                    if !name.is_empty() && seen.insert(name.to_string()) {
+                if let Ok(raw) = sym.name() {
+                    let name = shorten_name(raw);
+                    if !name.is_empty() && seen.insert(name.clone()) {
                         out.push(Import {
-                            name: name.to_string(),
+                            name,
                             plt: None,
                             bind: None,
                             kind: Some("import".to_string()),
                         });
                     }
                 }
+            }
+        }
+        // Each import is forwarded through a discovered `imp.<name>` stub;
+        // attach its address so callers can jump straight to the thunk.
+        self.discover()?;
+        let plts: HashMap<String, u64> = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            state
+                .functions
+                .values()
+                .filter_map(|f| f.name.strip_prefix("imp.").map(|n| (n.to_string(), f.addr)))
+                .collect()
+        };
+        for imp in &mut out {
+            if imp.plt.is_none() {
+                imp.plt = plts.get(&imp.name).copied();
             }
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1236,6 +1574,7 @@ impl Engine for NativeEngine {
                 .ok_or_else(|| format!("could not resolve symbol `{name}`"))?,
         };
         self.discover()?;
+        let file = self.parse()?;
         let funcs: Vec<u64> = {
             let state = self
                 .state
@@ -1264,6 +1603,14 @@ impl Engine for NativeEngine {
                                 fcn_name: Some(fname.clone()),
                                 opcode: Some(op.disasm.clone()),
                             });
+                        } else if memory_references(op).contains(&addr) {
+                            out.push(Xref {
+                                from: op.addr,
+                                kind: "DATA".into(),
+                                to: Some(addr),
+                                fcn_name: Some(fname.clone()),
+                                opcode: Some(op.disasm.clone()),
+                            });
                         }
                     }
                 }
@@ -1285,11 +1632,24 @@ impl Engine for NativeEngine {
                             opcode: Some(op.disasm.clone()),
                         });
                     }
+                    for referenced in memory_references(op) {
+                        // Only real data addresses; an ordinary immediate is not
+                        // a reference.
+                        if in_data(&file, referenced) {
+                            out.push(Xref {
+                                from: op.addr,
+                                kind: "DATA".into(),
+                                to: Some(referenced),
+                                fcn_name: Some(fname.clone()),
+                                opcode: Some(op.disasm.clone()),
+                            });
+                        }
+                    }
                 }
             }
         }
         out.sort_by_key(|x| x.from);
-        out.dedup_by_key(|x| x.from);
+        out.dedup_by(|a, b| a.from == b.from && a.kind == b.kind && a.to == b.to);
         Ok(out)
     }
 
@@ -1432,7 +1792,7 @@ fn is_ascii_printable(b: u8) -> bool {
     (0x20..=0x7e).contains(&b) || b == b'\t'
 }
 
-/// Short architecture name matching r2's vocabulary.
+/// Short architecture name.
 fn arch_name(arch: Architecture) -> &'static str {
     match arch {
         Architecture::X86_64 | Architecture::X86_64_X32 | Architecture::I386 => "x86",
@@ -1480,7 +1840,7 @@ fn arch_bits(arch: Architecture) -> Option<u64> {
     }
 }
 
-/// Short binary-format name matching r2's vocabulary.
+/// Short binary-format name.
 fn format_name(format: BinaryFormat) -> &'static str {
     match format {
         BinaryFormat::Elf => "elf",
@@ -1593,6 +1953,59 @@ mod tests {
             strip_templates("std::operator<< <char>(int)"),
             "std::operator<< (int)"
         );
+    }
+
+    #[test]
+    fn parses_jump_table_operands() {
+        assert_eq!(
+            parse_jump_table("jmp qword ptr [rax*8 + 0x4020]"),
+            Some((8, TableBase::Abs(0x4020)))
+        );
+        assert_eq!(
+            parse_jump_table("jmp qword ptr [0x4020 + rax*8]"),
+            Some((8, TableBase::Abs(0x4020)))
+        );
+        assert_eq!(
+            parse_jump_table("jmp dword ptr [eax*4 + 0x8040]"),
+            Some((4, TableBase::Abs(0x8040)))
+        );
+        // Register-indexed base (position-independent code).
+        assert_eq!(
+            parse_jump_table("jmp qword ptr [rdx + rax*8]"),
+            Some((8, TableBase::Reg("rdx".into())))
+        );
+        assert_eq!(parse_jump_table("jmp rax"), None);
+    }
+
+    #[test]
+    fn detects_switch_idiom() {
+        let mk = |addr: u64, disasm: &str, len: u32| Instruction {
+            addr,
+            disasm: disasm.into(),
+            bytes: None,
+            kind: None,
+            jump: None,
+            fail: None,
+            len,
+        };
+        // Relative table: lea rcx,[rip+0x100] @0x1000 -> table 0x1107.
+        let relative = vec![
+            mk(0x1000, "lea rcx, [rip + 0x100]", 7),
+            mk(0x1007, "movsxd rax, dword ptr [rcx + rax*4]", 7),
+            mk(0x100e, "add rax, rcx", 3),
+            mk(0x1011, "jmp rax", 2),
+        ];
+        assert_eq!(switch_table(&relative), Some((0x1107, true)));
+        // Absolute table: lea rdx,[rip+0x200] @0x2000 -> table 0x2207.
+        let absolute = vec![
+            mk(0x2000, "lea rdx, [rip + 0x200]", 7),
+            mk(0x2007, "mov rax, qword ptr [rdx + rax*8]", 7),
+            mk(0x200e, "jmp rax", 2),
+        ];
+        assert_eq!(switch_table(&absolute), Some((0x2207, false)));
+        // A plain indirect tail call is not a switch.
+        let tail = vec![mk(0x3000, "jmp rax", 2)];
+        assert_eq!(switch_table(&tail), None);
     }
 
     #[test]

@@ -272,6 +272,7 @@ impl Engine for R2Engine {
                                 .unwrap_or(ops.len() as u64),
                             jump: b.get("jump").and_then(Value::as_u64),
                             fail: b.get("fail").and_then(Value::as_u64),
+                            targets: Vec::new(),
                             ops,
                         }
                     })

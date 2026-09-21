@@ -289,6 +289,10 @@ pub struct BasicBlock {
     pub jump: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail: Option<u64>,
+    /// Extra successors when the block ends in a computed jump (a jump-table /
+    /// switch case list). Empty for a plain conditional or unconditional block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<u64>,
     pub ops: Vec<Instruction>,
 }
 

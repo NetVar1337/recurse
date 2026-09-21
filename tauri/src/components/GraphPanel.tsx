@@ -130,17 +130,17 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 const nodeTypes = { cfgnode: BlockNodeComponent };
 
 function makeEdge(src: string, dst: number, label: string | undefined): Edge {
-	const conditional = label !== undefined;
 	const taken = label === "T";
-	const color = conditional ? (taken ? "#22c55e" : "#ef4444") : "#8b8b8b";
+	const failed = label === "F";
+	const color = taken ? "#22c55e" : failed ? "#ef4444" : "#8b8b8b";
 	return {
 		id: `${src}->${dst}`,
 		source: src,
 		target: String(dst),
 		type: "smoothstep",
 		label,
-		style: { stroke: color, strokeWidth: conditional ? 1.6 : 1.2 },
-		labelStyle: conditional
+		style: { stroke: color, strokeWidth: taken || failed ? 1.6 : 1.2 },
+		labelStyle: label
 			? { fill: color, fontSize: 11, fontWeight: 700 }
 			: undefined,
 		markerEnd: { type: MarkerType.ArrowClosed, color },
@@ -180,6 +180,12 @@ function toGraph(
 		}
 		if (b.fail != null && ids.has(String(b.fail))) {
 			edges.push(makeEdge(src, b.fail, conditional ? "F" : undefined));
+		}
+		// Computed jump (jump-table / switch): one edge per recovered case.
+		for (const target of b.targets ?? []) {
+			if (ids.has(String(target))) {
+				edges.push(makeEdge(src, target, "case"));
+			}
 		}
 	}
 	return { nodes, edges };

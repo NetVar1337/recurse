@@ -178,6 +178,8 @@ export interface GraphBlock {
 	size?: number;
 	jump?: number | null;
 	fail?: number | null;
+	/** Extra successors of a computed jump (jump-table / switch cases). */
+	targets?: number[];
 	ops?: GraphOp[];
 	[k: string]: unknown;
 }

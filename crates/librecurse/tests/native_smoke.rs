@@ -173,6 +173,40 @@ fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
 }
 
 #[test]
+fn native_reports_data_xrefs_and_import_stubs() {
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
+    if !bin.is_file() {
+        return;
+    }
+    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    engine.analyze().expect("analyze");
+    // Each import forwards through a discovered stub, whose address is carried.
+    assert!(
+        engine
+            .imports()
+            .expect("imports")
+            .iter()
+            .any(|i| i.plt.is_some()),
+        "an import carries its stub address"
+    );
+    // A referenced string is reachable by a data cross-reference.
+    let strings = engine.strings().expect("strings");
+    let s = strings
+        .iter()
+        .find(|s| s.string.contains("Crackme"))
+        .expect("a referenced string");
+    let refs = engine
+        .xrefs(&Target::Addr(s.addr), XrefDirection::To)
+        .expect("xrefs");
+    assert!(
+        refs.iter().any(|x| x.kind == "DATA"),
+        "data xref to {:#x}: {refs:?}",
+        s.addr
+    );
+}
+
+#[test]
 fn native_strings_by_address_and_mangled_resolve() {
     let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../recurse-eval/corpus/5c8e1a9533c5d4776a837ecf/crack1_by_D4RK_FL0W");
