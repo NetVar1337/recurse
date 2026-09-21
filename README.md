@@ -61,7 +61,9 @@ config. The agent gets one backend-neutral `analyze` tool (`functions`, `disasm`
 filtered to the ops the active engine actually supports, so `decompile`/`raw` are only
 advertised when available. The UI consumes canonical result types, not any engine's JSON.
 See [docs/backends.md](docs/backends.md) for the trait, the crate choices, and the licensing
-rationale.
+rationale. Opening a large binary is fast because analysis is **lazy** — discovery indexes
+functions cheaply and basic blocks decode only when a function is viewed; see
+[docs/lazy-analysis.md](docs/lazy-analysis.md).
 
 ## Why not just MCP-to-IDA / yolo it in Claude Code?
 

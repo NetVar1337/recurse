@@ -66,6 +66,10 @@ Scope, stated honestly:
 - Architectures Capstone does not cover (AVR, CSky, LoongArch, Xtensa, …) are
   detected and reported, not disassembled.
 
+Analysis is **lazy**: opening a large binary only builds the function index
+(cheap), and basic blocks/CFG/switch recovery decode on demand per function.
+See [lazy-analysis.md](lazy-analysis.md) for the design, bounds, and timings.
+
 ### External engine (opt-in)
 
 An external engine is supported as an **opt-in alternative** for installs that
