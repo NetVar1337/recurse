@@ -36,11 +36,45 @@ type BlockOp = GraphOp & { target?: Function | null };
 type BlockData = { addr: string; ops: BlockOp[] };
 type BlockNode = Node<BlockData, "cfgnode">;
 
-// Shared column template so the label row and every instruction line up
-// (address | bytes | instruction), matching the disassembly view.
-const BLOCK_COLS = "grid grid-cols-[9ch_16ch_minmax(0,1fr)] gap-x-2";
+// Columns are sized per node from its own content (see `blockColumns`) so the
+// bytes column is exactly as wide as the widest byte string and the instruction
+// column holds the longest line in full. The graph is pan/zoomable, so a node
+// may be as wide as its content needs — nothing is trimmed.
+const ADDR_CH = 9;
+const MIN_BYTES_CH = 16;
+// px per character for the 10.5px monospace used in block nodes. Slightly
+// above the true advance (~0.6em) so the estimate errs wide and never clips.
+const CHAR_W = 6.7;
+// Non-column chrome: two `gap-x-2` gaps (8px) plus `px-1.5` padding (6px/side).
+const NODE_CHROME_W = 2 * 8 + 2 * 6;
+// Slack so a rounding error can never clip the last glyph.
+const WIDTH_SLACK = 10;
+
+/** Widest byte column for a block, in characters (never below the header). */
+function bytesColumns(ops: BlockOp[]): number {
+	let bytes = MIN_BYTES_CH;
+	for (const op of ops) bytes = Math.max(bytes, (op.bytes ?? "").length);
+	return bytes;
+}
+
+/** CSS grid template shared by the header row and every instruction row. */
+function blockColumns(ops: BlockOp[]): string {
+	return `${ADDR_CH}ch ${bytesColumns(ops)}ch max-content`;
+}
+
+/** Node width that fits the longest instruction line without trimming. */
+function blockWidth(ops: BlockOp[]): number {
+	let instr = "Instruction".length;
+	for (const op of ops) instr = Math.max(instr, (op.disasm ?? "").length);
+	const contentCh = ADDR_CH + bytesColumns(ops) + instr;
+	return Math.max(
+		BLOCK_W,
+		Math.ceil(contentCh * CHAR_W + NODE_CHROME_W + WIDTH_SLACK),
+	);
+}
 
 function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
+	const cols = blockColumns(data.ops);
 	return (
 		<div className="border-border bg-card rounded border font-mono text-[10.5px] shadow-lg">
 			<Handle
@@ -53,10 +87,8 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 				<span className="ml-auto">{data.ops.length} insn</span>
 			</div>
 			<div
-				className={cn(
-					BLOCK_COLS,
-					"text-muted-foreground border-border border-b px-1.5 py-0.5 text-[8px] font-semibold tracking-wider uppercase",
-				)}
+				className="text-muted-foreground border-border grid gap-x-2 border-b px-1.5 py-0.5 text-[8px] font-semibold tracking-wider uppercase"
+				style={{ gridTemplateColumns: cols }}
 			>
 				<span className="text-sky-600 dark:text-sky-400">Addr</span>
 				<span className="text-emerald-600 dark:text-emerald-400">
@@ -72,11 +104,11 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 						<div
 							key={i}
 							className={cn(
-								BLOCK_COLS,
-								"px-1.5 leading-[17px]",
+								"grid gap-x-2 px-1.5 leading-[17px]",
 								clickable &&
 									"hover:bg-accent/70 cursor-pointer",
 							)}
+							style={{ gridTemplateColumns: cols }}
 							onClick={
 								clickable && op.target
 									? () =>
@@ -98,14 +130,14 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 								{fmtAddr(op.addr)}
 							</span>
 							<span
-								className="truncate text-emerald-600 dark:text-emerald-400"
+								className="text-emerald-600 dark:text-emerald-400"
 								title="Machine code bytes (hex)"
 							>
 								{op.bytes ?? ""}
 							</span>
 							<span
 								className={cn(
-									"text-foreground truncate",
+									"text-foreground",
 									clickable &&
 										"text-primary underline decoration-dotted underline-offset-2",
 								)}
@@ -162,7 +194,7 @@ function toGraph(
 			type: "cfgnode",
 			data: { addr: fmtAddr(b.addr), ops },
 			position: { x: 0, y: 0 },
-			width: BLOCK_W,
+			width: blockWidth(ops),
 			height: HEADER_H + COL_H + ops.length * LINE_H + 6,
 		};
 	});
