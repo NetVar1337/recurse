@@ -26,6 +26,9 @@ object = "0.36"
 capstone = "0.14"
 rustc-demangle = "0.1"
 cpp_demangle = "0.4"
+# Managed-bytecode decoders: WebAssembly modules. Pure Rust, permissive.
+wasmparser = "0.239"
+wasmprinter = "0.239"
 
 [target.'cfg(unix)'.dependencies]
 # Safe signal wrappers for Engine::interrupt / force_kill (external engine only).

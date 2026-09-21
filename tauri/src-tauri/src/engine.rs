@@ -23,7 +23,7 @@ use librecurse::engine::{BackendKind, Engine};
 pub fn build(path: &Path) -> Result<Box<dyn Engine>, String> {
     match crate::config::backend() {
         BackendKind::R2 => Ok(Box::new(librecurse::r2_backend::R2Engine::open(path)?)),
-        BackendKind::Native => Ok(Box::new(librecurse::native::NativeEngine::open(path)?)),
+        BackendKind::Native => librecurse::native::open(path),
     }
 }
 

@@ -104,7 +104,8 @@ node --version && npm --version && rustc --version && cargo --version
 
 The default **native** engine is pure Rust and needs no external tool. An **opt-in external
 engine** is available for installs that want its full feature set; it is a separate program
-on your `PATH` and is not required by the native engine or the build.
+on your `PATH` and is not required by the native engine or the build. It is never distributed
+with Recurse — bring your own install.
 
 ### 3. Tauri Linux system dependencies
 

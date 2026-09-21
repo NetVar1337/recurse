@@ -157,12 +157,10 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                 None
             }
         },
-        BackendKind::Native => match librecurse::native::NativeEngine::open(binary) {
-            Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
-                Box::new(e) as Box<dyn Engine>
-            ))),
+        BackendKind::Native => match librecurse::native::open(binary) {
+            Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(e))),
             Err(e) => {
-                eprintln!("[eval] native backend unavailable ({e}); falling back to bash only");
+                eprintln!("[eval] native engine unavailable ({e}); falling back to bash only");
                 None
             }
         },

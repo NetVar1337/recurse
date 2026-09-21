@@ -18,6 +18,8 @@
 //! * There is no decompiler in the permissive ecosystem, so
 //!   [`Engine::decompile`] reports `capabilities().decompile == false`.
 
+pub mod wasm;
+
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -216,6 +218,26 @@ fn code_addr(file: &object::File<'_>, addr: u64) -> u64 {
     } else {
         addr
     }
+}
+
+/// Open a target, detecting its container format and returning the matching
+/// in-process engine. Native object formats (ELF/PE/Mach-O/COFF) go through the
+/// [`NativeEngine`]; structured bytecodes route to their own decoders.
+///
+/// ```no_run
+/// use librecurse::native::open;
+/// let engine = open(std::path::Path::new("/bin/true")).unwrap();
+/// let _ = engine.summary().unwrap();
+/// ```
+pub fn open(path: &Path) -> Result<Box<dyn Engine>, String> {
+    let mut magic = [0u8; 4];
+    let read = std::fs::File::open(path)
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut magic))
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    if read >= 4 && wasm::is_wasm(&magic) {
+        return Ok(Box::new(wasm::WasmEngine::open(path)?));
+    }
+    Ok(Box::new(NativeEngine::open(path)?))
 }
 
 /// The in-process [`Engine`] implementation.
