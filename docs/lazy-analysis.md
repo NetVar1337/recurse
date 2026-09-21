@@ -12,17 +12,18 @@ Measured on a stripped 8 MB binary (`youki`, x86-64):
 
 | operation | eager (before) | lazy (now) |
 | --- | --- | --- |
-| open + summary (info, function list, string count) | **~160 s** | **~3.8 s** |
+| open + summary (info, function list, string count) | **~160 s** | **~1.0 s** debug / **~0.2 s** release |
 | functions discovered (stripped 8 MB binary) | ~4 k | **~7.5 k** (unwind tables) |
 | `functions()` (repeat) | — | ~0.5 ms |
 | `xrefs` to/from any address | **stall** (re-decoded every function) | **< 1 ms** |
 | `function_disasm(one)` | — | ~0.19 ms |
 | `function_graph(main)` | — | ~3.4 ms |
 
-The remaining ~3.8 s is the one-time linear sweep: Capstone decoding up to a
-million instructions to find function entries and index every code/data
-reference, plus the unwind-table and string scans. Everything after that is
-per-function, cached, and O(1) for cross-references.
+The remaining time is the one-time sweep: Capstone decoding the executable
+sections to find function entries and index every code/data reference, plus the
+unwind-table and string scans. The sweep — the dominant cost — **runs in
+parallel** across cores (see below). Everything after that is per-function,
+cached, and O(1) for cross-references.
 
 ## The problem with eager analysis
 
@@ -59,10 +60,24 @@ Analysis is split into two phases.
     `(start, length)`. This is the main source on stripped Rust/C++/Windows
     binaries and lifts the discovered count from ~4 k to ~7.5 k on the test
     binary. FDE-derived sizes override the neighbour heuristic.
-  - a bounded **linear sweep** of the executable sections collecting direct
-    `call` targets, CET landing pads (`endbr64`/`endbr32`), classic
+  - a bounded **parallel linear sweep** of the executable sections collecting
+    direct `call` targets, CET landing pads (`endbr64`/`endbr32`), classic
     `push rbp; mov rbp, rsp` prologues, and every `call`/`jmp` whose target is
     read from a data slot (GOT slot, ifunc stub, function-pointer table).
+
+#### Parallel sweep
+
+The sweep is the dominant cost, so it is split into fixed-size byte chunks
+(`SWEEP_CHUNK_BYTES`, 512 KiB) across every executable section — one big
+`.text` therefore still parallelizes. Each worker builds its own disassembler
+(Capstone handles are not shareable) and returns its seeds and references; the
+main thread merges and sorts them. There is no shared mutable state and no
+locking on the hot path. A chunk that starts mid-instruction only perturbs the
+few instructions at its head, and the seeds it yields are deduplicated against
+the symbol and unwind sources, so coverage is unchanged to within a fraction of
+a percent. On a 16-core box this takes the open from ~830 ms to ~220 ms
+(release), a ~3.8× speedup; the residual is the still-serial file read, unwind
+parse, string scan and reference merge.
 - **Cross-reference index** — the sweep already has every decoded instruction,
   so it records each code reference (branch target) and data reference (a
   `[rip + disp]` or absolute `0x…` operand that lands in a data section) into
@@ -118,7 +133,8 @@ Every phase is bounded so a huge or malformed binary cannot stall a query:
 
 | bound | value | purpose |
 | --- | --- | --- |
-| `SWEEP_MAX_INSNS` | 1,000,000 | instructions the discovery sweep decodes |
+| `SWEEP_MAX_BYTES` | 64 MiB | total bytes the discovery sweep decodes |
+| `SWEEP_CHUNK_BYTES` | 512 KiB | bytes per parallel sweep chunk |
 | `MAX_FUNCTIONS` | 20,000 | functions kept (lowest addresses first) |
 | `BLOCK_CACHE_MAX` | 8,192 | functions' blocks cached by the background indexer |
 | `MAX_BLOCKS` | 512 | basic blocks decoded per function |

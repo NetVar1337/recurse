@@ -59,9 +59,11 @@ const BLOCK_CACHE_MAX: usize = 8192;
 const MAX_FUNCTION_INSNS: usize = 50_000;
 /// Maximum instructions decoded per block.
 const MAX_BLOCK_INSNS: usize = 512;
-/// Linear-sweep budget for call-target seeding on stripped binaries. Decoding
-/// a whole huge `.text` is bounded so `analyze` stays predictable.
-const SWEEP_MAX_INSNS: usize = 1_000_000;
+/// Bytes decoded per parallel sweep chunk. One big `.text` section is split
+/// into chunks of this size so the sweep parallelizes across cores.
+const SWEEP_CHUNK_BYTES: usize = 512 * 1024;
+/// Total bytes the parallel sweep decodes; bounds pathological inputs.
+const SWEEP_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Minimum run length for a string.
 const MIN_STRING_LEN: usize = 4;
 
@@ -467,7 +469,7 @@ impl NativeEngine {
         // A linear sweep adds every direct call target, CET landing pad, and
         // classic prologue as a function entry, and records every code and
         // data reference it decodes for the cross-reference index.
-        let Sweep { seeds, mut refs } = sweep(&file, &cs, SWEEP_MAX_INSNS);
+        let Sweep { seeds, mut refs } = sweep(&file);
         for seed in seeds {
             if functions.contains_key(&seed) {
                 continue;
@@ -512,6 +514,7 @@ impl NativeEngine {
         }
 
         refs.sort_by_key(|r| r.from);
+        refs.dedup_by(|a, b| a.from == b.from && a.to == b.to && a.kind == b.kind);
         let mut xrefs_by_target: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, r) in refs.iter().enumerate() {
             xrefs_by_target.entry(r.to).or_default().push(i as u32);
@@ -908,12 +911,15 @@ struct Sweep {
 /// complement to recursive descent: it finds functions the call graph alone
 /// misses (indirect-only callers, no symbols) and builds the cross-reference
 /// index without a second pass over the code.
-fn sweep(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Sweep {
-    let mut seeds = Vec::new();
-    let mut refs = Vec::new();
-    let mut budget = max_insns;
+fn sweep(file: &object::File<'_>) -> Sweep {
     let text = text_ranges(file);
     let data = data_ranges(file);
+    // Split every executable section into fixed-size chunks so a single large
+    // `.text` still parallelizes. A chunk that starts mid-instruction only
+    // perturbs the few instructions at its head, and the seeds it yields are
+    // merged with (and deduplicated against) the symbol and unwind sources.
+    let mut chunks: Vec<(u64, &[u8])> = Vec::new();
+    let mut budget = SWEEP_MAX_BYTES;
     for section in file.sections() {
         if budget == 0 {
             break;
@@ -927,8 +933,63 @@ fn sweep(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Sweep {
         if bytes.is_empty() {
             continue;
         }
-        let ops = decode_with(cs, bytes, section.address(), budget, false, false);
-        budget = budget.saturating_sub(ops.len().max(1));
+        let base = section.address();
+        for (i, chunk) in bytes.chunks(SWEEP_CHUNK_BYTES).enumerate() {
+            if chunk.len() > budget {
+                break;
+            }
+            budget -= chunk.len();
+            chunks.push((base + (i * SWEEP_CHUNK_BYTES) as u64, chunk));
+        }
+    }
+    if chunks.is_empty() {
+        return Sweep {
+            seeds: Vec::new(),
+            refs: Vec::new(),
+        };
+    }
+    // One worker per core (bounded by the chunk count); each decodes its own
+    // group with a private disassembler. Capstone handles are not shareable, so
+    // there is no shared mutable state and no locking on the hot path.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(chunks.len())
+        .max(1);
+    let per = chunks.len().div_ceil(workers);
+    let mut seeds: Vec<u64> = Vec::new();
+    let mut refs: Vec<RawRef> = Vec::new();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .chunks(per)
+            .map(|group| scope.spawn(|| sweep_chunks(file, group, &text, &data)))
+            .collect();
+        for handle in handles {
+            if let Ok((mut s, mut r)) = handle.join() {
+                seeds.append(&mut s);
+                refs.append(&mut r);
+            }
+        }
+    });
+    Sweep { seeds, refs }
+}
+
+/// Decode one group of sweep chunks, returning its function-entry seeds and
+/// code/data references. Each worker builds its own [`Capstone`], so the only
+/// sharing between workers is read-only (`file`, the section ranges).
+fn sweep_chunks(
+    file: &object::File<'_>,
+    group: &[(u64, &[u8])],
+    text: &[(u64, u64)],
+    data: &[(u64, u64)],
+) -> (Vec<u64>, Vec<RawRef>) {
+    let mut seeds = Vec::new();
+    let mut refs = Vec::new();
+    let Ok(cs) = build_capstone(file) else {
+        return (seeds, refs);
+    };
+    for (addr, bytes) in group {
+        let ops = decode_with(&cs, bytes, *addr, bytes.len().max(1), false, false);
         for (i, op) in ops.iter().enumerate() {
             // Direct branch target, or an indirect call/jump resolved through
             // its data slot (GOT slot, ifunc stub, function-pointer table).
@@ -937,11 +998,11 @@ fn sweep(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Sweep {
                     op.kind.as_deref(),
                     Some("call") | Some("icall") | Some("jmp") | Some("ijmp")
                 )
-                .then(|| resolve_indirect(file, &text, op))
+                .then(|| resolve_indirect(file, text, op))
                 .flatten()
             });
             if let Some(to) = branch {
-                if in_text_ranges(&text, to) {
+                if in_text_ranges(text, to) {
                     refs.push(RawRef {
                         from: op.addr,
                         to,
@@ -954,7 +1015,7 @@ fn sweep(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Sweep {
                 }
             }
             for to in memory_references(op) {
-                if in_data_ranges(&data, to) {
+                if in_data_ranges(data, to) {
                     refs.push(RawRef {
                         from: op.addr,
                         to,
@@ -974,7 +1035,7 @@ fn sweep(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Sweep {
             }
         }
     }
-    Sweep { seeds, refs }
+    (seeds, refs)
 }
 
 /// Map every imported GOT slot to its (demangled) name, from dynamic
