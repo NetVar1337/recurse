@@ -240,6 +240,40 @@ pub fn open(path: &Path) -> Result<Box<dyn Engine>, String> {
     Ok(Box::new(NativeEngine::open(path)?))
 }
 
+/// When `data` is a universal (fat) Mach-O, return the slice for the preferred
+/// architecture — x86-64, then x86, else the first — so the object engine can
+/// parse it. `None` for thin files (or anything that is not fat Mach-O).
+fn macho_slice(data: &[u8]) -> Option<Vec<u8>> {
+    use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
+    let arches: Vec<(Architecture, u64, u64)> = if let Ok(fat) = MachOFatFile32::parse(data) {
+        fat.arches()
+            .iter()
+            .map(|a| (a.architecture(), arch_word(a.offset()), arch_word(a.size())))
+            .collect()
+    } else if let Ok(fat) = MachOFatFile64::parse(data) {
+        fat.arches()
+            .iter()
+            .map(|a| (a.architecture(), arch_word(a.offset()), arch_word(a.size())))
+            .collect()
+    } else {
+        return None;
+    };
+    let (_, offset, size) = arches
+        .iter()
+        .find(|(a, _, _)| *a == Architecture::X86_64)
+        .or_else(|| arches.iter().find(|(a, _, _)| *a == Architecture::I386))
+        .or_else(|| arches.first())?;
+    let start = *offset as usize;
+    let end = start.checked_add(*size as usize)?;
+    data.get(start..end).map(<[u8]>::to_vec)
+}
+
+/// Widen a fat-arch word (32- or 64-bit) to `u64` without a same-type
+/// conversion lint.
+fn arch_word<T: Into<u64>>(word: T) -> u64 {
+    word.into()
+}
+
 /// The in-process [`Engine`] implementation.
 pub struct NativeEngine {
     data: Vec<u8>,
@@ -259,7 +293,11 @@ impl NativeEngine {
     /// assert!(e.summary().unwrap()["function_count"].as_u64().unwrap() >= 0);
     /// ```
     pub fn open(path: &Path) -> Result<Self, String> {
-        let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        // Universal (fat) Mach-O: analyse one architecture's slice.
+        if let Some(slice) = macho_slice(&data) {
+            data = slice;
+        }
         // Fail fast on non-objects; every later query then only fails on odd
         // sections, not on a fundamentally unparsable file.
         object::File::parse(&*data).map_err(|e| format!("not a recognised binary: {e}"))?;
@@ -1267,7 +1305,7 @@ pub fn name_matches(query: &str, candidate: &str) -> bool {
             .unwrap_or("")
             .trim_start_matches("sym.")
             .trim_start_matches("imp.")
-            .trim_end_matches('_')
+            .trim_matches('_')
             .to_string()
     };
     let q = norm(query);
@@ -2105,6 +2143,37 @@ mod tests {
         // A plain indirect tail call is not a switch.
         let tail = vec![mk(0x3000, "jmp rax", 2)];
         assert_eq!(switch_table(&tail), None);
+    }
+
+    #[test]
+    fn selects_x86_64_from_a_fat_macho() {
+        fn arch_entry(cputype: u32, offset: u32, size: u32) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.extend_from_slice(&cputype.to_be_bytes()); // cputype
+            v.extend_from_slice(&3u32.to_be_bytes()); // cpusubtype
+            v.extend_from_slice(&offset.to_be_bytes());
+            v.extend_from_slice(&size.to_be_bytes());
+            v.extend_from_slice(&0u32.to_be_bytes()); // align
+            v
+        }
+        let arm = vec![0xAAu8; 8];
+        let x86 = vec![0xBBu8; 12];
+        let header = 8 + 2 * 20;
+        let mut fat = Vec::new();
+        fat.extend_from_slice(&0xcafebabeu32.to_be_bytes());
+        fat.extend_from_slice(&2u32.to_be_bytes());
+        fat.extend(arch_entry(0x0100_000C, header as u32, arm.len() as u32));
+        fat.extend(arch_entry(
+            0x0100_0007,
+            (header + arm.len()) as u32,
+            x86.len() as u32,
+        ));
+        fat.extend_from_slice(&arm);
+        fat.extend_from_slice(&x86);
+        // x86-64 is preferred over the earlier arm64 slice.
+        assert_eq!(macho_slice(&fat), Some(x86));
+        // A non-fat file is left alone.
+        assert_eq!(macho_slice(b"\x7fELF\x02\x01\x01\0"), None);
     }
 
     #[test]
