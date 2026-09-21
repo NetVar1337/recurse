@@ -111,7 +111,11 @@ fn build_capstone(file: &object::File<'_>) -> Result<Capstone, String> {
             .build(),
         Architecture::Arm => Capstone::new()
             .arm()
-            .mode(arch::arm::ArchMode::Arm)
+            .mode(if is_thumb(file) {
+                arch::arm::ArchMode::Thumb
+            } else {
+                arch::arm::ArchMode::Arm
+            })
             .endian(endian)
             .detail(true)
             .build(),
@@ -179,12 +183,39 @@ fn build_capstone(file: &object::File<'_>) -> Result<Capstone, String> {
             .build(),
         other => {
             return Err(format!(
-                "native backend cannot disassemble {} yet; set RECURSE_BACKEND=r2",
+                "native backend cannot disassemble {} (unsupported architecture)",
                 arch_name(other)
             ))
         }
     };
     built.map_err(|e| format!("capstone initialisation failed: {e}"))
+}
+
+/// Best-effort Thumb detection for 32-bit ARM: the low bit of the entry point
+/// (and of Thumb function symbols) is set, or Thumb mapping symbols (`$t`)
+/// appear in the symbol table. Mixed Arm/Thumb images pick the dominant mode.
+fn is_thumb(file: &object::File<'_>) -> bool {
+    if file.entry() & 1 == 1 {
+        return true;
+    }
+    file.symbols().chain(file.dynamic_symbols()).any(|s| {
+        if let Ok(name) = s.name() {
+            if name.starts_with("$t") {
+                return true;
+            }
+        }
+        s.kind() == SymbolKind::Text && s.address() & 1 == 1
+    })
+}
+
+/// 32-bit ARM code addresses carry the Thumb bit in bit 0; clear it before
+/// comparing or decoding.
+fn code_addr(file: &object::File<'_>, addr: u64) -> u64 {
+    if file.architecture() == Architecture::Arm {
+        addr & !1
+    } else {
+        addr
+    }
 }
 
 /// The in-process [`Engine`] implementation.
@@ -244,6 +275,7 @@ impl NativeEngine {
     fn decode_linear(&self, addr: u64, count: usize) -> Result<Vec<Instruction>, String> {
         let file = self.parse()?;
         let cs = build_capstone(&file)?;
+        let addr = code_addr(&file, addr);
         let section = Self::text_section(&file, addr).ok_or_else(|| missing_code(addr))?;
         let data = section.data().map_err(|e| e.to_string())?;
         let offset = (addr - section.address()) as usize;
@@ -300,12 +332,11 @@ impl NativeEngine {
                 continue;
             }
             if let Ok(name) = sym.name() {
-                names
-                    .entry(sym.address())
-                    .or_insert_with(|| shorten_name(name));
+                let addr = code_addr(&file, sym.address());
+                names.entry(addr).or_insert_with(|| shorten_name(name));
             }
         }
-        let entry = file.entry();
+        let entry = code_addr(&file, file.entry());
         let mut queue: VecDeque<u64> = VecDeque::new();
         for addr in names.keys().copied().collect::<Vec<_>>() {
             if Self::in_text(&file, addr) {
@@ -562,6 +593,7 @@ fn decode_blocks(
     cs: &Capstone,
     func_addr: u64,
 ) -> Result<Vec<BasicBlock>, String> {
+    let func_addr = code_addr(file, func_addr);
     let section =
         NativeEngine::text_section(file, func_addr).ok_or_else(|| missing_code(func_addr))?;
     let data = section.data().map_err(|e| e.to_string())?;
@@ -580,9 +612,19 @@ fn decode_blocks(
                 continue;
             }
             let offset = (start - base) as usize;
-            let ops = decode_with(cs, &data[offset..], start, MAX_BLOCK_INSNS, true);
+            let mut ops = decode_with(cs, &data[offset..], start, MAX_BLOCK_INSNS, true);
             if ops.is_empty() {
                 continue;
+            }
+            // Follow indirect calls/jumps through data slots to their target,
+            // so a tail call or function-pointer dispatch becomes an edge and a
+            // cross-reference instead of a dead end.
+            for op in ops.iter_mut() {
+                if op.jump.is_none() && matches!(op.kind.as_deref(), Some("call") | Some("jmp")) {
+                    if let Some(target) = resolve_indirect(file, op) {
+                        op.jump = Some(target);
+                    }
+                }
             }
             let Some(last) = ops.last() else {
                 continue;
@@ -760,6 +802,45 @@ fn memory_references(op: &Instruction) -> Vec<u64> {
         .filter_map(|token| token.strip_prefix("0x"))
         .filter_map(|hex| u64::from_str_radix(hex, 16).ok())
         .collect()
+}
+
+/// The effective address of a non-indexed memory operand (`[rip + X]` or
+/// `[0xADDR]`), or `None` for a register-relative / indexed operand.
+fn memory_operand_address(op: &Instruction) -> Option<u64> {
+    let text = &op.disasm;
+    let start = text.find('[')?;
+    let end = text[start..].find(']')? + start;
+    let inner = &text[start + 1..end];
+    if inner.contains('*') {
+        return None;
+    }
+    if inner.contains("rip") {
+        let disp = rip_displacement(inner)?;
+        return Some(
+            op.addr
+                .wrapping_add(op.len as u64)
+                .wrapping_add(disp as u64),
+        );
+    }
+    let hex = inner.trim().strip_prefix("0x")?;
+    u64::from_str_radix(hex, 16).ok()
+}
+
+/// Resolve an indirect call/jump through a data slot: read the pointer stored
+/// at the operand address and return it when it points into executable code —
+/// a tail call through a GOT slot, an ifunc stub, or a function-pointer table.
+fn resolve_indirect(file: &object::File<'_>, op: &Instruction) -> Option<u64> {
+    let slot = memory_operand_address(op)?;
+    if !in_data(file, slot) {
+        return None;
+    }
+    let (data, base) = section_at(file, slot)?;
+    let off = (slot - base) as usize;
+    if off + 8 > data.len() {
+        return None;
+    }
+    let value = u64::from_le_bytes(data[off..off + 8].try_into().ok()?);
+    NativeEngine::in_text(file, value).then_some(value)
 }
 
 /// Find the section containing `addr`, returning its bytes and base address.
@@ -1654,15 +1735,11 @@ impl Engine for NativeEngine {
     }
 
     fn decompile(&self, _addr: u64) -> Result<Decompilation, String> {
-        Err(
-            "the native backend has no decompiler; install radare2 + r2ghidra and set \
-             RECURSE_BACKEND=r2"
-                .to_string(),
-        )
+        Err("the native backend has no decompiler; select a decompiler-capable backend".to_string())
     }
 
     fn raw(&self, _cmd: &str) -> Result<serde_json::Value, String> {
-        Err("the native backend has no console; use the r2 backend for raw commands".to_string())
+        Err("the native backend has no console".to_string())
     }
 
     fn resolve(&self, name: &str) -> Result<Option<u64>, String> {
