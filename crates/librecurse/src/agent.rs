@@ -462,12 +462,17 @@ async fn stream_http(
 
     let key = config.api_key.as_deref().unwrap_or("");
     let send = || {
-        http_client()
+        let request = http_client()
             .post(&config.endpoint)
-            .bearer_auth(key)
             .header("X-Title", "Recurse")
-            .json(&body)
-            .send()
+            .json(&body);
+        // A local or keyless endpoint must not receive an empty bearer token.
+        let request = if key.is_empty() {
+            request
+        } else {
+            request.bearer_auth(key)
+        };
+        request.send()
     };
     // Transient failures are worth waiting out and are retried before any
     // bytes are streamed: connect/timeout errors with a short backoff, and
@@ -657,11 +662,17 @@ pub async fn complete_http(
         "model": model,
         "messages": messages,
     });
-    let resp = http_client()
+    let request = http_client()
         .post(endpoint)
-        .bearer_auth(api_key)
         .header("X-Title", "Recurse")
-        .json(&body)
+        .json(&body);
+    // Keyless endpoints (local servers) get no Authorization header.
+    let request = if api_key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    };
+    let resp = request
         .send()
         .await
         .map_err(|e| format!("llm request failed: {e}"))?;
@@ -694,9 +705,9 @@ pub async fn generate_title(config: &LlmConfig, user: &str) -> String {
             t
         }
     };
-    let Some(key) = config.api_key.as_ref().filter(|k| !k.is_empty()) else {
-        return fallback(user);
-    };
+    // A local endpoint may need no key at all; send the request anyway and let
+    // the endpoint decide.
+    let key = config.api_key.as_deref().unwrap_or("");
     let messages = vec![
         ChatMessage::system(
             "You are a title generator for a binary reverse-engineering assistant. \

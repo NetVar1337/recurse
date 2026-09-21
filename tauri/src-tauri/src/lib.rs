@@ -125,6 +125,7 @@ pub fn run() {
             commands::llm_status,
             commands::set_model,
             commands::save_api_key,
+            commands::set_endpoint,
             commands::list_models,
             commands::memories_list,
             commands::memory_get,

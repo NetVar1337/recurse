@@ -72,6 +72,8 @@ export const api = {
 	llmStatus: () => invoke<LlmStatus>("llm_status"),
 	setModel: (id: string) => invoke<void>("set_model", { id }),
 	saveApiKey: (key: string) => invoke<void>("save_api_key", { key }),
+	setEndpoint: (endpoint: string) =>
+		invoke<void>("set_endpoint", { endpoint }),
 	listModels: (refresh = false) =>
 		invoke<ModelInfo[]>("list_models", { refresh }),
 	listProjects: () => invoke<Project[]>("list_projects"),

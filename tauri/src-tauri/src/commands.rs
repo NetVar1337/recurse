@@ -574,6 +574,11 @@ pub struct LlmStatus {
     pub provider: String,
     pub configured: bool,
     pub model: String,
+    /// Normalized completions URL the agent will call.
+    pub endpoint: String,
+    /// True when the endpoint is not the built-in hosted provider — a local or
+    /// self-hosted OpenAI-compatible server, which needs no API key.
+    pub custom: bool,
 }
 
 /// Core of [`llm_status`]; see [`open_binary_impl`].
@@ -582,14 +587,23 @@ pub fn llm_status_impl(state: &AppState) -> Result<LlmStatus, String> {
         .llm
         .lock()
         .map_err(|e| format!("llm lock poisoned: {e}"))?;
+    let custom = !is_hosted_provider(&config.endpoint);
+    let has_key = config
+        .api_key
+        .as_ref()
+        .map(|k| !k.is_empty())
+        .unwrap_or(false);
     Ok(LlmStatus {
-        provider: "openrouter".into(),
-        configured: config
-            .api_key
-            .as_ref()
-            .map(|k| !k.is_empty())
-            .unwrap_or(false),
+        provider: if custom {
+            "custom".into()
+        } else {
+            "openrouter".into()
+        },
+        // A custom endpoint may be keyless; the hosted provider needs a key.
+        configured: has_key || custom,
         model: config.model.clone(),
+        endpoint: config.endpoint.clone(),
+        custom,
     })
 }
 
@@ -634,6 +648,44 @@ pub fn save_api_key_impl(state: &AppState, key: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn save_api_key(key: String, state: State<'_, AppState>) -> Result<(), String> {
     save_api_key_impl(&state, &key)
+}
+
+/// Core of [`set_endpoint`]; see [`open_binary_impl`]. An empty string clears
+/// the override and restores the built-in hosted endpoint.
+pub fn set_endpoint_impl(state: &AppState, endpoint: &str) -> Result<(), String> {
+    let trimmed = endpoint.trim();
+    config::set_endpoint(if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    })?;
+    let mut config = state
+        .llm
+        .lock()
+        .map_err(|e| format!("llm lock poisoned: {e}"))?;
+    config.endpoint = librecurse::agent::normalize_endpoint(trimmed);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_endpoint(endpoint: String, state: State<'_, AppState>) -> Result<(), String> {
+    set_endpoint_impl(&state, &endpoint)
+}
+
+/// True when a normalized completions URL targets the built-in hosted provider
+/// rather than a custom/local OpenAI-compatible server.
+fn is_hosted_provider(endpoint: &str) -> bool {
+    endpoint.contains("openrouter.ai")
+}
+
+/// Derive the OpenAI-compatible `/models` base URL from a completions URL.
+fn models_base_url(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    let trimmed = trimmed
+        .strip_suffix("/chat/completions")
+        .or_else(|| trimmed.strip_suffix("/completions"))
+        .unwrap_or(trimmed);
+    trimmed.trim_end_matches('/').to_string()
 }
 
 /// OpenRouter model catalog endpoint (public, unauthenticated).
@@ -716,6 +768,52 @@ fn fetch_models() -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
+/// Fetch the model list from an OpenAI-compatible `{base}/models` endpoint.
+/// Lenient about the response shape — `{"data":[{"id":…}]}` or a bare array —
+/// and about fields: only `id` is required. Returns an empty list (not an
+/// error) when the server exposes no catalog, so the UI can fall back to a
+/// typed model id.
+fn fetch_custom_models(base: &str, api_key: &str) -> Result<Vec<ModelInfo>, String> {
+    let url = format!("{base}/models");
+    let request = ureq::get(&url);
+    let request = if api_key.is_empty() {
+        request
+    } else {
+        request.set("Authorization", &format!("Bearer {api_key}"))
+    };
+    let value: serde_json::Value = request
+        .call()
+        .map_err(|e| format!("models request failed: {e}"))?
+        .into_json()
+        .map_err(|e| format!("models parse failed: {e}"))?;
+    let array = value
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| value.as_array());
+    let mut out = Vec::new();
+    if let Some(array) = array {
+        for m in array {
+            let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            out.push(ModelInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                context_length: m
+                    .get("context_length")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                prompt_price: String::new(),
+                free: false,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.dedup_by(|a, b| a.id == b.id);
+    Ok(out)
+}
+
 /// Model catalog cache in SQLite (`models` table, 24h TTL). Best-effort:
 /// cache failures never fail the fetch itself.
 fn cache_models(models: &[ModelInfo]) {
@@ -786,6 +884,21 @@ fn cached_models(max_age_secs: i64) -> Option<Vec<ModelInfo>> {
 
 #[tauri::command]
 pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<ModelInfo>, String> {
+    let (endpoint, api_key) = {
+        let config = state
+            .llm
+            .lock()
+            .map_err(|e| format!("llm lock poisoned: {e}"))?;
+        (
+            config.endpoint.clone(),
+            config.api_key.clone().unwrap_or_default(),
+        )
+    };
+    // A custom/local endpoint has its own catalog, which is not the hosted
+    // provider's and is not cached (the endpoint can change per run).
+    if !is_hosted_provider(&endpoint) {
+        return fetch_custom_models(&models_base_url(&endpoint), &api_key);
+    }
     const CACHE_TTL_SECS: i64 = 24 * 60 * 60;
     if !refresh {
         {
@@ -965,4 +1078,39 @@ pub fn shell_kill(id: u32, state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 pub fn shell_list(state: State<'_, AppState>) -> Vec<u32> {
     state.shell.list()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn models_base_url_strips_the_completions_route() {
+        assert_eq!(
+            models_base_url("https://openrouter.ai/api/v1/chat/completions"),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            models_base_url("http://localhost:11434/v1/chat/completions"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            models_base_url("http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:8080/v1"
+        );
+    }
+
+    #[test]
+    fn hosted_provider_is_detected_by_host() {
+        assert!(is_hosted_provider(
+            "https://openrouter.ai/api/v1/chat/completions"
+        ));
+        assert!(!is_hosted_provider(
+            "http://localhost:11434/v1/chat/completions"
+        ));
+        assert!(!is_hosted_provider(
+            "https://api.openai.com/v1/chat/completions"
+        ));
+    }
 }

@@ -98,6 +98,10 @@ export interface LlmStatus {
 	provider: string;
 	configured: boolean;
 	model: string;
+	/** Normalized completions URL the agent calls. */
+	endpoint: string;
+	/** True for a custom/local OpenAI-compatible endpoint (no key required). */
+	custom: boolean;
 }
 
 /** Analysis backend implementations selectable at runtime. */

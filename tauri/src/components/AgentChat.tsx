@@ -461,12 +461,21 @@ function ModelSelector() {
 	const selectModel = useLlmStore((s) => s.selectModel);
 	const configured = useLlmStore((s) => s.configured);
 	const saveApiKey = useLlmStore((s) => s.saveApiKey);
+	const provider = useLlmStore((s) => s.provider);
+	const custom = useLlmStore((s) => s.custom);
+	const endpoint = useLlmStore((s) => s.endpoint);
+	const setEndpoint = useLlmStore((s) => s.setEndpoint);
+	const endpointSaved = useLlmStore((s) => s.endpointSaved);
+	const endpointError = useLlmStore((s) => s.endpointError);
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState("");
 	const [key, setKey] = useState("");
 	const [show, setShow] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [sort, setSort] = useState<SortMode>("default");
+	const [endpointInput, setEndpointInput] = useState("");
+	const [endpointSaving, setEndpointSaving] = useState(false);
+	const [customModel, setCustomModel] = useState("");
 
 	const filtered = useMemo(() => {
 		const list = models.filter(
@@ -490,6 +499,13 @@ function ModelSelector() {
 		if (useLlmStore.getState().keyError === null) setKey("");
 	};
 
+	const onSaveEndpoint = async () => {
+		setEndpointSaving(true);
+		await setEndpoint(endpointInput);
+		setEndpointSaving(false);
+		if (useLlmStore.getState().endpointError === null) setEndpointInput("");
+	};
+
 	return (
 		<Dialog open={open} onOpenChange={setOpen}>
 			<DialogTrigger asChild>
@@ -508,7 +524,9 @@ function ModelSelector() {
 
 				<div className="space-y-2">
 					<label className="text-muted-foreground text-xs">
-						OpenRouter API key
+						{provider === "openrouter"
+							? "OpenRouter API key"
+							: "API key (optional for local endpoints)"}
 					</label>
 					<div className="flex gap-1.5">
 						<Input
@@ -516,7 +534,9 @@ function ModelSelector() {
 							placeholder={
 								configured
 									? "•••••• (saved) — replace?"
-									: "sk-or-…"
+									: custom
+										? "optional"
+										: "sk-or-…"
 							}
 							value={key}
 							onChange={(e) => setKey(e.target.value)}
@@ -550,7 +570,72 @@ function ModelSelector() {
 					)}
 				</div>
 
+				<div className="space-y-2">
+					<label className="text-muted-foreground text-xs">
+						Base URL (OpenAI-compatible)
+					</label>
+					<div className="flex gap-1.5">
+						<Input
+							placeholder={
+								endpoint || "https://openrouter.ai/api/v1"
+							}
+							value={endpointInput}
+							onChange={(e) => setEndpointInput(e.target.value)}
+							className="min-w-0 flex-1"
+						/>
+						<Button
+							onClick={onSaveEndpoint}
+							disabled={endpointSaving || !endpointInput.trim()}
+						>
+							{endpointSaving ? "…" : "Save"}
+						</Button>
+						{custom && (
+							<Button
+								variant="outline"
+								onClick={() => void setEndpoint("")}
+								title="Back to OpenRouter"
+							>
+								Reset
+							</Button>
+						)}
+					</div>
+					<div className="text-muted-foreground text-[10px]">
+						Point at a local server (Ollama, LM Studio, llama.cpp,
+						vLLM) or any OpenAI-compatible endpoint; leave blank for
+						OpenRouter. Local endpoints need no API key.
+					</div>
+					{endpointSaved && !endpointError && (
+						<div className="text-primary text-[11px]">
+							endpoint saved
+						</div>
+					)}
+					{endpointError && (
+						<div className="text-destructive text-[11px]">
+							{endpointError}
+						</div>
+					)}
+				</div>
+
 				<div className="flex min-h-0 flex-1 flex-col gap-2">
+					<div className="flex gap-1.5">
+						<Input
+							placeholder="or type a model id, e.g. llama3.1:8b"
+							value={customModel}
+							onChange={(e) => setCustomModel(e.target.value)}
+							className="min-w-0 flex-1"
+						/>
+						<Button
+							variant="outline"
+							disabled={!customModel.trim()}
+							onClick={() => {
+								selectModel(customModel.trim());
+								setCustomModel("");
+								setOpen(false);
+							}}
+						>
+							Use
+						</Button>
+					</div>
 					<div className="flex items-center gap-1.5">
 						<Input
 							placeholder={`Search ${models.length} models…`}

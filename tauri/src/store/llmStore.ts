@@ -7,6 +7,8 @@ interface LlmState {
 	provider: string;
 	model: string;
 	configured: boolean;
+	endpoint: string;
+	custom: boolean;
 	models: ModelInfo[];
 	modelsLoading: boolean;
 	modelsError: string | null;
@@ -16,8 +18,11 @@ interface LlmState {
 	refresh: () => Promise<void>;
 	selectModel: (id: string) => Promise<void>;
 	saveApiKey: (key: string) => Promise<void>;
+	setEndpoint: (url: string) => Promise<void>;
 	keySaved: boolean;
 	keyError: string | null;
+	endpointSaved: boolean;
+	endpointError: string | null;
 	setModelsOpen: (b: boolean) => void;
 	toggleModels: () => void;
 }
@@ -26,12 +31,16 @@ export const useLlmStore = create<LlmState>((set, get) => ({
 	provider: "openrouter",
 	model: "",
 	configured: false,
+	endpoint: "",
+	custom: false,
 	models: [],
 	modelsLoading: false,
 	modelsError: null,
 	modelsOpen: false,
 	keySaved: false,
 	keyError: null,
+	endpointSaved: false,
+	endpointError: null,
 
 	init: async () => {
 		try {
@@ -40,6 +49,8 @@ export const useLlmStore = create<LlmState>((set, get) => ({
 				provider: st.provider,
 				configured: st.configured,
 				model: st.model,
+				endpoint: st.endpoint,
+				custom: st.custom,
 			});
 		} catch {
 			/* keep defaults */
@@ -76,6 +87,26 @@ export const useLlmStore = create<LlmState>((set, get) => ({
 			set({ configured: st.configured, model: st.model, keySaved: true });
 		} catch (e) {
 			set({ keyError: String(e) });
+		}
+	},
+
+	setEndpoint: async (url) => {
+		set({ endpointError: null, endpointSaved: false });
+		try {
+			await api.setEndpoint(url);
+			const st = await api.llmStatus();
+			set({
+				endpoint: st.endpoint,
+				custom: st.custom,
+				provider: st.provider,
+				configured: st.configured,
+				endpointSaved: true,
+				models: [],
+			});
+			// The new endpoint has its own catalog; fetch it (best-effort).
+			await get().refresh();
+		} catch (e) {
+			set({ endpointError: String(e) });
 		}
 	},
 

@@ -38,6 +38,10 @@ wasmprinter = "0.239"
 # Safe signal wrappers for Engine::interrupt / force_kill (external engine only).
 nix = { version = "0.31", features = ["signal", "process"] }
 
+[dev-dependencies]
+# Async runtime + macros for the local-endpoint integration test.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 

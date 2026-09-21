@@ -69,8 +69,10 @@ pub fn set_model(model: String) -> Result<(), String> {
     set_key("model", Some(model))
 }
 
-pub fn set_endpoint(endpoint: String) -> Result<(), String> {
-    set_key("endpoint", Some(endpoint))
+/// Persist the custom LLM base URL. `None` (or empty) clears it, restoring the
+/// built-in default endpoint.
+pub fn set_endpoint(endpoint: Option<String>) -> Result<(), String> {
+    set_key("endpoint", endpoint.filter(|e| !e.trim().is_empty()))
 }
 
 pub fn set_backend(backend: Option<String>) -> Result<(), String> {
@@ -130,6 +132,23 @@ mod tests {
             set_api_key(Some("k".into())).unwrap();
             set_api_key(None).unwrap();
             assert!(load().openrouter_api_key.is_none());
+        });
+    }
+
+    #[test]
+    fn endpoint_roundtrip_and_clear() {
+        crate::testhome::with_test_home(|_| {
+            assert!(load().endpoint.is_none());
+            set_endpoint(Some("http://localhost:11434/v1".into())).unwrap();
+            assert_eq!(
+                load().endpoint.as_deref(),
+                Some("http://localhost:11434/v1")
+            );
+            // `None` or blank restores the built-in default.
+            set_endpoint(None).unwrap();
+            assert!(load().endpoint.is_none());
+            set_endpoint(Some("   ".into())).unwrap();
+            assert!(load().endpoint.is_none());
         });
     }
 }

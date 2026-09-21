@@ -199,14 +199,35 @@ backend (`native` or the opt-in external engine) is selectable per run — see t
 
 ## Agent LLM
 
-The agent chat panel runs on an OpenAI-compatible endpoint. Configure the API key and
-model from the in-app model picker (persisted in `~/.recurse/recurse.db`), or via env:
+The agent chat panel runs on any OpenAI-compatible endpoint. Configure the API key,
+base URL, and model from the in-app **Model & Provider** dialog (persisted in
+`~/.recurse/recurse.db`), or via env:
 
 ```bash
+# Hosted provider (default)
 export RECURSE_LLM_API_KEY=sk-or-...   # or OPENROUTER_API_KEY
 export RECURSE_LLM_ENDPOINT=https://openrouter.ai/api/v1/chat/completions  # optional
 export RECURSE_LLM_MODEL=openrouter/auto  # optional
 ```
+
+### Local models / custom base URL
+
+Point the agent at any local or self-hosted OpenAI-compatible server — Ollama, LM
+Studio, llama.cpp's `llama-server`, vLLM, text-generation-webui, or a remote gateway.
+Set the **Base URL** in the dialog (a bare base URL or a full `/chat/completions`
+route both work) and pick a model from that server's catalog, or type a model id
+(`llama3.1:8b`, `qwen2.5-coder`, …) directly:
+
+```bash
+export RECURSE_LLM_ENDPOINT=http://localhost:11434/v1   # Ollama
+export RECURSE_LLM_MODEL=llama3.1:8b
+export RECURSE_LLM_API_KEY=           # usually unnecessary locally
+```
+
+Local endpoints need no API key: when the key is blank the request is sent with no
+`Authorization` header, and the model list is read from the endpoint's own
+`{base}/models`. A custom endpoint is treated as configured without a key, so the
+chat works out of the box against a local server.
 
 Without credentials it falls back to an echo client so the wiring stays exercisable.
 
