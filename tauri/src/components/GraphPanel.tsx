@@ -25,6 +25,7 @@ import type { Function, FunctionGraph, GraphOp } from "@/types";
 const BLOCK_W = 380;
 const LINE_H = 17;
 const HEADER_H = 24;
+const COL_H = 15;
 
 function fmtAddr(a?: number | null) {
 	return typeof a === "number" ? `0x${a.toString(16)}` : "";
@@ -34,6 +35,10 @@ type BlockOp = GraphOp & { target?: Function | null };
 type BlockData = { addr: string; ops: BlockOp[] };
 type BlockNode = Node<BlockData, "cfgnode">;
 
+// Shared column template so the label row and every instruction line up
+// (address | bytes | instruction), matching the disassembly view.
+const BLOCK_COLS = "grid grid-cols-[9ch_16ch_minmax(0,1fr)] gap-x-2";
+
 function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 	return (
 		<div className="border-border bg-card rounded border font-mono text-[10.5px] shadow-lg">
@@ -42,9 +47,19 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 				position={Position.Top}
 				className="!opacity-0"
 			/>
-			<div className="text-muted-foreground border-border bg-secondary/30 flex items-center gap-2 border-b px-1.5 text-[9px]">
+			<div className="text-muted-foreground border-border bg-secondary/30 flex items-center gap-2 border-b px-1.5 py-0.5 text-[9px]">
 				<span className="text-primary font-semibold">{data.addr}</span>
 				<span className="ml-auto">{data.ops.length} insn</span>
+			</div>
+			<div
+				className={cn(
+					BLOCK_COLS,
+					"text-muted-foreground border-border border-b px-1.5 py-0.5 text-[8px] font-semibold tracking-wider uppercase",
+				)}
+			>
+				<span>Addr</span>
+				<span>Bytes</span>
+				<span>Instruction</span>
 			</div>
 			<div className="py-0.5">
 				{data.ops.map((op, i) => {
@@ -53,7 +68,8 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 						<div
 							key={i}
 							className={cn(
-								"flex gap-1.5 px-1.5 leading-[17px] whitespace-nowrap",
+								BLOCK_COLS,
+								"px-1.5 leading-[17px]",
 								clickable &&
 									"hover:bg-accent/70 cursor-pointer",
 							)}
@@ -71,11 +87,14 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 									: undefined
 							}
 						>
-							<span className="text-primary w-[60px] shrink-0">
+							<span
+								className="text-primary"
+								title="Virtual address"
+							>
 								{fmtAddr(op.addr)}
 							</span>
 							<span
-								className="text-muted-foreground w-[90px] shrink-0 truncate"
+								className="text-muted-foreground truncate"
 								title="Machine code bytes (hex)"
 							>
 								{op.bytes ?? ""}
@@ -139,7 +158,7 @@ function toGraph(
 			data: { addr: fmtAddr(b.addr), ops },
 			position: { x: 0, y: 0 },
 			width: BLOCK_W,
-			height: HEADER_H + ops.length * LINE_H + 6,
+			height: HEADER_H + COL_H + ops.length * LINE_H + 6,
 		};
 	});
 
