@@ -136,13 +136,13 @@ function OpRow({
 				{instr}
 				<DisasmComment comment={comment} />
 				{typeof op.jump === "number" && (
-					<span className="text-amber-500 dark:text-yellow-600">
+					<span className="text-violet-500 dark:text-violet-400">
 						{" "}
 						→ {fmtAddr(op.jump)}
 					</span>
 				)}
 				{typeof op.ptr === "number" && (
-					<span className="text-amber-500 dark:text-yellow-600">
+					<span className="text-violet-500 dark:text-violet-400">
 						{" "}
 						; [{fmtAddr(op.ptr)}]
 					</span>
