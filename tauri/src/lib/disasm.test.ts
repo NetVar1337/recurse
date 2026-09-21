@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { splitComment } from "./disasm";
+import { isRegister, splitComment, tokenizeAsm } from "./disasm";
 
 describe("splitComment", () => {
 	it("splits an instruction from its string comment", () => {
@@ -22,5 +22,49 @@ describe("splitComment", () => {
 			instr: "push rbp",
 			comment: "",
 		});
+	});
+});
+
+describe("tokenizeAsm", () => {
+	it("classifies mnemonic, registers, and immediates", () => {
+		expect(tokenizeAsm("mov eax, 0x3").map((t) => t.kind)).toEqual([
+			"mnemonic",
+			"plain",
+			"register",
+			"plain",
+			"plain",
+			"number",
+		]);
+	});
+
+	it("does not colour a non-register operand", () => {
+		expect(tokenizeAsm("call printf").map((t) => t.kind)).toEqual([
+			"mnemonic",
+			"plain",
+			"plain",
+		]);
+	});
+});
+
+describe("isRegister", () => {
+	it("recognises the supported architectures", () => {
+		for (const r of [
+			"rax",
+			"eax",
+			"esi",
+			"r15d",
+			"x0",
+			"w8",
+			"sp",
+			"lr",
+			"$ra",
+			"a0",
+			"r3",
+		]) {
+			expect(isRegister(r), r).toBe(true);
+		}
+		for (const n of ["main", "printf", "qword", "0x3", "edi_x"]) {
+			expect(isRegister(n), n).toBe(false);
+		}
 	});
 });

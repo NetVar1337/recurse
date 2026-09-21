@@ -19,7 +19,7 @@ import dagre from "@dagrejs/dagre";
 import { api } from "@/api";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
-import { DisasmComment, splitComment } from "@/lib/disasm";
+import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
 import { useAnalysisStore } from "@/store/analysisStore";
 import type { Function, FunctionGraph, GraphOp } from "@/types";
 
@@ -111,7 +111,7 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 								)}
 								title="Disassembly (mnemonic + operands)"
 							>
-								{instr}
+								{instr && <DisasmInstr text={instr} />}
 								<DisasmComment comment={comment} />
 							</span>
 						</div>

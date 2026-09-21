@@ -14,7 +14,7 @@ import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
-import { DisasmComment, splitComment } from "@/lib/disasm";
+import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
 import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
@@ -133,7 +133,7 @@ function OpRow({
 				)}
 				title="Disassembly (mnemonic + operands)"
 			>
-				{instr}
+				{instr && <DisasmInstr text={instr} />}
 				<DisasmComment comment={comment} />
 				{typeof op.jump === "number" && (
 					<span className="text-violet-500 dark:text-violet-400">
