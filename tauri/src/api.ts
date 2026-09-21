@@ -33,6 +33,10 @@ export const api = {
 	analyze: () => invoke<void>("analyze"),
 	closeBinary: () => invoke<void>("close_binary"),
 	functions: () => invoke<Function[]>("functions"),
+	analysisProgress: () =>
+		invoke<{ function_count: number; indexing: boolean }>(
+			"analysis_progress",
+		),
 	functionAt: (addr: number) => invoke<Function>("function_at", { addr }),
 	functionDisasm: (addr: number) =>
 		invoke<AsmResult>("function_disasm", { addr }),

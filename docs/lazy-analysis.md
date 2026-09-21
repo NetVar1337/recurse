@@ -3,20 +3,25 @@
 The native engine opens large binaries fast because **discovery builds an
 index, not a full program model**. Basic blocks, control-flow graphs, and
 switch recovery are decoded *on demand*, the first time a function is actually
-looked at — not eagerly for every function when the binary is opened.
+looked at — not eagerly for every function when the binary is opened. The same
+sweep also builds a **cross-reference index**, so `xrefs` is a lookup rather
+than a full re-decode, and a low-priority **background indexer** keeps finding
+more functions after the window is already open.
 
 Measured on a stripped 8 MB binary (`youki`, x86-64):
 
 | operation | eager (before) | lazy (now) |
 | --- | --- | --- |
-| open + summary (info, function list, string count) | **~160 s** | **~2.7 s** |
+| open + summary (info, function list, string count) | **~160 s** | **~3.6 s** |
 | `functions()` (repeat) | — | ~0.5 ms |
+| `xrefs` to/from any address | **stall** (re-decoded every function) | **< 1 ms** |
 | `function_disasm(one)` | — | ~0.19 ms |
 | `function_graph(main)` | — | ~3.4 ms |
 
-The remaining ~2.7 s is the one-time linear sweep: Capstone decoding up to a
-million instructions to find function entries in a stripped binary, plus the
-string scan. Everything after that is per-function and cached.
+The remaining ~3.6 s is the one-time linear sweep: Capstone decoding up to a
+million instructions to find function entries in a stripped binary, indexing
+every code/data reference it sees, plus the string scan. Everything after that
+is per-function, cached, and O(1) for cross-references.
 
 ## The problem with eager analysis
 
@@ -49,8 +54,14 @@ Analysis is split into two phases.
   - the entry point, plus the `_start`→`main` heuristic (stripped binaries pass
     `main` to libc as a pointer rather than calling it),
   - a bounded **linear sweep** of the executable sections collecting direct
-    `call` targets, CET landing pads (`endbr64`/`endbr32`), and classic
-    `push rbp; mov rbp, rsp` prologues.
+    `call` targets, CET landing pads (`endbr64`/`endbr32`), classic
+    `push rbp; mov rbp, rsp` prologues, and every `call`/`jmp` whose target is
+    read from a data slot (GOT slot, ifunc stub, function-pointer table).
+- **Cross-reference index** — the sweep already has every decoded instruction,
+  so it records each code reference (branch target) and data reference (a
+  `[rip + disp]` or absolute `0x…` operand that lands in a data section) into
+  `state.xrefs` (sorted by source) and `state.xrefs_by_target` (target → source
+  indexes). This is what makes `xrefs` an O(1) lookup instead of a full decode.
 - **Names** — the symbol name, `imp.<name>` when the seed is a forwarding stub
   (one instruction decoded to read its GOT slot), or `fcn_<hex>` otherwise.
 - **Sizes** — the next function's address minus this one (last one runs to the
@@ -75,6 +86,23 @@ Repeated views are instant. This is where the expensive work lives:
 Because it runs per viewed function, its cost is paid only for functions the
 analyst actually opens.
 
+### Phase 3 — background indexing (after open, idle-time)
+
+Discovery is deliberately complete-enough to show the UI instantly, not to be
+final. Once Phase 1 finishes, `discover()` spawns a low-priority background
+thread (`background_index`) that walks the discovered functions, decodes their
+blocks (warming the cache the UI reads), promotes any additional `call`/`icall`
+target into a function, and recomputes sizes — repeating to a fixpoint. It
+locks the state only briefly per function, sleeps every 32 functions so it
+yields to live queries, and stops immediately when the engine is dropped
+(`NativeEngine::cancel`).
+
+The effect: `functions()` returns a usable list at once and the list *grows*
+as the indexer finds things the cheap sweep could not — on `youki`, from 3,885
+functions at open to ~4,800 once indexing settles. `Engine::indexing()` reports
+whether the pass is still running, and the UI shows a `N+` count with an
+“indexing in the background — more may appear” hint until it finishes.
+
 ## Bounds
 
 Every phase is bounded so a huge or malformed binary cannot stall a query:
@@ -82,7 +110,8 @@ Every phase is bounded so a huge or malformed binary cannot stall a query:
 | bound | value | purpose |
 | --- | --- | --- |
 | `SWEEP_MAX_INSNS` | 1,000,000 | instructions the discovery sweep decodes |
-| `MAX_FUNCTIONS` | 4,096 | functions kept (lowest addresses first) |
+| `MAX_FUNCTIONS` | 20,000 | functions kept (lowest addresses first) |
+| `BLOCK_CACHE_MAX` | 8,192 | functions' blocks cached by the background indexer |
 | `MAX_BLOCKS` | 512 | basic blocks decoded per function |
 | `MAX_FUNCTION_INSNS` | 50,000 | instructions decoded per function |
 | `MAX_BLOCK_INSNS` | 512 | instructions before a block is treated as data |
@@ -100,6 +129,7 @@ immediately:
 - **Strings** — the string table is scanned once and cached; the UI shows the
   count on open.
 - **Function index** — Phase 1 above.
+- **Cross-reference index** — built by the same sweep, for O(1) `xrefs`.
 - **Annotation labels** — the name/string index used to comment disassembly is
   built lazily, the first time annotated output is produced, and cached.
 

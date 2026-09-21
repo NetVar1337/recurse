@@ -28,6 +28,7 @@ interface AnalysisState {
 		strings: R2String[];
 		imports: Import[];
 	}) => void;
+	setFunctions: (funcs: Function[]) => void;
 	reset: () => void;
 	selectFn: (fn: Function) => void;
 	refreshDisasm: () => Promise<void>;
@@ -56,6 +57,8 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
 	beginOpen: () => set({ ...initial }),
 
 	setAll: ({ funcs, strings, imports }) => set({ funcs, strings, imports }),
+
+	setFunctions: (funcs) => set({ funcs }),
 
 	reset: () => set({ ...initial, decompiling: false }),
 

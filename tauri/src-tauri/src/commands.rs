@@ -168,6 +168,21 @@ pub fn functions(state: State<'_, AppState>) -> Result<Value, String> {
     serde_json::to_value(funcs).map_err(|e| e.to_string())
 }
 
+/// Current function count plus whether the backend is still discovering
+/// functions in the background. The UI polls this to grow the function list
+/// without blocking the initial open; synchronous backends always report
+/// `indexing: false`.
+#[tauri::command]
+pub fn analysis_progress(state: State<'_, AppState>) -> Result<Value, String> {
+    let guard = session(&state)?;
+    let engine = with_sess(&guard)?;
+    let count = engine.functions()?.len();
+    Ok(serde_json::json!({
+        "function_count": count,
+        "indexing": engine.indexing(),
+    }))
+}
+
 #[tauri::command]
 pub fn disassemble(addr: u64, count: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;

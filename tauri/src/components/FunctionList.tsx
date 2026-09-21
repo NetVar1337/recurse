@@ -16,6 +16,7 @@ export function FunctionList() {
 	const selected = useAnalysisStore((s) => s.selected);
 	const selectFn = useAnalysisStore((s) => s.selectFn);
 	const busy = useBinaryStore((s) => s.busy);
+	const indexing = useBinaryStore((s) => s.indexing);
 	const [query, setQuery] = useState("");
 	const [prevFuncs, setPrevFuncs] = useState(funcs);
 	if (prevFuncs !== funcs) {
@@ -35,9 +36,21 @@ export function FunctionList() {
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="text-muted-foreground px-3 py-2 text-[11px] font-semibold tracking-wider uppercase">
+			<div className="text-muted-foreground flex items-center gap-2 px-3 py-2 text-[11px] font-semibold tracking-wider uppercase">
 				Functions
+				{funcs.length > 0 && (
+					<span className="text-muted-foreground/70 font-normal normal-case">
+						{funcs.length}
+						{indexing ? "+" : ""}
+					</span>
+				)}
 			</div>
+			{indexing && (
+				<div className="text-muted-foreground/80 flex items-center gap-1.5 px-3 pb-1 text-[10px]">
+					<Loader2 className="h-3 w-3 animate-spin" />
+					indexing in the background — more may appear
+				</div>
+			)}
 			<div className="px-2 pb-2">
 				<Input
 					placeholder="Filter functions…"

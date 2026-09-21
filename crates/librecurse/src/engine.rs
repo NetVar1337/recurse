@@ -412,6 +412,14 @@ pub trait Engine: Send + Sync {
     /// Resolve a symbol name to an address, if the backend knows it.
     fn resolve(&self, name: &str) -> Result<Option<u64>, String>;
 
+    /// True while the backend is still expanding its function index in the
+    /// background. A lazy backend reports `true` after [`Engine::analyze`]
+    /// until its background pass finishes; synchronous backends always report
+    /// `false`.
+    fn indexing(&self) -> bool {
+        false
+    }
+
     /// Child process id for interrupt/teardown; 0 when the backend is
     /// in-process or unknown.
     fn pid(&self) -> u32 {

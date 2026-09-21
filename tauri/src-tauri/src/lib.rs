@@ -100,6 +100,7 @@ pub fn run() {
             commands::close_binary,
             commands::binary_info,
             commands::functions,
+            commands::analysis_progress,
             commands::disassemble,
             commands::function_at,
             commands::function_disasm,

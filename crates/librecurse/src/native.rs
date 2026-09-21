@@ -9,9 +9,14 @@
 //!
 //! Scope, stated honestly:
 //!
-//! * Functions are discovered from the symbol table, the entry point, and
-//!   direct call targets (recursive descent). A stripped binary therefore
-//!   yields fewer functions than a heavier analysis engine would.
+//! * Functions are discovered from the symbol table, the entry point, a linear
+//!   sweep of the code (call targets, CET pads, prologues), and the indirect
+//!   targets of calls whose pointer is read from a data slot. A stripped binary
+//!   still yields fewer functions than a heavier analysis engine would, so the
+//!   result is treated as a starting index: a low-priority background pass
+//!   (see [`NativeEngine::indexing`]) keeps expanding it after open.
+//! * Cross-references are indexed during the same sweep, so `xrefs` is a
+//!   lookup over an in-memory table rather than a re-decode of the binary.
 //! * Branch targets and fall-through edges are recovered from instruction
 //!   details, so the CFG covers reachable code; exotic architectures whose
 //!   conditionality we cannot classify exactly are treated as conditional.
@@ -22,7 +27,8 @@ pub mod wasm;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use capstone::prelude::*;
 use capstone::{Endian, InsnGroupType};
@@ -37,10 +43,15 @@ use crate::engine::{
     FunctionInfo, Import, Instruction, StringRef, Target, Xref, XrefDirection,
 };
 
-/// Maximum functions discovered per binary; guards recursive descent.
-const MAX_FUNCTIONS: usize = 4096;
+/// Maximum functions discovered per binary; guards recursive descent and caps
+/// the background indexer's work.
+const MAX_FUNCTIONS: usize = 20_000;
 /// Maximum basic blocks decoded per function.
 const MAX_BLOCKS: usize = 512;
+/// Upper bound on how many functions' blocks the background indexer keeps warm
+/// in memory; beyond this it still decodes for discovery but drops the result,
+/// so a huge binary cannot blow up the cache.
+const BLOCK_CACHE_MAX: usize = 8192;
 /// Maximum instructions decoded for one function before decoding stops, so a
 /// runaway tail-call chain cannot consume the whole pass.
 const MAX_FUNCTION_INSNS: usize = 50_000;
@@ -51,6 +62,20 @@ const MAX_BLOCK_INSNS: usize = 512;
 const SWEEP_MAX_INSNS: usize = 1_000_000;
 /// Minimum run length for a string.
 const MIN_STRING_LEN: usize = 4;
+
+/// A code or data reference found during the linear sweep, before it is shaped
+/// into a canonical [`Xref`] for a specific query.
+#[derive(Clone)]
+struct RawRef {
+    /// Instruction that carries the reference.
+    from: u64,
+    /// Referenced address (branch target or data slot).
+    to: u64,
+    /// Reference kind (`CALL`, `JMP`, `CJMP`, `DATA`).
+    kind: String,
+    /// Text of the referring instruction.
+    opcode: String,
+}
 
 /// Mutable analysis state, guarded by a mutex because [`Engine`] methods take
 /// `&self`.
@@ -65,6 +90,15 @@ struct NativeState {
     labels: Option<Labels>,
     /// Cached string scan (`strings()` and annotation share it).
     strings: Option<Vec<StringRef>>,
+    /// Every code and data reference seen by the linear sweep, sorted by source
+    /// address. Built once so a cross-reference query never has to re-decode
+    /// the binary (which would stall the UI on a large target).
+    xrefs: Vec<RawRef>,
+    /// Referenced address -> indexes into [`NativeState::xrefs`], so a
+    /// `xrefs to X` is a hash lookup instead of a full decode.
+    xrefs_by_target: HashMap<u64, Vec<u32>>,
+    /// True while the background indexer is still expanding the function set.
+    indexing: bool,
 }
 
 /// Address indexes used to annotate disassembly with names.
@@ -84,6 +118,9 @@ impl NativeState {
             blocks: HashMap::new(),
             labels: None,
             strings: None,
+            xrefs: Vec::new(),
+            xrefs_by_target: HashMap::new(),
+            indexing: false,
         }
     }
 }
@@ -279,9 +316,11 @@ fn arch_word<T: Into<u64>>(word: T) -> u64 {
 
 /// The in-process [`Engine`] implementation.
 pub struct NativeEngine {
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     path: PathBuf,
-    state: Mutex<NativeState>,
+    state: Arc<Mutex<NativeState>>,
+    /// Set on drop to stop the background indexer promptly.
+    cancel: Arc<AtomicBool>,
 }
 
 impl NativeEngine {
@@ -305,15 +344,16 @@ impl NativeEngine {
         // sections, not on a fundamentally unparsable file.
         object::File::parse(&*data).map_err(|e| format!("not a recognised binary: {e}"))?;
         Ok(Self {
-            data,
+            data: Arc::new(data),
             path: path.to_path_buf(),
-            state: Mutex::new(NativeState::new()),
+            state: Arc::new(Mutex::new(NativeState::new())),
+            cancel: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Parse the in-memory image.
     fn parse(&self) -> Result<object::File<'_>, String> {
-        object::File::parse(&*self.data).map_err(|e| format!("parse failed: {e}"))
+        object::File::parse(&self.data[..]).map_err(|e| format!("parse failed: {e}"))
     }
 
     /// True when `addr` falls inside an executable section.
@@ -418,8 +458,10 @@ impl NativeEngine {
             }
         }
         // A linear sweep adds every direct call target, CET landing pad, and
-        // classic prologue as a function entry.
-        for seed in sweep_seeds(&file, &cs, SWEEP_MAX_INSNS) {
+        // classic prologue as a function entry, and records every code and
+        // data reference it decodes for the cross-reference index.
+        let Sweep { seeds, mut refs } = sweep(&file, &cs, SWEEP_MAX_INSNS);
+        for seed in seeds {
             if functions.contains_key(&seed) {
                 continue;
             }
@@ -434,27 +476,37 @@ impl NativeEngine {
             functions.retain(|addr, _| keep.contains(addr));
         }
         // Sizes from the sorted neighbour addresses.
-        let addrs: Vec<u64> = functions.keys().copied().collect();
-        for (i, addr) in addrs.iter().enumerate() {
-            let end = addrs
-                .get(i + 1)
-                .copied()
-                .or_else(|| {
-                    Self::text_section(&file, *addr).map(|s| s.address().saturating_add(s.size()))
-                })
-                .unwrap_or(*addr);
-            if let Some(f) = functions.get_mut(addr) {
-                f.size = Some(end.saturating_sub(*addr));
-            }
-        }
+        assign_sizes(&mut functions, &file);
 
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|e| format!("native state poisoned: {e}"))?;
-        state.functions = functions;
-        state.analyzed = true;
+        refs.sort_by_key(|r| r.from);
+        let mut xrefs_by_target: HashMap<u64, Vec<u32>> = HashMap::new();
+        for (i, r) in refs.iter().enumerate() {
+            xrefs_by_target.entry(r.to).or_default().push(i as u32);
+        }
+        {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            state.functions = functions;
+            state.xrefs = refs;
+            state.xrefs_by_target = xrefs_by_target;
+            state.analyzed = true;
+            state.indexing = true;
+        }
+        self.spawn_indexer();
         Ok(())
+    }
+
+    /// Expand the function index on a background thread: decode each function's
+    /// blocks (warming the cache the UI reads), promote any code targets they
+    /// reference that the sweep missed into functions, and recompute sizes.
+    /// Clears the `indexing` flag when done, or when the engine is dropped.
+    fn spawn_indexer(&self) {
+        let data = Arc::clone(&self.data);
+        let state = Arc::clone(&self.state);
+        let cancel = Arc::clone(&self.cancel);
+        std::thread::spawn(move || background_index(data, state, cancel));
     }
 
     /// Build the UI-shaped `info` object.
@@ -650,6 +702,34 @@ fn in_text_ranges(ranges: &[(u64, u64)], addr: u64) -> bool {
     ranges.iter().any(|(lo, hi)| addr >= *lo && addr < *hi)
 }
 
+/// Data section address ranges.
+fn data_ranges(file: &object::File<'_>) -> Vec<(u64, u64)> {
+    file.sections()
+        .filter(|s| {
+            matches!(
+                s.kind(),
+                SectionKind::Data | SectionKind::ReadOnlyData | SectionKind::UninitializedData
+            )
+        })
+        .map(|s| (s.address(), s.address().saturating_add(s.size())))
+        .collect()
+}
+
+/// True when `addr` is inside a data range from [`data_ranges`].
+fn in_data_ranges(ranges: &[(u64, u64)], addr: u64) -> bool {
+    ranges.iter().any(|(lo, hi)| addr >= *lo && addr < *hi)
+}
+
+/// Name of the function containing `addr`, from the current state. Used by
+/// cross-reference queries, which already hold the state lock.
+fn fcn_name_at(state: &NativeState, addr: u64) -> Option<String> {
+    let (_, f) = state.functions.range(..=addr).next_back()?;
+    let contains = f
+        .size
+        .map_or(addr == f.addr, |s| addr < f.addr.saturating_add(s));
+    contains.then(|| f.name.clone())
+}
+
 fn decode_blocks(
     file: &object::File<'_>,
     cs: &Capstone,
@@ -779,14 +859,27 @@ fn decode_blocks(
     Ok(blocks)
 }
 
-/// Decode the executable sections linearly and collect function-entry seeds:
-/// every direct call target, plus CET landing pads and classic `push rbp; mov
-/// rbp, rsp` prologues. A bounded, cheap complement to recursive descent: it
-/// finds functions the call graph alone misses (indirect-only callers, no
-/// symbols).
-fn sweep_seeds(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Vec<u64> {
-    let mut out = Vec::new();
+/// Result of the linear sweep: function-entry seeds plus every code and data
+/// reference seen while decoding.
+struct Sweep {
+    /// Function-entry candidates (call targets, CET pads, classic prologues).
+    seeds: Vec<u64>,
+    /// Every code/data reference seen, in sweep order.
+    refs: Vec<RawRef>,
+}
+
+/// Decode the executable sections linearly and collect function-entry seeds
+/// (every direct call target, plus CET landing pads and classic `push rbp; mov
+/// rbp, rsp` prologues) and every code/data reference. A bounded, cheap
+/// complement to recursive descent: it finds functions the call graph alone
+/// misses (indirect-only callers, no symbols) and builds the cross-reference
+/// index without a second pass over the code.
+fn sweep(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Sweep {
+    let mut seeds = Vec::new();
+    let mut refs = Vec::new();
     let mut budget = max_insns;
+    let text = text_ranges(file);
+    let data = data_ranges(file);
     for section in file.sections() {
         if budget == 0 {
             break;
@@ -794,20 +887,46 @@ fn sweep_seeds(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Vec<
         if section.kind() != SectionKind::Text {
             continue;
         }
-        let Ok(data) = section.data() else {
+        let Ok(bytes) = section.data() else {
             continue;
         };
-        if data.is_empty() {
+        if bytes.is_empty() {
             continue;
         }
-        let ops = decode_with(cs, data, section.address(), budget, false, false);
+        let ops = decode_with(cs, bytes, section.address(), budget, false, false);
         budget = budget.saturating_sub(ops.len().max(1));
         for (i, op) in ops.iter().enumerate() {
-            if op.kind.as_deref() == Some("call") {
-                if let Some(target) = op.jump {
-                    if NativeEngine::in_text(file, target) {
-                        out.push(target);
+            // Direct branch target, or an indirect call/jump resolved through
+            // its data slot (GOT slot, ifunc stub, function-pointer table).
+            let branch = op.jump.or_else(|| {
+                matches!(
+                    op.kind.as_deref(),
+                    Some("call") | Some("icall") | Some("jmp") | Some("ijmp")
+                )
+                .then(|| resolve_indirect(file, &text, op))
+                .flatten()
+            });
+            if let Some(to) = branch {
+                if in_text_ranges(&text, to) {
+                    refs.push(RawRef {
+                        from: op.addr,
+                        to,
+                        kind: branch_kind(op),
+                        opcode: op.disasm.clone(),
+                    });
+                    if matches!(op.kind.as_deref(), Some("call") | Some("icall")) {
+                        seeds.push(to);
                     }
+                }
+            }
+            for to in memory_references(op) {
+                if in_data_ranges(&data, to) {
+                    refs.push(RawRef {
+                        from: op.addr,
+                        to,
+                        kind: "DATA".into(),
+                        opcode: op.disasm.clone(),
+                    });
                 }
             }
             let is_entry = op.disasm.starts_with("endbr64")
@@ -817,11 +936,11 @@ fn sweep_seeds(file: &object::File<'_>, cs: &Capstone, max_insns: usize) -> Vec<
                         .get(i + 1)
                         .is_some_and(|n| n.disasm.starts_with("mov rbp, rsp")));
             if is_entry {
-                out.push(op.addr);
+                seeds.push(op.addr);
             }
         }
     }
-    out
+    Sweep { seeds, refs }
 }
 
 /// Map every imported GOT slot to its (demangled) name, from dynamic
@@ -902,6 +1021,109 @@ fn add_function(
     });
 }
 
+/// Assign each function a size from the next function's address, bounded by the
+/// end of its section.
+fn assign_sizes(functions: &mut BTreeMap<u64, FunctionInfo>, file: &object::File<'_>) {
+    let addrs: Vec<u64> = functions.keys().copied().collect();
+    for (i, addr) in addrs.iter().enumerate() {
+        let end = addrs
+            .get(i + 1)
+            .copied()
+            .or_else(|| {
+                NativeEngine::text_section(file, *addr)
+                    .map(|s| s.address().saturating_add(s.size()))
+            })
+            .unwrap_or(*addr);
+        if let Some(f) = functions.get_mut(addr) {
+            f.size = Some(end.saturating_sub(*addr));
+        }
+    }
+}
+
+/// Background half of discovery: decode every known function's blocks (warming
+/// the cache the UI reads), promote any code target those blocks reference into
+/// a function, and recompute sizes. Bounded by [`MAX_FUNCTIONS`], stopped early
+/// when the engine is dropped, and run to a fixpoint so newly-found functions
+/// are themselves decoded.
+fn background_index(data: Arc<Vec<u8>>, state: Arc<Mutex<NativeState>>, cancel: Arc<AtomicBool>) {
+    let finish = |state: &Arc<Mutex<NativeState>>| {
+        if let Ok(mut s) = state.lock() {
+            s.indexing = false;
+        }
+    };
+    let file = match object::File::parse(&data[..]) {
+        Ok(f) => f,
+        Err(_) => return finish(&state),
+    };
+    let cs = match build_capstone(&file) {
+        Ok(c) => c,
+        Err(_) => return finish(&state),
+    };
+    let text = text_ranges(&file);
+    let got = import_got_labels(&file);
+    while !cancel.load(Ordering::Relaxed) {
+        let pending: Vec<u64> = match state.lock() {
+            Ok(s) => s
+                .functions
+                .keys()
+                .copied()
+                .filter(|a| !s.blocks.contains_key(a))
+                .collect(),
+            Err(_) => break,
+        };
+        if pending.is_empty() {
+            break;
+        }
+        let mut grew = false;
+        let mut decoded = 0u32;
+        for addr in pending {
+            if cancel.load(Ordering::Relaxed) {
+                return finish(&state);
+            }
+            let Ok(blocks) = decode_blocks(&file, &cs, addr) else {
+                continue;
+            };
+            let mut candidates: Vec<u64> = Vec::new();
+            for op in blocks.iter().flat_map(|b| b.ops.iter()) {
+                if matches!(op.kind.as_deref(), Some("call") | Some("icall")) {
+                    if let Some(t) = op.jump {
+                        if in_text_ranges(&text, t) {
+                            candidates.push(t);
+                        }
+                    }
+                }
+            }
+            let Ok(mut s) = state.lock() else { break };
+            if s.blocks.len() < BLOCK_CACHE_MAX {
+                s.blocks.insert(addr, blocks);
+            }
+            for t in candidates {
+                if s.functions.contains_key(&t) || s.functions.len() >= MAX_FUNCTIONS {
+                    continue;
+                }
+                let name = plt_name_at(&file, &cs, t, &got)
+                    .map(|imported| format!("imp.{imported}"))
+                    .unwrap_or_else(|| format!("fcn_{t:x}"));
+                add_function(&mut s.functions, &file, t, name);
+                grew = true;
+            }
+            // Be a good citizen: yield the CPU periodically so the indexer runs
+            // as idle-time work rather than competing with live queries.
+            decoded += 1;
+            if decoded.is_multiple_of(32) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        if let Ok(mut s) = state.lock() {
+            assign_sizes(&mut s.functions, &file);
+        }
+        if !grew {
+            break;
+        }
+    }
+    finish(&state);
+}
+
 /// Candidate absolute addresses referenced by an instruction, for annotation:
 /// the effective address of a `[rip + disp]` operand, or any bare `0x` operand
 /// (non-PIE string addresses). Exact lookups filter out false positives.
@@ -978,16 +1200,6 @@ fn section_at<'f>(file: &'f object::File<'f>, addr: u64) -> Option<(&'f [u8], u6
 
 /// True when `addr` lands in a data section (used to tell a real data
 /// reference from an ordinary immediate).
-fn in_data(file: &object::File<'_>, addr: u64) -> bool {
-    file.sections().any(|s| {
-        matches!(
-            s.kind(),
-            SectionKind::Data | SectionKind::ReadOnlyData | SectionKind::UninitializedData
-        ) && addr >= s.address()
-            && addr < s.address().saturating_add(s.size())
-    })
-}
-
 /// Where a jump table lives: a fixed address, or a register set earlier in the
 /// block (the position-independent case: `lea rdx, [rip + table]`).
 #[derive(Clone, Debug, PartialEq)]
@@ -1597,7 +1809,17 @@ pub fn is_unconditional_branch(mnemonic: &str) -> bool {
     )
 }
 
+impl Drop for NativeEngine {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 impl Engine for NativeEngine {
+    fn indexing(&self) -> bool {
+        self.state.lock().map(|s| s.indexing).unwrap_or(false)
+    }
+
     fn backend(&self) -> BackendKind {
         BackendKind::Native
     }
@@ -1814,77 +2036,53 @@ impl Engine for NativeEngine {
                 .ok_or_else(|| format!("could not resolve symbol `{name}`"))?,
         };
         self.discover()?;
-        let file = self.parse()?;
-        let funcs: Vec<u64> = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|e| format!("native state poisoned: {e}"))?;
-            state.functions.keys().copied().collect()
-        };
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
         let mut out: Vec<Xref> = Vec::new();
         match direction {
             XrefDirection::To => {
-                for f in funcs {
-                    let blocks = match self.blocks_for(f) {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    };
-                    let fname = self
-                        .function_at(f)?
-                        .map(|x| x.name)
-                        .unwrap_or_else(|| format!("fcn_{f:x}"));
-                    for op in blocks.iter().flat_map(|b| b.ops.iter()) {
-                        if op.jump == Some(addr) {
-                            out.push(Xref {
-                                from: op.addr,
-                                kind: branch_kind(op),
-                                to: Some(addr),
-                                fcn_name: Some(fname.clone()),
-                                opcode: Some(op.disasm.clone()),
-                            });
-                        } else if memory_references(op).contains(&addr) {
-                            out.push(Xref {
-                                from: op.addr,
-                                kind: "DATA".into(),
-                                to: Some(addr),
-                                fcn_name: Some(fname.clone()),
-                                opcode: Some(op.disasm.clone()),
-                            });
-                        }
+                // The sweep already indexed every reference; this is a lookup,
+                // not a re-decode, so it cannot stall on a large binary.
+                if let Some(idxs) = state.xrefs_by_target.get(&addr) {
+                    for &i in idxs {
+                        let r = &state.xrefs[i as usize];
+                        out.push(Xref {
+                            from: r.from,
+                            kind: r.kind.clone(),
+                            to: Some(r.to),
+                            fcn_name: fcn_name_at(&state, r.from),
+                            opcode: Some(r.opcode.clone()),
+                        });
                     }
                 }
             }
             XrefDirection::From => {
-                let entry = self.function_at(addr)?.map(|f| f.addr).unwrap_or(addr);
-                let fname = self
-                    .function_at(entry)?
-                    .map(|x| x.name)
-                    .unwrap_or_else(|| format!("fcn_{entry:x}"));
-                let blocks = self.blocks_for(entry)?;
-                for op in blocks.iter().flat_map(|b| b.ops.iter()) {
-                    if let Some(to) = op.jump {
-                        out.push(Xref {
-                            from: op.addr,
-                            kind: branch_kind(op),
-                            to: Some(to),
-                            fcn_name: Some(fname.clone()),
-                            opcode: Some(op.disasm.clone()),
-                        });
+                // References that originate inside the function containing
+                // `addr`, or at `addr` itself when it is not in a known one.
+                let (lo, hi) = match state.functions.range(..=addr).next_back() {
+                    Some((_, f))
+                        if f.size
+                            .map_or(addr == f.addr, |s| addr < f.addr.saturating_add(s)) =>
+                    {
+                        (f.addr, f.addr.saturating_add(f.size.unwrap_or(0)))
                     }
-                    for referenced in memory_references(op) {
-                        // Only real data addresses; an ordinary immediate is not
-                        // a reference.
-                        if in_data(&file, referenced) {
-                            out.push(Xref {
-                                from: op.addr,
-                                kind: "DATA".into(),
-                                to: Some(referenced),
-                                fcn_name: Some(fname.clone()),
-                                opcode: Some(op.disasm.clone()),
-                            });
-                        }
+                    _ => (addr, addr.saturating_add(1)),
+                };
+                let start = state.xrefs.partition_point(|r| r.from < lo);
+                let fname = fcn_name_at(&state, addr);
+                for r in &state.xrefs[start..] {
+                    if r.from >= hi {
+                        break;
                     }
+                    out.push(Xref {
+                        from: r.from,
+                        kind: r.kind.clone(),
+                        to: Some(r.to),
+                        fcn_name: fname.clone(),
+                        opcode: Some(r.opcode.clone()),
+                    });
                 }
             }
         }
