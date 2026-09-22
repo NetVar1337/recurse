@@ -46,10 +46,13 @@
 //! [vtil-org]: https://github.com/orgs/vtil-project/repositories
 //! [vtil2]: https://github.com/pop-rip/vtil2
 
+pub mod cfg;
 pub mod il;
 pub mod input;
 pub mod lift;
+pub mod liveness;
 pub mod opt;
+pub mod regalias;
 pub mod text;
 
 pub use il::{Block, Cond, Instr, Op, Operand, Register, Routine};
@@ -141,5 +144,76 @@ mod tests {
         assert_eq!(routine.instr_count(), 2);
         assert_eq!(routine.blocks[0].instrs[0].op, Op::Vemit);
         assert_eq!(routine.blocks[0].instrs[1].op, Op::Vexit);
+    }
+
+    /// The real point of whole-routine dataflow: a value set in one block,
+    /// carried unchanged through a passthrough block, resolves a compare in
+    /// a *third* block — the shape a VM dispatcher's `opcode == N` guard
+    /// takes once its opcode fetch and the guard are in different blocks
+    /// (almost always, in real compiled/virtualized code). A purely
+    /// block-local optimizer (what this crate shipped before whole-routine
+    /// propagation/liveness) cannot fold this at all: `cmp eax, 1` starts
+    /// its own block with no idea `eax` is `1`.
+    #[test]
+    fn resolves_a_branch_whose_constant_flows_through_an_unrelated_block() {
+        let blocks = vec![
+            InputBlock {
+                addr: 0x1000,
+                jump: Some(0x1010),
+                fail: None,
+                targets: vec![],
+                ops: vec![insn(0x1000, "mov eax, 1", None, None, None)],
+            },
+            // A passthrough block that never mentions `eax` at all.
+            InputBlock {
+                addr: 0x1010,
+                jump: Some(0x1020),
+                fail: None,
+                targets: vec![],
+                ops: vec![insn(0x1010, "nop", None, None, None)],
+            },
+            InputBlock {
+                addr: 0x1020,
+                jump: Some(0x2000),
+                fail: Some(0x1026),
+                targets: vec![],
+                ops: vec![
+                    insn(0x1020, "cmp eax, 1", None, None, None),
+                    insn(
+                        0x1024,
+                        "je 0x2000",
+                        Some("cjmp"),
+                        Some(0x2000),
+                        Some(0x1026),
+                    ),
+                ],
+            },
+        ];
+
+        let (routine, stats) = lift_and_optimize(0x1000, "dispatcher_guard", &blocks);
+        assert!(stats.propagated > 0, "eax=1 must propagate across blocks");
+        assert!(stats.branches_resolved > 0);
+
+        let guard = routine
+            .blocks
+            .iter()
+            .find(|b| b.addr == 0x1020)
+            .expect("guard block present");
+        assert_eq!(guard.jump, Some(0x2000));
+        assert_eq!(
+            guard.fail, None,
+            "the now-unreachable fall-through edge is dropped"
+        );
+        assert_eq!(guard.instrs.last().map(|i| &i.op), Some(&Op::Jmp));
+
+        // Once nothing downstream reads `eax` through the (now-literal)
+        // guard, the setup `mov eax, 1` in the entry block is itself dead —
+        // whole-routine liveness, not just local dead-store elimination,
+        // is what proves that.
+        let entry = &routine.blocks[0];
+        assert!(
+            entry.instrs.is_empty(),
+            "the eax=1 setup should be cleaned up once nothing reads it: {entry:?}"
+        );
     }
 }

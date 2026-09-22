@@ -76,18 +76,28 @@ missing half, written for Recurse specifically:
   (VTIL's own escape hatch), carrying the original text verbatim. The
   translation is total: nothing is dropped, just left opaque.
 - **`opt.rs`** — copy/constant propagation with folding
-  (`MovPropagationPass`/`CollectivePropagationPass`), local dead-store
-  elimination (`DeadCodeEliminationPass`, the sound-without-whole-routine-
-  liveness subset), single/two-instruction algebraic identities
+  (`MovPropagationPass`/`CollectivePropagationPass`), dead-store elimination
+  (`DeadCodeEliminationPass`), single/two-instruction algebraic identities
   (`SymbolicRewritePass`, narrow end: idempotence, the identity element, the
   annihilator, self-inverses, double negation/complement), and constant
   branch resolution (`BranchCorrectionPass`) — collapsing a `js` whose
-  condition folded to a literal into the one real `jmp`, which is the
-  concrete, testable version of "the dispatcher's opaque predicate
-  disappears." Every pass is block-local by design; see the module doc in
-  `crates/recurse-vtil/src/opt.rs` for exactly where that stops being sound
-  and why (no CFG dominance/liveness analysis is built here — that is
-  VTIL's real optimizer's job, and future work for this crate).
+  condition folded to a literal into the one real `jmp`. Propagation and
+  dead-store elimination run over the **whole routine**
+  (`crates/recurse-vtil/src/cfg.rs`, `liveness.rs`, `regalias.rs`): a
+  constant known on every path into a block is known inside it (forward
+  "must" dataflow with a worklist fixpoint, merging — keeping a fact only
+  where every predecessor agrees — at joins), and a write that reaches a
+  block's end is deleted once whole-routine liveness proves no reachable
+  successor can read it, under a register-aliasing model (`eax`/`ax`/`al`
+  are the same storage as `rax`) so that check is sound. This is what makes
+  a VM dispatcher's opcode compare chain actually resolvable: the opcode
+  fetch and the compare it feeds are almost never in the same block. See
+  the module doc in `crates/recurse-vtil/src/opt.rs` for where this still
+  stops short of VTIL's real optimizer — no memory/alias analysis
+  (`Ldd`/`Str` are opaque to every pass here), and no symbolic execution
+  (`VTIL-Architecture/symex`, VTIL's own tracer/pointer/memory model), so a
+  computed jump/call target is never resolved. Building a symbolic tracer
+  over the same `Cfg` this dataflow already uses is the natural next step.
 - **`text.rs`** — a VTIL-style `begin_routine`/`block_0x...`/`end_routine`
   dump, the same reading convention as VTIL-Core's own
   `Sample Routines/*.vtil` files.
@@ -132,8 +142,10 @@ cargo test -p recurse-vtil
 cargo test -p recurse-static lift
 ```
 
-`crates/recurse-vtil/src/lib.rs` has an end-to-end test
-(`lifts_and_folds_an_opaque_predicate_to_one_edge`) that lifts a
-`mov ; cmp ; je` opaque-predicate idiom and asserts it folds to a single
-unconditional edge — the smallest possible demonstration of the
-devirtualization use case above.
+`crates/recurse-vtil/src/lib.rs` has two end-to-end tests:
+`lifts_and_folds_an_opaque_predicate_to_one_edge` (single block) and
+`resolves_a_branch_whose_constant_flows_through_an_unrelated_block`, which
+is the whole-routine case — a value set in one block, passed through a
+block that never mentions it, resolves a compare in a third block, and the
+now-dead setup instruction in the first block is removed once nothing
+reachable still needs it.

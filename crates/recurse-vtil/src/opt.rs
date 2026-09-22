@@ -1,27 +1,47 @@
-//! Optimizer passes over the lifted IL, run block-local to a fixpoint.
+//! Optimizer passes over the lifted IL, run to a whole-routine fixpoint.
 //!
 //! Named after (and scoped-down from) VTIL-Core's and vtil2's optimizer
 //! pipeline: `MovPropagationPass`/`CollectivePropagationPass` →
-//! [`propagate_and_fold`], `DeadCodeEliminationPass` →
-//! [`eliminate_dead_stores`], `SymbolicRewritePass` →
-//! [`simplify_algebraic`], `BranchCorrectionPass` →
-//! [`resolve_constant_branches`]. Every pass here is **block-local**: it
-//! never assumes anything about what a successor block does with a
-//! register, which is what keeps it sound without a full whole-routine
-//! dataflow/dominance analysis (what VTIL's real optimizer builds via its
-//! symbolic executor). That is the honest scope line: this crate recovers
-//! the constant-driven cases a VM dispatcher's opcode fetch/compare chain
-//! produces in one block, not the general cross-block case.
+//! [`propagate_and_fold_global`], `DeadCodeEliminationPass` → the
+//! [`crate::liveness`]-driven [`eliminate_dead_stores_with_live_out`],
+//! `SymbolicRewritePass` → [`simplify_algebraic`], `BranchCorrectionPass` →
+//! [`resolve_constant_branches`].
+//!
+//! Propagation/folding and dead-store elimination now see the whole
+//! [`Routine`]'s [`crate::cfg::Cfg`], not just one block: constant/copy
+//! facts flow forward across edges (merged — kept only where every
+//! predecessor agrees — at a join point, so a value known on every path
+//! into a block is still known inside it, standard forward "must" dataflow),
+//! and a register write that reaches a block's end is deleted when
+//! whole-routine liveness ([`crate::liveness::compute_live_out`]) proves no
+//! successor can read it. That is what makes the `lift` op's devirtualizing
+//! use case (a VM dispatcher's opcode fetch/compare chain, almost never
+//! confined to one block) actually resolvable end to end — the block-local
+//! versions of both passes ([`propagate_and_fold`], [`eliminate_dead_stores`])
+//! are kept as the conservative, CFG-free primitives the whole-routine
+//! passes are built from, and stay usable on their own (and covered by their
+//! own tests) for exactly that reason.
+//!
+//! The honest scope line has moved, not disappeared: this is a real
+//! multi-block dataflow fixpoint, but still not VTIL's own symbolic
+//! executor (`VTIL-Architecture/symex`) — it tracks *known-constant*
+//! register values, never a general expression, never memory (`Ldd`/`Str`
+//! are opaque reads/writes to this pass), and never resolves a computed
+//! jump/call target. Building a real symbolic tracer over this same
+//! [`crate::cfg::Cfg`] is the natural next step.
 
+use crate::cfg::Cfg;
 use crate::il::{Block, Cond, Instr, Op, Operand, Register, Routine};
-use std::collections::HashMap;
+use crate::liveness;
+use crate::regalias;
+use std::collections::{HashMap, HashSet};
 
 /// Counts of what each round of [`optimize`] actually changed, returned so a
 /// caller (or the `analyze` tool's `lift` op) can report whether
 /// optimization did anything rather than silently no-op.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct OptStats {
-    /// Fixpoint rounds run across all blocks (mostly diagnostic).
+    /// Whole-routine fixpoint rounds run (mostly diagnostic).
     pub rounds: usize,
     /// Register reads rewritten to a known constant or copy source.
     pub propagated: usize,
@@ -30,8 +50,9 @@ pub struct OptStats {
     pub folded: usize,
     /// Instructions simplified or removed by an algebraic identity.
     pub simplified: usize,
-    /// Register writes removed because a later write in the same block
-    /// overwrote them before any read observed the old value.
+    /// Register writes removed because whole-routine liveness proved no
+    /// later instruction — in this block or any reachable successor — could
+    /// still read the value.
     pub dead_stores_removed: usize,
     /// `js` instructions whose condition resolved to a compile-time
     /// constant, rewritten to an unconditional `jmp` (the CFG edge that is
@@ -57,34 +78,46 @@ impl OptStats {
     }
 }
 
-/// Hard cap on fixpoint rounds per block. Each round strictly reduces or
+/// Hard cap on whole-routine fixpoint rounds. Each round strictly reduces or
 /// resolves something counted in [`OptStats::total`], so this bounds
 /// pathological input rather than being expected to bind in practice.
-const MAX_ROUNDS_PER_BLOCK: usize = 64;
+const MAX_ROUNDS: usize = 64;
 
-/// Run every pass over every block of `routine`, in place, to a fixpoint.
+/// Run every pass over `routine`, in place, to a fixpoint. Rebuilds the
+/// [`Cfg`] every round, since [`resolve_constant_branches`] can change edges
+/// (a devirtualized branch loses one successor), which in turn changes what
+/// the next round's propagation/liveness sees.
 pub fn optimize(routine: &mut Routine) -> OptStats {
     let mut total = OptStats::default();
-    for block in &mut routine.blocks {
-        loop {
-            let mut round = OptStats::default();
-            let (propagated, folded) = propagate_and_fold(&mut block.instrs);
-            round.propagated = propagated;
-            round.folded = folded;
-            round.simplified = simplify_algebraic(&mut block.instrs);
-            round.dead_stores_removed = eliminate_dead_stores(&mut block.instrs);
-            round.branches_resolved = resolve_constant_branches(block);
-            total.add(&round);
-            total.rounds += 1;
-            if round.total() == 0 || total.rounds >= MAX_ROUNDS_PER_BLOCK {
-                break;
-            }
+    loop {
+        let cfg = Cfg::build(routine);
+        let mut round = OptStats::default();
+
+        let (propagated, folded) = propagate_and_fold_global(routine, &cfg);
+        round.propagated = propagated;
+        round.folded = folded;
+
+        let live_out = liveness::compute_live_out(routine, &cfg);
+        let empty = HashSet::new();
+        for block in &mut routine.blocks {
+            round.simplified += simplify_algebraic(&mut block.instrs);
+            let lo = live_out.get(&block.addr).unwrap_or(&empty);
+            round.dead_stores_removed += eliminate_dead_stores_with_live_out(&mut block.instrs, lo);
+        }
+        for block in &mut routine.blocks {
+            round.branches_resolved += resolve_constant_branches(block);
+        }
+
+        total.add(&round);
+        total.rounds += 1;
+        if round.total() == 0 || total.rounds >= MAX_ROUNDS {
+            break;
         }
     }
     total
 }
 
-/// A statically-known register value, tracked forward through one block.
+/// A statically-known register value, tracked forward through the routine.
 #[derive(Clone, Debug, PartialEq)]
 enum Known {
     Const(i64),
@@ -94,19 +127,37 @@ enum Known {
 }
 
 /// VTIL-style copy/constant propagation plus constant folding, in one
-/// forward pass. Mirrors VTIL's `MovPropagationPass` (propagate a `mov`'s
-/// source into later reads) composed with its `CollectivePropagationPass`
-/// (fold once every operand of an instruction is a literal): here both
-/// happen per instruction so a folded `mov` is immediately available to
-/// propagate into whatever reads it next.
+/// forward pass over one block. Mirrors VTIL's `MovPropagationPass`
+/// (propagate a `mov`'s source into later reads) composed with its
+/// `CollectivePropagationPass` (fold once every operand of an instruction is
+/// a literal): here both happen per instruction so a folded `mov` is
+/// immediately available to propagate into whatever reads it next.
 ///
-/// Block-local and conservative: any instruction this crate does not
-/// understand the write set of (`Op::Vemit`, `Op::Vxcall` — an opaque native
-/// instruction or an external call, either of which may touch registers
-/// this IL never sees mentioned) clears everything tracked so far rather
-/// than risk propagating a value past where it could have been clobbered.
-fn propagate_and_fold(instrs: &mut [Instr]) -> (usize, usize) {
-    let mut known: HashMap<Register, Known> = HashMap::new();
+/// Block-local: starts from no assumptions and reports nothing about what
+/// held at block entry. [`propagate_and_fold_global`] is the whole-routine
+/// driver built on the same per-block step ([`propagate_and_fold_seeded`]),
+/// seeded from what is known on *every* path into the block instead of
+/// nothing; this block-local entry point is kept for callers (and tests)
+/// that only have one block and no [`Cfg`] to give it context from.
+pub fn propagate_and_fold(instrs: &mut [Instr]) -> (usize, usize) {
+    let (propagated, folded, _out) = propagate_and_fold_seeded(instrs, HashMap::new());
+    (propagated, folded)
+}
+
+/// The same forward pass as [`propagate_and_fold`], but starting from
+/// `known` (typically the meet of every predecessor block's exit state) and
+/// returning the resulting exit state alongside the change counts, so a
+/// whole-routine caller can carry it into successor blocks.
+///
+/// Any instruction this crate does not understand the write set of
+/// (`Op::Vemit`, `Op::Vxcall` — an opaque native instruction or an external
+/// call, either of which may touch registers this IL never sees mentioned)
+/// clears everything tracked so far, including whatever was seeded in, since
+/// nothing propagated past it could be trusted.
+fn propagate_and_fold_seeded(
+    instrs: &mut [Instr],
+    mut known: HashMap<Register, Known>,
+) -> (usize, usize, HashMap<Register, Known>) {
     let mut propagated = 0usize;
     let mut folded = 0usize;
 
@@ -180,6 +231,85 @@ fn propagate_and_fold(instrs: &mut [Instr]) -> (usize, usize) {
         }
     }
 
+    (propagated, folded, known)
+}
+
+/// The meet of two predecessor exit states for the forward "must" lattice
+/// this pass uses: a fact survives into a join point only if every
+/// predecessor processed so far agrees on it exactly. Anything either side
+/// doesn't have (not yet computed, or genuinely unknown there) drops out —
+/// silently correct, never a false fact.
+fn meet(a: &HashMap<Register, Known>, b: &HashMap<Register, Known>) -> HashMap<Register, Known> {
+    let mut out = HashMap::new();
+    for (k, v) in a {
+        if b.get(k) == Some(v) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+/// Whole-routine driver for [`propagate_and_fold_seeded`]: a forward
+/// worklist fixpoint over `cfg`, carrying each block's known-constant/copy
+/// state into its successors and merging ([`meet`]) at any block with more
+/// than one predecessor. A predecessor not processed yet simply doesn't
+/// contribute to the merge (treated as "no constraint yet"); the block is
+/// reprocessed — and the merge redone with fresh input — the first time that
+/// predecessor's own exit state becomes available, so nothing is missed.
+/// Terminates because each register's tracked fact can only be dropped by a
+/// merge, never re-introduced once two predecessors disagree on it.
+fn propagate_and_fold_global(routine: &mut Routine, cfg: &Cfg) -> (usize, usize) {
+    let mut known_in: HashMap<u64, HashMap<Register, Known>> = HashMap::new();
+    let mut known_out: HashMap<u64, HashMap<Register, Known>> = HashMap::new();
+    let mut propagated = 0usize;
+    let mut folded = 0usize;
+
+    let mut worklist: std::collections::VecDeque<u64> = cfg.order.iter().copied().collect();
+    let mut dequeues = 0usize;
+    let max_dequeues = cfg.order.len().saturating_mul(64).max(256);
+
+    while let Some(addr) = worklist.pop_front() {
+        dequeues += 1;
+        if dequeues > max_dequeues {
+            break;
+        }
+
+        let preds = cfg.predecessors(addr);
+        let mut merged: Option<HashMap<Register, Known>> = None;
+        for &p in preds {
+            if let Some(pout) = known_out.get(&p) {
+                merged = Some(match merged {
+                    None => pout.clone(),
+                    Some(existing) => meet(&existing, pout),
+                });
+            }
+        }
+        let in_state = merged.unwrap_or_default();
+
+        if known_in.get(&addr) == Some(&in_state) && known_out.contains_key(&addr) {
+            // Nothing changed since the last time this block ran; its exit
+            // state (and everything downstream of it) is already accounted
+            // for.
+            continue;
+        }
+        known_in.insert(addr, in_state.clone());
+
+        let Some(block) = routine.blocks.iter_mut().find(|b| b.addr == addr) else {
+            continue;
+        };
+        let (p, f, out_state) = propagate_and_fold_seeded(&mut block.instrs, in_state);
+        propagated += p;
+        folded += f;
+
+        let changed_out = known_out.get(&addr) != Some(&out_state);
+        known_out.insert(addr, out_state);
+        if changed_out {
+            for &succ in cfg.successors(addr) {
+                worklist.push_back(succ);
+            }
+        }
+    }
+
     (propagated, folded)
 }
 
@@ -248,15 +378,35 @@ fn evaluate_cond(cond: Cond, a: i64, b: i64) -> bool {
 
 /// Local dead-store elimination: if a register is written and then written
 /// *again* later in the same block with no read of it in between, the
-/// earlier write is unobservable and safe to delete. This is a sound
-/// subset of VTIL's real `DeadCodeEliminationPass`, which additionally
-/// deletes a write that reaches the end of a block unread by tracking
-/// liveness across the whole routine; doing that here would need CFG
-/// dominance/liveness this crate does not yet build (a write surviving to
-/// block exit might still be read by a successor block, so it is always
-/// kept). `Op::Vemit`/`Op::Vxcall` clear everything tracked so far, for the
-/// same "may read/write anything" reason as in [`propagate_and_fold`].
-fn eliminate_dead_stores(instrs: &mut Vec<Instr>) -> usize {
+/// earlier write is unobservable and safe to delete. `Op::Vemit`/
+/// `Op::Vxcall` clear everything tracked so far, for the same "may
+/// read/write anything" reason as in [`propagate_and_fold`].
+///
+/// Kept, alongside [`eliminate_dead_stores_with_live_out`], as the
+/// conservative primitive for a caller with no [`Cfg`]: with no whole-
+/// routine liveness available, a write reaching the block's end is always
+/// assumed observable (never deleted) rather than guessed at.
+pub fn eliminate_dead_stores(instrs: &mut Vec<Instr>) -> usize {
+    eliminate_dead_stores_scoped(instrs, None)
+}
+
+/// The same pass, but additionally deleting a write that reaches the
+/// block's end when `live_out` (from [`crate::liveness::compute_live_out`])
+/// proves no successor can still read it — the whole-routine half of VTIL's
+/// `DeadCodeEliminationPass` this crate did not have before. `live_out`
+/// entries are compared under [`regalias::canonical`] identity, matching how
+/// they were computed.
+fn eliminate_dead_stores_with_live_out(
+    instrs: &mut Vec<Instr>,
+    live_out: &HashSet<Register>,
+) -> usize {
+    eliminate_dead_stores_scoped(instrs, Some(live_out))
+}
+
+fn eliminate_dead_stores_scoped(
+    instrs: &mut Vec<Instr>,
+    live_out: Option<&HashSet<Register>>,
+) -> usize {
     let mut last_write: HashMap<Register, usize> = HashMap::new();
     let mut dead = vec![false; instrs.len()];
 
@@ -275,6 +425,20 @@ fn eliminate_dead_stores(instrs: &mut Vec<Instr>) -> usize {
                 }
                 last_write.insert(r.clone(), i);
             }
+        }
+    }
+
+    // Anything still pending at block end is unread *within this block*.
+    // With whole-routine liveness available, it is only actually dead when
+    // no successor can read it either; without it (block-local callers),
+    // conservatively assume it might still be needed.
+    for (reg, &idx) in &last_write {
+        let still_needed = match live_out {
+            Some(set) => set.contains(&regalias::canonical(reg)),
+            None => true,
+        };
+        if !still_needed {
+            dead[idx] = true;
         }
     }
 
