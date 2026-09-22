@@ -21,6 +21,8 @@ interface DebugState {
 	breakpoints: DebugBreakpoint[];
 	frames: DebugFrame[];
 	output: string;
+	/** ASLR/PIE load bias: runtime − static. */
+	bias: number;
 	log: string[];
 	busy: boolean;
 	error: string | null;
@@ -52,6 +54,7 @@ const initial = {
 	breakpoints: [] as DebugBreakpoint[],
 	frames: [] as DebugFrame[],
 	output: "",
+	bias: 0,
 	log: [] as string[],
 	busy: false,
 	error: null as string | null,
@@ -174,6 +177,7 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 				registers: s.stop?.registers ?? null,
 				breakpoints: s.breakpoints ?? [],
 				frames: s.frames ?? [],
+				bias: s.bias ?? 0,
 			});
 		} catch {
 			/* no session yet */

@@ -290,6 +290,8 @@ export interface DebugSnapshot {
 	stop?: DebugStop | null;
 	breakpoints: DebugBreakpoint[];
 	frames: DebugFrame[];
+	/** `runtime - static` address (ASLR/PIE load bias). */
+	bias: number;
 }
 
 /** A rendered memory read. */

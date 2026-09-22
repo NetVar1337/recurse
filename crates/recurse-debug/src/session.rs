@@ -129,6 +129,9 @@ pub struct Snapshot {
     pub breakpoints: Vec<Breakpoint>,
     /// Backtrace at the last stop.
     pub frames: Vec<Frame>,
+    /// `runtime - static` address (ASLR/PIE load bias), so the UI can map a
+    /// runtime PC to a disassembly (static) address and back.
+    pub bias: u64,
 }
 
 /// A debug session handle. Cheap to clone-share behind an `Arc`.
@@ -505,6 +508,7 @@ impl Inner {
             stop: self.last_full.clone(),
             breakpoints: self.breakpoints(),
             frames,
+            bias: self.bias,
         };
         if let Ok(mut s) = self.snapshot.lock() {
             *s = snap;

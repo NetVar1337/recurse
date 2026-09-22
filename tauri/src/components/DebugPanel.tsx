@@ -12,16 +12,36 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { pickBinary } from "@/api";
+import { api, pickBinary } from "@/api";
+import { DebugCpu } from "@/components/DebugCpu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useDebugStore } from "@/store/debugStore";
 import type { DebugStopReason } from "@/types";
 
 function fmtAddr(a?: number | null): string {
 	return typeof a === "number" ? `0x${a.toString(16)}` : "";
+}
+
+/** x86-64 RFLAGS, as the set flag names. */
+function flagsOf(eflags: number): string {
+	const bits: [string, number][] = [
+		["CF", 0],
+		["PF", 2],
+		["AF", 4],
+		["ZF", 6],
+		["SF", 7],
+		["TF", 8],
+		["IF", 9],
+		["DF", 10],
+		["OF", 11],
+	];
+	return bits
+		.filter(([, bit]) => (eflags >> bit) & 1)
+		.map(([name]) => name)
+		.join(" ");
 }
 
 /** Human label for a stop reason. */
@@ -52,60 +72,230 @@ function gotoFrame(addr: number): void {
 	if (f) useAnalysisStore.getState().selectFn(f);
 }
 
-function Section({
-	title,
-	children,
-}: {
-	title: string;
-	children: React.ReactNode;
-}) {
+function Empty({ label }: { label: string }) {
+	return <div className="text-muted-foreground p-3 text-[11px]">{label}</div>;
+}
+
+/** Right column, top: general registers and flags. */
+function RegistersPane() {
+	const regs = useDebugStore((s) => s.registers);
+	if (!regs) return <Empty label="no registers" />;
+	const skip = new Set(["rip", "eflags", "orig_rax", "pc", "sp"]);
+	const gp = Object.entries(regs.values).filter(([k]) => !skip.has(k));
 	return (
-		<section className="min-w-0">
-			<h3 className="text-muted-foreground mb-1.5 text-[11px] font-semibold tracking-wider uppercase">
-				{title}
-			</h3>
-			{children}
-		</section>
+		<div className="p-2 font-mono text-[11px]">
+			<div className="mb-0.5 flex justify-between">
+				<span className="text-muted-foreground">rip</span>
+				<span className="text-primary">{fmtAddr(regs.pc)}</span>
+			</div>
+			<div className="mb-0.5 flex justify-between">
+				<span className="text-muted-foreground">rsp</span>
+				<span>{fmtAddr(regs.sp)}</span>
+			</div>
+			<div className="mb-0.5 flex justify-between">
+				<span className="text-muted-foreground">rbp</span>
+				<span>{fmtAddr(regs.fp)}</span>
+			</div>
+			<div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
+				{gp.map(([k, v]) => (
+					<div key={k} className="flex justify-between gap-2">
+						<span className="text-muted-foreground">{k}</span>
+						<span className="truncate">{fmtAddr(v)}</span>
+					</div>
+				))}
+			</div>
+			<div className="text-muted-foreground mt-1.5">
+				flags{" "}
+				<span className="text-foreground">
+					{flagsOf(regs.values.eflags ?? 0) || "—"}
+				</span>
+			</div>
+		</div>
+	);
+}
+
+/** Right column, bottom: the words at the stack pointer. */
+function StackPane() {
+	const sp = useDebugStore((s) => s.registers?.sp ?? null);
+	const active = useDebugStore((s) => s.active);
+	const [data, setData] = useState<{ sp: number; words: number[] } | null>(
+		null,
+	);
+
+	useEffect(() => {
+		if (sp == null || !active) return;
+		let cancelled = false;
+		api.debugCommand("read", { addr: sp, len: 256, format: "u64" })
+			.then((r) => {
+				if (!cancelled) {
+					setData({
+						sp,
+						words: (r as { words?: number[] })?.words ?? [],
+					});
+				}
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, [sp, active]);
+
+	if (sp == null) return <Empty label="no stack" />;
+	const words = data && data.sp === sp ? data.words : [];
+	return (
+		<div className="scroll-host min-h-0 flex-1 overflow-auto p-1 font-mono text-[11px]">
+			{words.map((w, i) => (
+				<div key={i} className="flex gap-2 px-1">
+					<span className="text-muted-foreground">
+						{fmtAddr(sp + i * 8)}
+					</span>
+					<span className="text-foreground">{fmtAddr(w)}</span>
+				</div>
+			))}
+			{words.length === 0 && <Empty label="unreadable" />}
+		</div>
+	);
+}
+
+/** Bottom tabs: call stack, breakpoints, threads. */
+function BottomTabs() {
+	const frames = useDebugStore((s) => s.frames);
+	const breakpoints = useDebugStore((s) => s.breakpoints);
+	const run = useDebugStore((s) => s.run);
+	const active = useDebugStore((s) => s.active);
+	const pid = useDebugStore((s) => s.pid);
+	const [tab, setTab] = useState<"stack" | "breakpoints" | "threads">(
+		"stack",
+	);
+	const [threads, setThreads] = useState<{
+		pid: number | null;
+		ids: number[];
+	}>({ pid: null, ids: [] });
+
+	useEffect(() => {
+		if (tab !== "threads" || !active) return;
+		let cancelled = false;
+		api.debugCommand("threads")
+			.then((t) => {
+				if (!cancelled) setThreads({ pid, ids: (t as number[]) ?? [] });
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, [tab, active, pid]);
+
+	const threadIds = threads.pid === pid ? threads.ids : [];
+
+	const tabButton = (id: typeof tab, label: string, count?: number) => (
+		<button
+			className={cn(
+				"px-2 py-1 text-[11px]",
+				tab === id
+					? "text-foreground border-primary border-b-2"
+					: "text-muted-foreground hover:text-foreground",
+			)}
+			onClick={() => setTab(id)}
+		>
+			{label}
+			{count != null ? ` · ${count}` : ""}
+		</button>
+	);
+
+	return (
+		<div className="flex min-h-0 flex-col">
+			<div className="border-border flex items-center border-b px-1">
+				{tabButton("stack", "Call stack", frames.length)}
+				{tabButton("breakpoints", "Breakpoints", breakpoints.length)}
+				{tabButton("threads", "Threads")}
+			</div>
+			<div className="scroll-host min-h-0 flex-1 overflow-auto">
+				{tab === "stack" &&
+					frames.map((f, i) => (
+						<button
+							key={`${f.addr}-${i}`}
+							className="hover:bg-accent flex w-full items-center gap-2 px-2 py-0.5 text-left font-mono text-[11px]"
+							onClick={() => gotoFrame(f.addr)}
+							title="Go to function"
+						>
+							<span className="text-muted-foreground w-4">
+								{i}
+							</span>
+							<span className="text-primary">
+								{fmtAddr(f.addr)}
+							</span>
+							<span className="truncate">{f.name ?? "?"}</span>
+						</button>
+					))}
+				{tab === "breakpoints" &&
+					breakpoints.map((b) => (
+						<div
+							key={b.id}
+							className="group hover:bg-accent flex items-center gap-2 px-2 py-0.5 font-mono text-[11px]"
+						>
+							<span className="text-destructive">●</span>
+							<span className="text-primary">
+								{fmtAddr(b.addr)}
+							</span>
+							<span className="text-muted-foreground">
+								#{b.id}
+							</span>
+							<button
+								className="text-muted-foreground hover:text-foreground ml-auto hidden group-hover:block"
+								title="Remove breakpoint"
+								onClick={() =>
+									void run("unbreak", { id: b.id })
+								}
+							>
+								<X className="h-3 w-3" />
+							</button>
+						</div>
+					))}
+				{tab === "threads" &&
+					threadIds.map((t) => (
+						<div
+							key={t}
+							className="px-2 py-0.5 font-mono text-[11px]"
+						>
+							{t === pid ? "▶ " : "  "}
+							{fmtAddr(t)}
+						</div>
+					))}
+			</div>
+		</div>
 	);
 }
 
 /**
- * Debug tab: launch/attach the target, control it, and inspect registers,
- * the stack, breakpoints, and a backtrace. All state comes from `debugStore`,
- * which is the same debug session the agent drives.
+ * Debug workspace: a CPU/disassembly view with a breakpoint
+ * gutter and current-instruction highlight, a registers + stack column, and
+ * call-stack / breakpoint / thread tabs. All state is shared with the agent.
  */
 export function DebugPanel() {
 	const active = useDebugStore((s) => s.active);
 	const pid = useDebugStore((s) => s.pid);
 	const state = useDebugStore((s) => s.state);
 	const stop = useDebugStore((s) => s.stop);
-	const registers = useDebugStore((s) => s.registers);
-	const breakpoints = useDebugStore((s) => s.breakpoints);
-	const frames = useDebugStore((s) => s.frames);
 	const output = useDebugStore((s) => s.output);
-	const log = useDebugStore((s) => s.log);
 	const busy = useDebugStore((s) => s.busy);
 	const error = useDebugStore((s) => s.error);
+	const follow = useDebugStore((s) => s.follow);
 	const run = useDebugStore((s) => s.run);
 	const sendStdin = useDebugStore((s) => s.sendStdin);
 	const pollOutput = useDebugStore((s) => s.pollOutput);
 	const pollSnapshot = useDebugStore((s) => s.pollSnapshot);
-	const follow = useDebugStore((s) => s.follow);
 	const setFollow = useDebugStore((s) => s.setFollow);
 	const [attachPid, setAttachPid] = useState("");
 	const [breakAt, setBreakAt] = useState("");
 	const [stdin, setStdin] = useState("");
 	const outputRef = useRef<HTMLDivElement>(null);
 
-	// Poll the debuggee's output while it is alive, so prompts appear even when
-	// a `continue` is still blocked waiting for a stop.
 	useEffect(() => {
 		if (!active && !follow) return;
 		const id = setInterval(() => void pollOutput(), 400);
 		return () => clearInterval(id);
 	}, [active, follow, pollOutput]);
 
-	// Follow along: pull the live snapshot so an agent-driven session shows up.
 	useEffect(() => {
 		if (!follow) return;
 		void pollSnapshot();
@@ -113,26 +303,11 @@ export function DebugPanel() {
 		return () => clearInterval(id);
 	}, [follow, pollSnapshot]);
 
-	// Keep the newest output in view.
 	useEffect(() => {
 		if (outputRef.current) {
 			outputRef.current.scrollTop = outputRef.current.scrollHeight;
 		}
 	}, [output]);
-
-	const onSendStdin = async () => {
-		const text = stdin;
-		setStdin("");
-		await sendStdin(`${text}\n`);
-	};
-
-	const onBreak = async () => {
-		const spec = breakAt.trim();
-		if (!spec) return;
-		const isAddr = /^0x[0-9a-f]+$/i.test(spec) || /^\d+$/.test(spec);
-		await run("break", isAddr ? { addr: spec } : { symbol: spec });
-		setBreakAt("");
-	};
 
 	const onLaunch = async () => {
 		const path = await pickBinary();
@@ -144,11 +319,19 @@ export function DebugPanel() {
 		if (Number.isFinite(n) && n > 0) await run("attach", { pid: n });
 	};
 
-	const regEntries = registers
-		? Object.entries(registers.values).filter(
-				([k]) => !["rip", "rsp", "rbp", "pc", "sp"].includes(k),
-			)
-		: [];
+	const onBreak = async () => {
+		const spec = breakAt.trim();
+		if (!spec) return;
+		const isAddr = /^0x[0-9a-f]+$/i.test(spec) || /^\d+$/.test(spec);
+		await run("break", isAddr ? { addr: spec } : { symbol: spec });
+		setBreakAt("");
+	};
+
+	const onSendStdin = async () => {
+		const text = stdin;
+		setStdin("");
+		await sendStdin(`${text}\n`);
+	};
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
@@ -166,7 +349,7 @@ export function DebugPanel() {
 						value={attachPid}
 						onChange={(e) => setAttachPid(e.target.value)}
 						placeholder="pid"
-						className="h-7 w-20 text-xs"
+						className="h-7 w-16 text-xs"
 					/>
 					<Button
 						size="sm"
@@ -178,35 +361,14 @@ export function DebugPanel() {
 					</Button>
 				</div>
 				<div className="bg-border mx-1 h-5 w-px" />
-				<div className="flex items-center gap-1">
-					<Input
-						value={breakAt}
-						onChange={(e) => setBreakAt(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") void onBreak();
-						}}
-						placeholder="addr or symbol"
-						className="h-7 w-32 text-xs"
-					/>
-					<Button
-						size="sm"
-						variant="outline"
-						onClick={onBreak}
-						disabled={busy || !active || !breakAt.trim()}
-						title="Set a breakpoint"
-					>
-						Break
-					</Button>
-				</div>
-				<div className="bg-border mx-1 h-5 w-px" />
 				<Button
 					size="sm"
 					variant="secondary"
 					onClick={() => void run("continue")}
 					disabled={busy || !active}
-					title="Continue"
+					title="Run (continue)"
 				>
-					<Play className="mr-1 h-3.5 w-3.5" /> Continue
+					<Play className="mr-1 h-3.5 w-3.5" /> Run
 				</Button>
 				<Button
 					size="sm"
@@ -236,6 +398,24 @@ export function DebugPanel() {
 					<CornerUpRight className="h-3.5 w-3.5" />
 				</Button>
 				<div className="bg-border mx-1 h-5 w-px" />
+				<Input
+					value={breakAt}
+					onChange={(e) => setBreakAt(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") void onBreak();
+					}}
+					placeholder="break at addr or symbol"
+					className="h-7 w-44 text-xs"
+				/>
+				<Button
+					size="sm"
+					variant="outline"
+					onClick={onBreak}
+					disabled={busy || !active || !breakAt.trim()}
+				>
+					Break
+				</Button>
+				<div className="bg-border mx-1 h-5 w-px" />
 				<Button
 					size="sm"
 					variant="ghost"
@@ -253,7 +433,6 @@ export function DebugPanel() {
 				>
 					<X className="mr-1 h-3.5 w-3.5" /> Kill
 				</Button>
-				<div className="bg-border mx-1 h-5 w-px" />
 				<Button
 					size="sm"
 					variant={follow ? "secondary" : "ghost"}
@@ -297,107 +476,26 @@ export function DebugPanel() {
 				</div>
 			)}
 
-			<div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-auto p-3 lg:grid-cols-3">
-				<Section title="Registers">
-					{registers ? (
-						<div className="flex flex-col gap-1">
-							<div className="bg-muted/40 rounded px-2 py-1 font-mono text-[11px]">
-								pc {fmtAddr(registers.pc)}
-							</div>
-							<div className="bg-muted/40 rounded px-2 py-1 font-mono text-[11px]">
-								sp {fmtAddr(registers.sp)}
-							</div>
-							<div className="bg-muted/40 rounded px-2 py-1 font-mono text-[11px]">
-								fp {fmtAddr(registers.fp)}
-							</div>
-							<div className="mt-1 grid grid-cols-2 gap-1">
-								{regEntries.map(([k, v]) => (
-									<div
-										key={k}
-										className="bg-muted/30 flex justify-between rounded px-2 py-0.5 font-mono text-[10.5px]"
-									>
-										<span className="text-muted-foreground">
-											{k}
-										</span>
-										<span>{fmtAddr(v)}</span>
-									</div>
-								))}
-							</div>
-						</div>
-					) : (
-						<span className="text-muted-foreground text-[11px]">
-							not running
-						</span>
-					)}
-				</Section>
-
-				<Section title={`Backtrace · ${frames.length}`}>
-					<div className="flex flex-col gap-0.5">
-						{frames.map((f, i) => (
-							<button
-								key={`${f.addr}-${i}`}
-								className="hover:bg-accent flex items-center gap-2 rounded px-2 py-0.5 text-left font-mono text-[11px]"
-								onClick={() => gotoFrame(f.addr)}
-								title="Go to function"
-							>
-								<span className="text-muted-foreground w-4 shrink-0">
-									{i}
-								</span>
-								<span className="text-primary shrink-0">
-									{fmtAddr(f.addr)}
-								</span>
-								<span className="truncate">
-									{f.name ?? "?"}
-								</span>
-							</button>
-						))}
-						{frames.length === 0 && (
-							<span className="text-muted-foreground text-[11px]">
-								no frames
-							</span>
-						)}
+			<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px]">
+				<div className="flex min-h-0 flex-col border-r">
+					<DebugCpu />
+					<div className="border-border h-44 border-t">
+						<BottomTabs />
 					</div>
-				</Section>
-
-				<Section title={`Breakpoints · ${breakpoints.length}`}>
-					<div className="flex flex-col gap-0.5">
-						{breakpoints.map((b) => (
-							<div
-								key={b.id}
-								className="hover:bg-accent group flex items-center gap-2 rounded px-2 py-0.5 font-mono text-[11px]"
-							>
-								<span className="text-destructive">●</span>
-								<span className="text-primary">
-									{fmtAddr(b.addr)}
-								</span>
-								<span className="text-muted-foreground">
-									#{b.id}
-								</span>
-								<button
-									className="text-muted-foreground hover:text-foreground ml-auto hidden group-hover:block"
-									title="Remove breakpoint"
-									onClick={() =>
-										void run("unbreak", { id: b.id })
-									}
-								>
-									<X className="h-3 w-3" />
-								</button>
-							</div>
-						))}
-						{breakpoints.length === 0 && (
-							<span className="text-muted-foreground text-[11px]">
-								none
-							</span>
-						)}
+				</div>
+				<div className="flex min-h-0 flex-col">
+					<div className="border-border border-b">
+						<RegistersPane />
 					</div>
-				</Section>
+					<StackPane />
+				</div>
 			</div>
 
 			<div className="border-border border-t">
 				<div className="text-muted-foreground px-3 py-1 text-[11px] font-semibold tracking-wider uppercase">
 					Program output
 				</div>
-				<div ref={outputRef} className="scroll-host h-32 overflow-auto">
+				<div ref={outputRef} className="scroll-host h-24 overflow-auto">
 					<pre className="p-2 font-mono text-[10.5px] whitespace-pre-wrap">
 						{output.replace(/\r/g, "")}
 					</pre>
@@ -421,11 +519,6 @@ export function DebugPanel() {
 						<Send className="h-3.5 w-3.5" />
 					</Button>
 				</div>
-				<ScrollArea className="h-24 border-t">
-					<pre className="scroll-host text-muted-foreground p-2 font-mono text-[10.5px] whitespace-pre-wrap">
-						{log.join("\n")}
-					</pre>
-				</ScrollArea>
 			</div>
 		</div>
 	);
