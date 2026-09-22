@@ -840,7 +840,13 @@ fn fcn_name_at(state: &NativeState, addr: u64) -> Option<String> {
     let contains = f
         .size
         .map_or(addr == f.addr, |s| addr < f.addr.saturating_add(s));
-    contains.then(|| f.name.clone())
+    contains.then(|| {
+        state
+            .renames
+            .get(&f.addr)
+            .cloned()
+            .unwrap_or_else(|| f.name.clone())
+    })
 }
 
 fn decode_blocks(

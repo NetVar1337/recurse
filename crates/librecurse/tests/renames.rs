@@ -39,3 +39,41 @@ fn renames_override_names_and_resolve() {
     assert_ne!(restored, "decrypt_flag");
     assert_eq!(restored, original);
 }
+
+#[test]
+fn renames_show_in_disassembly_annotations() {
+    let path = std::env::current_exe().unwrap();
+    let engine = NativeEngine::open(&path).unwrap();
+    engine.analyze().unwrap();
+
+    let funcs = engine.functions().unwrap();
+    let addrs: std::collections::HashSet<u64> = funcs.iter().map(|f| f.addr).collect();
+    // Find a function that directly calls another function.
+    let mut pair = None;
+    for f in funcs.iter().take(80) {
+        for op in engine.function_disasm(f.addr).unwrap().ops {
+            if let Some(t) = op.jump {
+                if t != f.addr && addrs.contains(&t) {
+                    pair = Some((f.addr, t));
+                    break;
+                }
+            }
+        }
+        if pair.is_some() {
+            break;
+        }
+    }
+    let Some((caller, callee)) = pair else {
+        return;
+    };
+
+    let mut renames = HashMap::new();
+    renames.insert(callee, "RENAMED_CALLEE".to_string());
+    engine.set_renames(renames);
+
+    let ops = engine.function_disasm(caller).unwrap().ops;
+    assert!(
+        ops.iter().any(|o| o.disasm.contains("; RENAMED_CALLEE")),
+        "renamed callee appears in the caller's annotation"
+    );
+}

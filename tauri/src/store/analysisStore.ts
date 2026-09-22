@@ -75,14 +75,18 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
 						? (funcs.find((f) => f.addr === addr) ?? sel)
 						: sel,
 			});
-			return;
+		} else {
+			set({
+				funcs: get().funcs.map((f) =>
+					f.addr === addr ? { ...f, name: trimmed } : f,
+				),
+				selected: sel?.addr === addr ? { ...sel, name: trimmed } : sel,
+			});
 		}
-		set({
-			funcs: get().funcs.map((f) =>
-				f.addr === addr ? { ...f, name: trimmed } : f,
-			),
-			selected: sel?.addr === addr ? { ...sel, name: trimmed } : sel,
-		});
+		// Disassembly comments embed function names, so re-fetch the open
+		// function so the rename shows up there too (the graph already
+		// re-fetches because it depends on `funcs`).
+		if (sel?.addr === addr) await get().refreshDisasm();
 	},
 
 	reset: () => set({ ...initial, decompiling: false }),
