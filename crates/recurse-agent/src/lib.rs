@@ -18,6 +18,7 @@
 
 pub mod agent;
 pub mod memory;
+pub mod report;
 pub mod tools;
 pub mod verify;
 
