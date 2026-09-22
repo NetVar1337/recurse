@@ -229,9 +229,9 @@ export interface GraphBlock {
 }
 
 /**
- * Canonical control-flow graph. Both engines produce exactly this shape — the
- * external engine's output is transformed into it host-side — so the graph UI
- * is backend-agnostic.
+ * Canonical control-flow graph. Both engines produce exactly this shape — r2's
+ * output is transformed into it host-side — so the graph UI is
+ * backend-agnostic.
  */
 export interface FunctionGraph {
 	addr: number;

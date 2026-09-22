@@ -405,7 +405,7 @@ pub fn get_backend() -> BackendStatus {
     }
 }
 
-/// Persist the selected analysis backend (`native` or an external engine). Takes
+/// Persist the selected analysis backend (`native` or r2). Takes
 /// the next binary open.
 #[tauri::command]
 pub fn set_backend(backend: String) -> Result<(), String> {

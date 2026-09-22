@@ -23,7 +23,7 @@ select:
   seed: 7                # deterministic sampling
 run:
   model: ""              # empty = app default
-  backend: native        # or an external engine; EVAL_BACKEND overrides per run
+  backend: native        # or r2; EVAL_BACKEND overrides per run
   max_turns: 40
   timeout_secs: 480
 ```
@@ -48,7 +48,7 @@ EVAL_BACKEND=native just eval-run   # pure Rust (the default)
 just eval-run-native                # the same, as a recipe
 ```
 
-The external engine is only required when it is selected; the native
+r2 is only required when it is selected; the native
 engine is in-process. The resolved backend is recorded in the run header and
 on every task line in `run.log`, and the task prompt drops the `decompile` op
 when the backend cannot serve it.
@@ -84,7 +84,7 @@ Traces default under the workspace target dir, so both live at
 Next to it, one `target/eval-traces/<tier>/<backend>/<hexid>.json` per task holds
 the full conversation with per-turn detail: exact request messages, reasoning,
 content, tool calls and tool results. The backend in the path means a native run
-and an external-engine run of the same tier never overwrite each other.
+and an r2 run of the same tier never overwrite each other.
 
 ### Trace layout
 

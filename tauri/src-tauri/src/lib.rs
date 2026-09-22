@@ -43,7 +43,7 @@ fn disable_pinch_zoom(app: &tauri::App) {
 fn disable_pinch_zoom(_app: &tauri::App) {}
 
 pub struct AppState {
-    /// The selected analysis backend (native or an external engine), owned behind one
+    /// The selected analysis backend (native or r2), owned behind one
     /// lock. Commands and the agent tool both route through the trait.
     pub session: Arc<Mutex<Option<Box<dyn librecurse::engine::Engine>>>>,
     /// Async mutex: turns hold it across `.await` points, which a std

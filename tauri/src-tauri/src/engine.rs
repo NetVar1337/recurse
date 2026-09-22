@@ -1,7 +1,7 @@
 //! Analysis-backend selection.
 //!
 //! The host no longer knows which engine it holds: [`build`] reads the
-//! configured backend (`native` or an external engine) and returns a boxed
+//! configured backend (`native` or r2) and returns a boxed
 //! [`librecurse::engine::Engine`]. Every command and the agent tool route
 //! through that trait, so adding a backend is a change here only.
 
@@ -11,7 +11,7 @@ use librecurse::engine::{BackendKind, Engine};
 
 /// Build the configured analysis backend for `path`.
 ///
-/// * an external engine — spawn its executable (independently licensed,
+/// * r2 — spawn its executable (independently licensed,
 ///   invoked as a separate program). Requires it on `PATH`.
 /// * `native` — pure-Rust in-process parsing/disassembly. No external
 ///   process and no copyleft dependency, but x86/x86-64 disassembly only and

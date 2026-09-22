@@ -16,7 +16,7 @@ pub struct ConfigFile {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
-    /// Analysis backend (`native` or an external engine). Absent means the default.
+    /// Analysis backend (`native` or r2). Absent means the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
 }

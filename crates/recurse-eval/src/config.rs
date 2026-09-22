@@ -18,7 +18,7 @@
 //!   seed: 7
 //! run:
 //!   model: deepseek/deepseek-v4.1-flash
-//!   backend: native          # or an external engine (env EVAL_BACKEND wins)
+//!   backend: native          # or r2 (env EVAL_BACKEND wins)
 //!   max_turns: 40
 //!   timeout_secs: 480
 //! ```
@@ -94,7 +94,7 @@ impl Default for SelectConfig {
 pub struct RunConfig {
     /// Empty = app default (`RECURSE_LLM_MODEL` / OpenRouter auto).
     pub model: String,
-    /// Analysis backend for this tier: `native` or an external engine. `None`
+    /// Analysis backend for this tier: `native` or r2. `None`
     /// falls back to `RECURSE_BACKEND` (or the app default, `native`). `EVAL_BACKEND` overrides
     /// this per run.
     pub backend: Option<BackendKind>,

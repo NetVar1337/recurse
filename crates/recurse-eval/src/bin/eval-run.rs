@@ -84,7 +84,7 @@ async fn main() {
         .or_else(|| cfg.trace_dir.as_deref().map(crate_relative))
         .unwrap_or_else(default_trace_dir);
     // Resolve the backend first: it also namespaces the trace dir, so native
-    // and external-engine runs of the same tier never overwrite each other's traces.
+    // and r2 runs of the same tier never overwrite each other's traces.
     // Precedence: EVAL_BACKEND > run.backend > RECURSE_BACKEND > native.
     let backend = resolve_backend(cfg.run.backend);
     let trace_dir = trace_base.join(&cfg.tier).join(backend.as_str());
@@ -119,13 +119,11 @@ async fn main() {
         opts.timeout_secs = cfg.run.timeout_secs;
     }
 
-    // The external engine is only required when it is selected; the native
+    // r2 is only required when it is selected; the native
     // backend is in-process and needs no external tool.
     if opts.backend == librecurse::engine::BackendKind::R2 && !r2_available() {
-        die(
-            "the external engine is selected but its executable is not on PATH — \
-             install it or run with EVAL_BACKEND=native",
-        );
+        die("r2 is selected but its executable is not on PATH — \
+             install it or run with EVAL_BACKEND=native");
     }
 
     let mut log = RunLog::create(&trace_dir.join("run.log"));

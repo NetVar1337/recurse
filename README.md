@@ -3,9 +3,10 @@
 Agentic reverse engineering environment — a Ghidra-class desktop app in the spirit of
 "Cursor for reverse engineering". Built with **Tauri 2** (React + TypeScript frontend) on top
 of a **pluggable analysis backend**. The default is a **pure-Rust native engine** — no
-external process, no copyleft dependency, multi-architecture via Capstone. An external
-engine is available opt-in for installs that want its full feature set. The agent tool and
-the UI are backend-agnostic — see [docs/backends.md](docs/backends.md).
+external process, no copyleft dependency, multi-architecture via Capstone. You can also run
+analysis through **r2** (radare2): install it, select it as the engine, and the whole app —
+agent tools and UI — drives it instead. The agent tool and the UI are backend-agnostic —
+see [docs/backends.md](docs/backends.md).
 
 ![Recurse demo](tauri/public/recurse_demo.png)
 
@@ -54,9 +55,9 @@ engine is a choice, not a hard dependency:
 - **`native`** (default) — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly
   (`object` + `capstone`): x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ,
   M68K, BPF. No child process, no external tool, no LGPL in the build.
-- An **external engine** is supported as an **opt-in** alternative for installs that want its
-  full feature set (including decompilation). It runs as a separate process and is never
-  linked or bundled.
+- **r2** (radare2) — supported as an **opt-in** alternative for installs that want its full
+  feature set (including decompilation). Install r2 and select it as the engine; it runs as
+  a separate process and is never linked or bundled with Recurse.
 
 Pick with the settings menu, the `RECURSE_BACKEND` environment variable, or the stored
 config. The agent gets one backend-neutral `analyze` tool (`functions`, `disasm`, `graph`,
@@ -105,12 +106,12 @@ Verify:
 node --version && npm --version && rustc --version && cargo --version
 ```
 
-### 2. Analysis engine — nothing to install
+### 2. Analysis engine
 
-The default **native** engine is pure Rust and needs no external tool. An **opt-in external
-engine** is available for installs that want its full feature set; it is a separate program
-on your `PATH` and is not required by the native engine or the build. It is never distributed
-with Recurse — bring your own install.
+The default **native** engine is pure Rust — **nothing to install**. To use **r2** (radare2)
+as the analysis engine instead, install it and select it (the settings menu, or
+`RECURSE_BACKEND=r2`); Recurse drives the `r2` binary on your `PATH`. r2 is optional, is
+never required by the build, and is never distributed with Recurse — bring your own install.
 
 ### 3. Tauri Linux system dependencies
 
@@ -127,7 +128,7 @@ Other distros: follow the official
 
 ### 4. Optional decompiler
 
-The native engine has no decompiler. The opt-in external engine can provide one when its
+The native engine has no decompiler. The **r2** engine can provide one when its decompiler
 plugin is installed; without it, the Decompile tab surfaces a graceful error and everything
 else works.
 
@@ -198,7 +199,7 @@ just eval-run     # run the tier — the only way to execute an eval YAML
 the agent. Endpoint + key go in `crates/recurse-eval/.env` (copy `.env.example`).
 Each run writes `target/eval-traces/<tier>/<backend>/run.log` (the full narrative)
 plus one `<hexid>.json` per task with the complete per-turn conversation. The
-backend (`native` or the opt-in external engine) is selectable per run — see the eval README.
+backend (`native` or `r2`) is selectable per run — see the eval README.
 
 ## Agent LLM
 

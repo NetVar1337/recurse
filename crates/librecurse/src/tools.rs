@@ -26,7 +26,7 @@ fn tool(name: &str, description: &str, params: Value) -> Value {
 /// host from [`crate::memory::memory_tool_schema`].
 ///
 /// Analysis goes through the `analyze` tool rather than `bash`: the host
-/// serves it from the selected engine (native or an external engine), keeps one analysed
+/// serves it from the selected engine (native or r2), keeps one analysed
 /// session, returns projected JSON instead of coloured text, and caps what it
 /// hands back. The tool vocabulary itself is backend-independent, and
 /// `capabilities` filters out ops the backend cannot serve (e.g. `decompile`

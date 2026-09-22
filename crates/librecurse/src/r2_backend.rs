@@ -1,4 +1,4 @@
-//! The external engine behind the [`Engine`] seam.
+//! The r2 (radare2) engine behind the [`Engine`] seam.
 //!
 //! [`R2Engine`] owns one long-lived [`Session`] (the `-q0` pipe) and
 //! translates each backend-neutral operation into the command that answers
@@ -26,7 +26,7 @@ pub struct R2Engine {
 }
 
 impl R2Engine {
-    /// Spawn the external engine on `path` and return a ready engine. The child's pid is
+    /// Spawn r2 on `path` and return a ready engine. The child's pid is
     /// captured immediately so [`Engine::interrupt`] works even while a
     /// command holds the session lock.
     ///

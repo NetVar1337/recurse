@@ -1,4 +1,4 @@
-//! Fast eval self-tests: no API key, no network, no external engine.
+//! Fast eval self-tests: no API key, no network, no r2.
 //! Covers config parsing, selection over dataset fields, grading, target
 //! mapping, and the debug trace against a scripted mock LLM.
 
@@ -732,7 +732,7 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
 #[tokio::test]
 async fn bash_results_are_colour_stripped_through_the_tool_runtime() {
     // The escape-stripping has to apply on the path the model actually sees,
-    // not only inside the external engine module.
+    // not only inside r2 module.
     let tc = ToolCall {
         id: "b".into(),
         call_type: "function".into(),

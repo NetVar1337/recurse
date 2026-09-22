@@ -1,6 +1,6 @@
 //! Best-effort process signals for interrupting a wedged analysis backend.
 //!
-//! Only the external engine needs this (the native engine is in-process). On
+//! Only the r2 engine needs this (the native engine is in-process). On
 //! non-Unix targets the functions report failure instead of pretending to act.
 
 #[cfg(unix)]

@@ -1,7 +1,7 @@
 //! librecurse: independent agent framework — the LLM run loop ([agent]),
 //! its tool runtime ([tools]), the backend-agnostic analysis seam ([engine])
-//! with its pure-Rust ([native]) backend and an opt-in external engine
-//! ([r2], [r2_backend]),
+//! with its pure-Rust ([native]) backend and an opt-in r2 ([r2], [r2_backend])
+//! backend,
 //! and the agent's SQLite-backed memory ([memory] with FTS5/BM25 retrieval).
 //!
 //! The library is storage-agnostic: it never resolves project paths or reads

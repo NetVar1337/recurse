@@ -92,15 +92,17 @@ export function Header() {
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuLabel>
-							Analysis backend · {backend}
+							Analysis engine · {backend}
 						</DropdownMenuLabel>
-						<DropdownMenuItem onClick={() => void setBackend("r2")}>
-							{backend === "r2" ? "● " : "○ "}External engine
-						</DropdownMenuItem>
 						<DropdownMenuItem
 							onClick={() => void setBackend("native")}
 						>
-							{backend === "native" ? "● " : "○ "}Native (default)
+							{backend === "native" ? "● " : "○ "}Native — pure
+							Rust (default)
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={() => void setBackend("r2")}>
+							{backend === "r2" ? "● " : "○ "}r2 — radare2
+							(opt-in)
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuItem onClick={resetZoom}>

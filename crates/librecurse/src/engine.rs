@@ -10,8 +10,8 @@
 //!   whose JSON field names are exactly what the UI renders, so swapping the
 //!   backend does not ripple into the frontend.
 //! * [`BackendKind`] — which implementation to build. `native` is the pure-Rust
-//!   parser/disassembler and the default; an external engine is available
-//!   opt-in and runs as a separate process.
+//!   parser/disassembler and the default; r2 (radare2) is available opt-in and
+//!   runs as a separate process.
 //! * [`tool_schema`] / [`execute_tool`] — a single backend-neutral agent tool
 //!   (`analyze`) with a small, structured `op` vocabulary instead of any
 //!   engine-specific command syntax. `op:"raw"` remains for engine console
@@ -34,12 +34,12 @@ pub const TOOL_NAME: &str = "analyze";
 ///
 /// Selected at runtime from `RECURSE_BACKEND` (or the host's config store).
 /// The default is [`BackendKind::Native`]: the in-process, permissive,
-/// multi-architecture backend. Opt into an external engine with
-/// `RECURSE_BACKEND` or the stored config.
+/// multi-architecture backend. Opt into r2 (radare2) with
+/// `RECURSE_BACKEND=r2` or the stored config.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
-    /// The external engine, driven over its pipe as a child process.
+    /// r2 (radare2), driven over its pipe as a child process.
     R2,
     /// Pure-Rust ELF/PE/Mach-O parsing and disassembly.
     Native,
@@ -60,8 +60,7 @@ impl Default for BackendKind {
 }
 
 impl BackendKind {
-    /// Parse a backend name. Accepts `native` and the external engine's
-    /// names.
+    /// Parse a backend name. Accepts `native` and r2's names.
     ///
     /// ```
     /// use librecurse::engine::BackendKind;
@@ -146,8 +145,7 @@ impl Capabilities {
         }
     }
 
-    /// Every optional feature available. The external engine advertises this,
-    /// and
+    /// Every optional feature available. r2 advertises this, and
     /// it is the permissive default for callers that have not built an engine
     /// yet (e.g. schema previews and tests).
     ///
