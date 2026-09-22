@@ -27,6 +27,7 @@
 //! # }
 //! ```
 
+pub mod advanced;
 pub mod arch;
 pub mod error;
 pub mod model;
