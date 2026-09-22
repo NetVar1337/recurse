@@ -15,6 +15,7 @@
 //! * [`signals`] — best-effort process signals for the r2 engine.
 
 pub mod arch;
+pub mod capa;
 pub mod cpp;
 pub mod diff;
 pub mod dwarf;
