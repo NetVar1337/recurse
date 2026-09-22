@@ -94,10 +94,23 @@ missing half, written for Recurse specifically:
   fetch and the compare it feeds are almost never in the same block. See
   the module doc in `crates/recurse-vtil/src/opt.rs` for where this still
   stops short of VTIL's real optimizer — no memory/alias analysis
-  (`Ldd`/`Str` are opaque to every pass here), and no symbolic execution
-  (`VTIL-Architecture/symex`, VTIL's own tracer/pointer/memory model), so a
-  computed jump/call target is never resolved. Building a symbolic tracer
-  over the same `Cfg` this dataflow already uses is the natural next step.
+  (`Ldd`/`Str` are opaque to every pass here).
+- **`symex.rs`** — VTIL's own `symex` (`tracer`/`variable`/`pointer`/
+  `memory`/`context`) is the part of the real project this crate had not
+  attempted until now: registers tracked as symbolic expression trees
+  (`Expr`), not just a literal-or-copy fact, over the same whole-routine
+  `Cfg`/worklist shape `opt.rs` uses. This resolves identities constant
+  folding structurally cannot see — `(a ^ b) ^ b` collapses to `a`
+  symbolically even when `a`/`b` are never literal on any path, which is
+  exactly the double-XOR-with-the-same-key idiom RE keeps running into.
+  Every `Expr::Unknown` (a load, a call result, an unmodelled opcode) is a
+  fresh, distinct value — never treated as equal to any other unknown —
+  which is what keeps the simplifier sound; see the module doc for the
+  regression test that guards exactly that. Still registers only: a
+  computed jump/call target is never resolved, since nothing read from
+  memory is more than opaque input here (VTIL's own `pointer`/`memory`
+  machinery is what would move that boundary, and remains future work for
+  this crate too).
 - **`text.rs`** — a VTIL-style `begin_routine`/`block_0x...`/`end_routine`
   dump, the same reading convention as VTIL-Core's own
   `Sample Routines/*.vtil` files.
@@ -106,16 +119,19 @@ missing half, written for Recurse specifically:
 
 [A²MBA-LLVM](https://github.com/xqzme69/A2MBA-LLVM) is an LLVM pass that
 *hardens* expressions against exactly the kind of algebraic simplification
-`opt::simplify_algebraic` performs — composing bitwise/arithmetic terms that
-are equal by idempotence, the identity element, or a self-inverse law into
-something that looks nontrivial. This crate uses that same small identity
-set in the *simplifying* direction (deobfuscation, not obfuscation), and
-stops there deliberately: recognising the general multi-term MBA identities
-A²MBA-LLVM's paper mapping documents, or running the kind of bounded
-equality-saturation search its own hybrid mode (and tools like GAMBA/ProMBA)
-use, needs an expression-tree/e-graph pass over the block. That is real,
-scoped future work, not something this PR claims to solve — see the
-`Identity` doc comment in `opt.rs` for the exact line.
+`opt::simplify_algebraic` and `symex`'s `mk_bin`/`mk_un` perform — composing
+bitwise/arithmetic terms that are equal by idempotence, the identity
+element, a self-inverse law, or (in `symex`'s one additional hand-written
+case) the distributive/complement identity `(a&b)|(a&!b) == a`. This crate
+uses that same small identity set in the *simplifying* direction
+(deobfuscation, not obfuscation), and stops there deliberately: recognising
+the *general* multi-term MBA identities A²MBA-LLVM's paper mapping
+documents, or running the kind of bounded equality-saturation search its
+own hybrid mode (and tools like GAMBA/ProMBA) use, needs an actual
+expression-tree/e-graph *search* over `symex::Expr` — this crate has a
+fixed set of hand-written rules, not that search. That is real, scoped
+future work, not something this PR claims to solve — see the `Identity`
+doc comment in `opt.rs`, and `symex.rs`'s module doc, for the exact line.
 
 ## Related tooling this PR does not fold in as code
 

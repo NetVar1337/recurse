@@ -74,7 +74,7 @@ impl fmt::Display for Operand {
 
 /// A relational condition, recovered from an x86 `Jcc` mnemonic suffix and
 /// the comparison that feeds it. Named after VTIL's `t*` instruction family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Cond {
     Eq,
     Ne,
