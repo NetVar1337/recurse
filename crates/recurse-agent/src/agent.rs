@@ -9,7 +9,7 @@ const OPENROUTER_MODELS: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL: &str = "openrouter/auto";
 
 /// Shared HTTP client (connection pooling across turns).
-fn http_client() -> &'static reqwest::Client {
+pub(crate) fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(reqwest::Client::new)
 }
@@ -103,6 +103,20 @@ impl ChatMessage {
     }
 }
 
+/// Which wire protocol [`LlmConfig::endpoint`] speaks. Almost every
+/// provider (including ones with their own native API) now also exposes
+/// an OpenAI-compatible endpoint, so [`Protocol::OpenAiCompatible`] is
+/// the default and covers the large majority of `crate::providers`'
+/// catalog. [`Protocol::AnthropicNative`] exists only for a Claude
+/// Pro/Max OAuth credential, which is not valid against an
+/// OpenAI-compatible route at all — see `crate::anthropic`'s module doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Protocol {
+    #[default]
+    OpenAiCompatible,
+    AnthropicNative,
+}
+
 /// Runtime LLM configuration. A plain interface type: hosts construct it
 /// (from their own config file, environment, or UI) and hand it to the
 /// run loop — the library never reads configuration storage itself.
@@ -111,18 +125,39 @@ pub struct LlmConfig {
     pub endpoint: String,
     pub api_key: Option<String>,
     pub model: String,
+    pub protocol: Protocol,
+    /// Extra static headers some providers require beyond a bearer token
+    /// (e.g. GitHub Copilot's `Editor-Version`/`Copilot-Integration-Id`;
+    /// see `crate::providers::ProviderPreset::extra_headers`).
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl LlmConfig {
     /// Explicit construction from resolved values. `endpoint` may be a base
     /// URL (`https://host/v1`) or a full completions URL — see
-    /// [`normalize_endpoint`].
+    /// [`normalize_endpoint`]. Defaults to [`Protocol::OpenAiCompatible`]
+    /// with no extra headers; use [`LlmConfig::with_protocol`]/
+    /// [`LlmConfig::with_extra_headers`] to change either.
     pub fn new(endpoint: String, api_key: Option<String>, model: String) -> Self {
         Self {
             endpoint: normalize_endpoint(&endpoint),
             api_key,
             model,
+            protocol: Protocol::OpenAiCompatible,
+            extra_headers: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: Protocol) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
+    #[must_use]
+    pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 }
 
@@ -144,6 +179,8 @@ impl Default for LlmConfig {
             endpoint,
             api_key,
             model,
+            protocol: Protocol::OpenAiCompatible,
+            extra_headers: Vec::new(),
         }
     }
 }
@@ -165,11 +202,11 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
 }
 
 /// Total attempts for one request before giving up (initial try included).
-const MAX_SEND_ATTEMPTS: u32 = 4;
+pub(crate) const MAX_SEND_ATTEMPTS: u32 = 4;
 /// Ceiling on a single wait, so a hostile/incorrect hint can't hang a run.
-const MAX_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(70);
+pub(crate) const MAX_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(70);
 
-fn is_rate_limited(resp: &reqwest::Response) -> bool {
+pub(crate) fn is_rate_limited(resp: &reqwest::Response) -> bool {
     resp.status().as_u16() == 429
 }
 
@@ -177,12 +214,12 @@ fn is_rate_limited(resp: &reqwest::Response) -> bool {
 /// received, so nothing was streamed and re-sending cannot duplicate a turn
 /// (`is_request` covers connection-level failures such as a reused-but-closed
 /// pooled connection, which `is_connect` misses).
-fn is_transient_send(e: &reqwest::Error) -> bool {
+pub(crate) fn is_transient_send(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout() || e.is_request()
 }
 
 /// Exponential backoff: 500ms, 1s, 2s, ...
-fn backoff(attempt: u32) -> std::time::Duration {
+pub(crate) fn backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(500 * 2u64.saturating_pow(attempt.saturating_sub(1)))
 }
 
@@ -190,7 +227,7 @@ fn backoff(attempt: u32) -> std::time::Duration {
 /// `Retry-After` (seconds, or an HTTP date we don't parse) and OpenRouter's
 /// `X-RateLimit-Reset` (unix milliseconds) — falling back to exponential
 /// backoff. Always capped by [`MAX_RETRY_WAIT`].
-fn retry_delay(resp: &reqwest::Response, attempt: u32) -> std::time::Duration {
+pub(crate) fn retry_delay(resp: &reqwest::Response, attempt: u32) -> std::time::Duration {
     let headers = resp.headers();
     if let Some(secs) = headers
         .get("retry-after")
@@ -263,12 +300,12 @@ pub enum AgentEvent {
 /// Accumulates streamed tool-call fragments (OpenAI streams `tool_calls` as
 /// several deltas across an `index`).
 #[derive(Default)]
-struct ToolCallAccumulator {
-    calls: Vec<ToolCall>,
+pub(crate) struct ToolCallAccumulator {
+    pub(crate) calls: Vec<ToolCall>,
 }
 
 impl ToolCallAccumulator {
-    fn ensure(&mut self, index: usize) -> &mut ToolCall {
+    pub(crate) fn ensure(&mut self, index: usize) -> &mut ToolCall {
         while self.calls.len() <= index {
             self.calls.push(ToolCall {
                 id: String::new(),
@@ -282,31 +319,31 @@ impl ToolCallAccumulator {
         &mut self.calls[index]
     }
 
-    fn set_id(&mut self, index: usize, id: &str) {
+    pub(crate) fn set_id(&mut self, index: usize, id: &str) {
         self.ensure(index).id = id.to_string();
     }
 
-    fn set_name(&mut self, index: usize, name: &str) {
+    pub(crate) fn set_name(&mut self, index: usize, name: &str) {
         self.ensure(index).function.name = name.to_string();
     }
 
-    fn append_args(&mut self, index: usize, args: &str) {
+    pub(crate) fn append_args(&mut self, index: usize, args: &str) {
         self.ensure(index).function.arguments.push_str(args);
     }
 }
 
 /// Result of a single streamed completion.
-struct StreamOutcome {
-    content: String,
-    reasoning: String,
-    tool_calls: Vec<ToolCall>,
+pub(crate) struct StreamOutcome {
+    pub(crate) content: String,
+    pub(crate) reasoning: String,
+    pub(crate) tool_calls: Vec<ToolCall>,
     /// Model that actually served the request, as reported by the endpoint.
     /// Meaningful with routers (`openrouter/auto`, `openrouter/free`) where
     /// the configured id does not identify the model that answered.
-    model: Option<String>,
+    pub(crate) model: Option<String>,
     /// The stream was cut because the model started repeating itself, or
     /// because the reply exceeded [`MAX_STREAM_CHARS`].
-    loop_cut: bool,
+    pub(crate) loop_cut: bool,
 }
 
 fn echo_reply(user: &str) -> String {
@@ -471,10 +508,13 @@ async fn stream_http(
 
     let key = config.api_key.as_deref().unwrap_or("");
     let send = || {
-        let request = http_client()
+        let mut request = http_client()
             .post(&config.endpoint)
             .header("X-Title", "Recurse")
             .json(&body);
+        for (name, value) in &config.extra_headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
         // A local or keyless endpoint must not receive an empty bearer token.
         let request = if key.is_empty() {
             request
@@ -665,13 +705,13 @@ fn floor_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-enum StreamAppend {
+pub(crate) enum StreamAppend {
     Keep(String),
     Stop(String),
 }
 
 /// Append `delta`, emitting only the part that is not a detected loop.
-fn append_stream(buf: &mut String, delta: &str) -> StreamAppend {
+pub(crate) fn append_stream(buf: &mut String, delta: &str) -> StreamAppend {
     let before = buf.len();
     buf.push_str(delta);
     if let Some(cut) = repetition_cut(buf) {
@@ -696,7 +736,12 @@ fn append_stream(buf: &mut String, delta: &str) -> StreamAppend {
     StreamAppend::Keep(delta.to_string())
 }
 
-fn emit_text(kind: &str, run_id: &str, delta: String, emit: &mut (dyn FnMut(AgentEvent) + Send)) {
+pub(crate) fn emit_text(
+    kind: &str,
+    run_id: &str,
+    delta: String,
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
+) {
     if delta.is_empty() {
         return;
     }
@@ -1216,7 +1261,14 @@ impl Agent {
 
             let request_snapshot = self.debug.then(|| full.clone());
             let tools_len = tools.len();
-            let outcome = stream_http(run_id, config, &full, tools, emit).await?;
+            let outcome = match config.protocol {
+                Protocol::OpenAiCompatible => {
+                    stream_http(run_id, config, &full, tools, emit).await?
+                }
+                Protocol::AnthropicNative => {
+                    crate::anthropic::stream_http(run_id, config, &full, tools, emit).await?
+                }
+            };
 
             if !outcome.tool_calls.is_empty() {
                 let sig = tool_batch_signature(&outcome.tool_calls);
