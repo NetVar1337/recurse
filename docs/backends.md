@@ -64,8 +64,11 @@ Scope, stated honestly:
   branch targets.
 - Jump tables / switches are recovered (indexed-memory and base+offset idioms)
   and shown as `case` edges in the graph.
-- No built-in decompiler (`capabilities().decompile == false`). The agent tool
-  reports that precisely rather than failing generically.
+- Decompiler (`recurse_vtil::decompile`, `capabilities().decompile == true`):
+  lift → optimize → structure, rendering C-like pseudocode with real
+  `if`/`while` recognition and total instruction coverage (an unlifted
+  instruction still appears, as an `__asm(...)` line) — not a Hex-Rays-class
+  decompiler (no type/variable recovery). See `docs/vtil-lift.md`.
 - Architectures Capstone does not cover (AVR, CSky, LoongArch, Xtensa, …) are
   detected and reported, not disassembled.
 
@@ -105,7 +108,7 @@ envelopes), `regex` (host-side scans).
 | `goblin` | MIT, but `object` is the ecosystem standard and what `gimli`/`addr2line` use. |
 | `zydis` | MIT but x86-only and bindgen over C++. No advantage over Capstone. |
 | `petgraph` | MIT/Apache, but the CFG is a small `Vec<BasicBlock>` and needs no graph library. |
-| RetDec / Ghidra / snowman | Decompilers. RetDec is MIT but a large C++ sidecar; Ghidra is Apache but a JVM; snowman is GPL. Decompilation is not built in — the r2 engine provides it behind the capability flag. |
+| RetDec / Ghidra / snowman | Full Hex-Rays-class decompilers. RetDec is MIT but a large C++ sidecar; Ghidra is Apache but a JVM; snowman is GPL. `recurse-vtil`'s own lift → optimize → structure pipeline (`crates/recurse-vtil/src/decompile.rs`) covers the native engine's decompiler instead, permissively and in-process; r2's own decompiler remains available too when selected. |
 
 If linking a C library at all is unacceptable, swap `capstone` for the
 `yaxpeax-*` decoders behind the same `Engine` methods; nothing above the trait

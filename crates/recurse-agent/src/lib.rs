@@ -18,7 +18,9 @@
 
 pub mod agent;
 pub mod memory;
+pub mod report;
 pub mod tools;
+pub mod verify;
 
 // Static analysis, re-exported so `recurse_agent::engine` and friends keep
 // working for hosts and the eval harness.

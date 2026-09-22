@@ -21,8 +21,12 @@
 //! * Branch targets and fall-through edges are recovered from instruction
 //!   details, so the CFG covers reachable code; exotic architectures whose
 //!   conditionality we cannot classify exactly are treated as conditional.
-//! * There is no decompiler in the permissive ecosystem, so
-//!   [`Engine::decompile`] reports `capabilities().decompile == false`.
+//! * [`Engine::decompile`] renders C-like pseudocode via
+//!   [`recurse_vtil::decompile`] (lift → optimize → structure) rather than a
+//!   Hex-Rays-class decompiler — no full type/variable recovery, but total
+//!   coverage (an unlifted instruction still appears, as an `__asm` line,
+//!   never dropped) and real `if`/`while` structuring where the CFG shape
+//!   allows it. See `docs/vtil-lift.md`.
 
 pub mod wasm;
 
@@ -2277,7 +2281,7 @@ impl Engine for NativeEngine {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            decompile: false,
+            decompile: true,
             raw: false,
             graph: true,
             xrefs_from: true,
@@ -2584,8 +2588,16 @@ impl Engine for NativeEngine {
         Ok(out)
     }
 
-    fn decompile(&self, _addr: u64) -> Result<Decompilation, String> {
-        Err("the native backend has no decompiler; select a decompiler-capable backend".to_string())
+    fn decompile(&self, addr: u64) -> Result<Decompilation, String> {
+        let graph = self.function_graph(addr)?;
+        let blocks = crate::engine::function_graph_to_vtil_blocks(&graph);
+        let (routine, _stats) = recurse_vtil::lift_and_optimize(graph.addr, &graph.name, &blocks);
+        Ok(Decompilation {
+            addr: graph.addr,
+            name: graph.name,
+            code: recurse_vtil::decompile::decompile(&routine),
+            annotations: vec![],
+        })
     }
 
     fn raw(&self, _cmd: &str) -> Result<serde_json::Value, String> {

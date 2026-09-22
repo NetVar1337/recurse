@@ -1,0 +1,29 @@
+[package]
+name = "recurse-py"
+description = "Python bindings for recurse-static's Engine: headless binary analysis from Python with no IDA seat, no license, no GUI -- the idalib-equivalent for Recurse's native and r2 engines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "recurse_py"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+serde_json = "1"
+recurse-static = { path = "../recurse-static" }
+
+# pyo3 0.22's #[pymethods]/#[pymodule] macros generate `unsafe fn` bodies
+# that call other unsafe functions without their own inner `unsafe {}`
+# blocks (relying on edition-2021 unsafe-fn-body semantics) -- incompatible
+# with denying that lint, unlike every other crate in this workspace.
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
