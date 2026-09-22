@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod debug;
 pub mod engine;
+pub mod export;
 pub mod project;
 pub mod providers;
 pub mod renames;
@@ -163,6 +164,9 @@ pub fn run() {
             crate::analysis_extra::semantic_index,
             crate::analysis_extra::semantic_similar,
             crate::analysis_extra::call_graph,
+            crate::export::generate_report,
+            crate::export::export_project,
+            crate::export::import_project,
         ]);
 
     die_on_failure(builder.run(tauri::generate_context!()));

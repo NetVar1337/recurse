@@ -31,7 +31,7 @@ const FINDINGS_INSN_CAP: usize = 300;
 /// Functions considered for the whole-binary call graph.
 const CALL_GRAPH_FUNCTION_CAP: usize = 1500;
 
-fn locked_engine<'a>(
+pub(crate) fn locked_engine<'a>(
     state: &'a State<'_, AppState>,
 ) -> Result<std::sync::MutexGuard<'a, Option<Box<dyn Engine>>>, String> {
     state
@@ -40,7 +40,7 @@ fn locked_engine<'a>(
         .map_err(|e| format!("session lock poisoned: {e}"))
 }
 
-fn require_engine<'a>(
+pub(crate) fn require_engine<'a>(
     guard: &'a std::sync::MutexGuard<'a, Option<Box<dyn Engine>>>,
 ) -> Result<&'a dyn Engine, String> {
     guard
@@ -76,7 +76,7 @@ fn extract_hex_numbers(text: &str, out: &mut Vec<u64>) {
 /// Build capa [`Evidence`](capa::Evidence) from the engine's imports,
 /// strings, and a bounded scan of disassembly across the binary's
 /// functions (mnemonics + numeric immediates).
-fn collect_evidence(engine: &dyn Engine, funcs: &[FunctionInfo]) -> capa::Evidence {
+pub(crate) fn collect_evidence(engine: &dyn Engine, funcs: &[FunctionInfo]) -> capa::Evidence {
     let imports: Vec<String> = engine
         .imports()
         .unwrap_or_default()
