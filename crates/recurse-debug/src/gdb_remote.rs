@@ -168,7 +168,9 @@ pub struct StopReply {
 /// packets, `OK`, error replies, …) — a caller checks those separately.
 #[must_use]
 pub fn parse_stop_reply(payload: &str) -> Option<StopReply> {
-    let rest = payload.strip_prefix('T').or_else(|| payload.strip_prefix('S'))?;
+    let rest = payload
+        .strip_prefix('T')
+        .or_else(|| payload.strip_prefix('S'))?;
     if payload.starts_with('S') {
         let signal = u8::from_str_radix(rest.get(0..2)?, 16).ok()?;
         return Some(StopReply {
@@ -284,9 +286,8 @@ mod tests {
 
     #[test]
     fn parses_a_t_reply_with_registers_and_thread() {
-        let reply =
-            parse_stop_reply("T05thread:p1.1;06:0010000000000000;07:0020000000000000;")
-                .expect("T-reply");
+        let reply = parse_stop_reply("T05thread:p1.1;06:0010000000000000;07:0020000000000000;")
+            .expect("T-reply");
         assert_eq!(reply.signal, 5);
         assert_eq!(reply.thread.as_deref(), Some("p1.1"));
         assert_eq!(

@@ -2923,8 +2923,13 @@ mod tests {
         let path = temp_copy_of_self();
         let engine = NativeEngine::open(&path).expect("open native engine");
         let funcs = engine.functions().expect("functions");
-        let entry = funcs.first().expect("at least one discovered function").addr;
-        let want = engine.disassemble(&Target::Addr(entry), Some(1)).expect("disasm");
+        let entry = funcs
+            .first()
+            .expect("at least one discovered function")
+            .addr;
+        let want = engine
+            .disassemble(&Target::Addr(entry), Some(1))
+            .expect("disasm");
         let first_op = &want.ops[0];
         let want_len = first_op.len as usize;
         assert!(want_len > 0, "first instruction must report a byte length");
@@ -2941,7 +2946,10 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&want_bytes[i..i + 2], 16).unwrap())
             .collect::<Vec<u8>>();
-        assert_eq!(got, want_bytes, "read_bytes must match the disassembled instruction's own bytes");
+        assert_eq!(
+            got, want_bytes,
+            "read_bytes must match the disassembled instruction's own bytes"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -2951,7 +2959,10 @@ mod tests {
         let path = temp_copy_of_self();
         let engine = NativeEngine::open(&path).expect("open native engine");
         let funcs = engine.functions().expect("functions");
-        let entry = funcs.first().expect("at least one discovered function").addr;
+        let entry = funcs
+            .first()
+            .expect("at least one discovered function")
+            .addr;
         let original = engine.read_bytes(entry, 4).expect("read original bytes");
 
         // A patch that is provably different from whatever was there,
@@ -2965,7 +2976,10 @@ mod tests {
         // reflecting the patch — read_bytes still returns the pre-patch
         // bytes from the cached buffer.
         let cached = engine.read_bytes(entry, 4).expect("read cached bytes");
-        assert_eq!(cached, original, "write_bytes must not mutate the cached in-memory analysis");
+        assert_eq!(
+            cached, original,
+            "write_bytes must not mutate the cached in-memory analysis"
+        );
 
         // The file on disk, opened fresh, must carry the patch.
         let reopened = NativeEngine::open(&path).expect("reopen native engine");

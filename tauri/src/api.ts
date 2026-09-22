@@ -143,7 +143,6 @@ export const api = {
 			expiresInSecs,
 		}),
 
-
 	readBytes: (addr: number, len: number) =>
 		invoke<number[]>("read_bytes", { addr, len }),
 	writeBytes: (addr: number, bytes: number[]) =>
@@ -158,12 +157,15 @@ export const api = {
 		invoke<SemanticSimilarResult>("semantic_similar", { addr }),
 	callGraph: () => invoke<CallGraph>("call_graph"),
 	generateReport: () => invoke<GeneratedReport>("generate_report"),
-	exportProject: (name: string) =>
-		invoke<string>("export_project", { name }),
+	exportProject: (name: string) => invoke<string>("export_project", { name }),
 	importProject: (zipPath: string) =>
 		invoke<Project>("import_project", { zipPath }),
 	pickZip: (title: string) =>
-		open({ multiple: false, title, filters: [{ name: "Zip", extensions: ["zip"] }] }),
+		open({
+			multiple: false,
+			title,
+			filters: [{ name: "Zip", extensions: ["zip"] }],
+		}),
 	debugTrace: () => invoke<DebugTraceEntry[]>("debug_trace"),
 	debugTraceClear: () => invoke<void>("debug_trace_clear"),
 };

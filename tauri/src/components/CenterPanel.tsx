@@ -248,7 +248,7 @@ export function CenterPanel() {
 				lines:
 					res.matches.length === 0
 						? [
-								"No matches. Use \"Index\" (this binary, or others opened previously) to populate the corpus first.",
+								'No matches. Use "Index" (this binary, or others opened previously) to populate the corpus first.',
 							]
 						: res.matches.map(
 								(m) =>
@@ -256,7 +256,10 @@ export function CenterPanel() {
 							),
 			});
 		} catch (e) {
-			setToolResult({ title: "Similarity search failed", lines: [String(e)] });
+			setToolResult({
+				title: "Similarity search failed",
+				lines: [String(e)],
+			});
 		} finally {
 			setToolBusy(false);
 		}

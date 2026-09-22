@@ -27,7 +27,12 @@ function fmtAddr(a: number): string {
 	return `0x${a.toString(16)}`;
 }
 
-type FnData = { addr: number; name: string; isLeaf: boolean; isCalled: boolean };
+type FnData = {
+	addr: number;
+	name: string;
+	isLeaf: boolean;
+	isCalled: boolean;
+};
 type FnNode = Node<FnData, "fnnode">;
 
 function FnNodeComponent({ data }: NodeProps<FnNode>) {
@@ -38,7 +43,11 @@ function FnNodeComponent({ data }: NodeProps<FnNode>) {
 				!data.isCalled && "border-primary/60",
 			)}
 		>
-			<Handle type="target" position={Position.Top} className="!opacity-0" />
+			<Handle
+				type="target"
+				position={Position.Top}
+				className="!opacity-0"
+			/>
 			<div className="text-primary truncate font-semibold">
 				{data.name}
 			</div>
@@ -131,7 +140,11 @@ function Canvas() {
 	return (
 		<div className="flex h-full w-full flex-col">
 			<div className="border-border bg-card flex items-center gap-2 border-b px-3 py-1.5">
-				<Button size="sm" variant="outline" onClick={() => void build()}>
+				<Button
+					size="sm"
+					variant="outline"
+					onClick={() => void build()}
+				>
 					{nodes.length > 0 ? "Rebuild" : "Build call graph"}
 				</Button>
 				{meta && (
@@ -151,9 +164,9 @@ function Canvas() {
 					</div>
 				) : nodes.length === 0 && !loading ? (
 					<div className="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-xs">
-						Aggregates call edges across every discovered
-						function into one navigable graph — distinct from
-						the per-function CFG in the disassembly view.
+						Aggregates call edges across every discovered function
+						into one navigable graph — distinct from the
+						per-function CFG in the disassembly view.
 					</div>
 				) : (
 					<ReactFlow

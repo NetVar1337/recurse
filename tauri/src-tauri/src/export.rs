@@ -126,13 +126,12 @@ pub fn export_project(name: String) -> Result<String, String> {
 #[tauri::command]
 pub fn import_project(zip_path: String) -> Result<crate::project::Project, String> {
     let file = std::fs::File::open(&zip_path).map_err(|e| format!("open {zip_path}: {e}"))?;
-    let mut zip =
-        zip::ZipArchive::new(file).map_err(|e| format!("read zip {zip_path}: {e}"))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("read zip {zip_path}: {e}"))?;
 
     let metadata: Value = {
-        let mut entry = zip
-            .by_name("metadata.json")
-            .map_err(|_| "archive has no metadata.json — not a Recurse project export".to_string())?;
+        let mut entry = zip.by_name("metadata.json").map_err(|_| {
+            "archive has no metadata.json — not a Recurse project export".to_string()
+        })?;
         let mut text = String::new();
         entry
             .read_to_string(&mut text)

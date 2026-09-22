@@ -184,8 +184,8 @@ export function HexPanel() {
 				{!bytes ? (
 					<div className="text-muted-foreground">
 						Enter an address and length, then Load. Try editing a
-						byte's hex value and Apply patch to write it directly
-						to the file on disk.
+						byte's hex value and Apply patch to write it directly to
+						the file on disk.
 					</div>
 				) : (
 					<table className="border-separate border-spacing-y-0.5">
@@ -233,7 +233,7 @@ export function HexPanel() {
 													edits.get(
 														addr - baseAddr! + i,
 													) ?? b,
-													),
+												),
 											)
 											.join("")}
 									</td>

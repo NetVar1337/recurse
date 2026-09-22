@@ -67,9 +67,7 @@ mod tests {
     fn empty_state() -> crate::AppState {
         crate::AppState {
             session: Arc::new(Mutex::new(None)),
-            agent: Arc::new(tokio::sync::Mutex::new(
-                recurse_agent::agent::Agent::new(),
-            )),
+            agent: Arc::new(tokio::sync::Mutex::new(recurse_agent::agent::Agent::new())),
             llm: Mutex::new(crate::config::llm_config()),
             models: Mutex::new(None),
             project: Mutex::new(None),

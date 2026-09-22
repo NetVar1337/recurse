@@ -33,9 +33,7 @@ function Section({
 }
 
 function Empty({ label }: { label: string }) {
-	return (
-		<div className="text-muted-foreground text-xs italic">{label}</div>
-	);
+	return <div className="text-muted-foreground text-xs italic">{label}</div>;
 }
 
 /**
@@ -93,7 +91,11 @@ export function FindingsPanel() {
 			<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 text-[11px]">
 				{error}
 				<div className="mt-2">
-					<Button size="sm" variant="outline" onClick={() => void run()}>
+					<Button
+						size="sm"
+						variant="outline"
+						onClick={() => void run()}
+					>
 						Retry
 					</Button>
 				</div>
@@ -233,7 +235,10 @@ export function FindingsPanel() {
 				)}
 			</Section>
 
-			<Section title="Firmware signatures" count={findings.firmware.length}>
+			<Section
+				title="Firmware signatures"
+				count={findings.firmware.length}
+			>
 				{findings.firmware.length === 0 ? (
 					<Empty label="no embedded firmware/archive/filesystem signatures" />
 				) : (
@@ -266,10 +271,7 @@ export function FindingsPanel() {
 								<span className="text-primary">
 									{f.return_type ?? "void"}
 								</span>{" "}
-								<span className="font-semibold">
-									{f.name}
-								</span>
-								(
+								<span className="font-semibold">{f.name}</span>(
 								{f.parameters
 									.map((p) => `${p.ty} ${p.name}`)
 									.join(", ")}

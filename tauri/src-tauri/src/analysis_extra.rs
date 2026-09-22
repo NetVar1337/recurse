@@ -229,13 +229,14 @@ fn summarize_binary(path: &std::path::Path) -> Result<Vec<diff::FunctionSummary>
     let funcs = recurse_agent::engine::Engine::functions(&engine)?;
     let mut out = Vec::with_capacity(funcs.len());
     for f in funcs {
-        let dis = recurse_agent::engine::Engine::function_disasm(&engine, f.addr)
-            .unwrap_or(recurse_static::engine::Disassembly {
+        let dis = recurse_agent::engine::Engine::function_disasm(&engine, f.addr).unwrap_or(
+            recurse_static::engine::Disassembly {
                 addr: f.addr,
                 name: f.name.clone(),
                 size: f.size,
                 ops: Vec::new(),
-            });
+            },
+        );
         let lines: Vec<String> = dis.ops.iter().map(|op| op.disasm.clone()).collect();
         let calls: Vec<u64> = dis
             .ops
@@ -335,7 +336,8 @@ pub fn generate_signature(addr: u64, state: State<'_, AppState>) -> Result<Value
 // ---------------------------------------------------------------------------
 
 fn semantic_memory_path() -> Result<std::path::PathBuf, String> {
-    let home = crate::db::home_dir().ok_or_else(|| "could not determine home directory".to_string())?;
+    let home =
+        crate::db::home_dir().ok_or_else(|| "could not determine home directory".to_string())?;
     Ok(home.join(".recurse").join("semantic_memory.json"))
 }
 
