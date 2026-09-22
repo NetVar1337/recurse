@@ -22,6 +22,7 @@ pub mod diff;
 pub mod driver;
 pub mod dwarf;
 pub mod engine;
+pub mod firmware;
 pub mod native;
 pub mod r2;
 pub mod r2_backend;

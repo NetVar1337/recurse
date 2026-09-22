@@ -195,7 +195,11 @@ fn parse_immediate(text: &str) -> Option<u32> {
 /// the IOCTL I expect" comparison's own branch) and `jmp`-prefixed
 /// mnemonics like `jmpq` some disassemblers emit for a plain jump.
 fn is_conditional_branch(disasm: &str) -> bool {
-    let mnemonic = disasm.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    let mnemonic = disasm
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     mnemonic.starts_with('j') && mnemonic != "jmp" && !mnemonic.starts_with("jmp")
 }
 
