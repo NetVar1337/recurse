@@ -220,7 +220,9 @@ export function FunctionList() {
 							})}
 							{filtered.length === 0 && (
 								<div className="text-muted-foreground px-3 py-3 text-center text-xs">
-									no functions
+									{query.trim()
+										? `no functions match "${query.trim()}"`
+										: "no functions"}
 								</div>
 							)}
 						</>

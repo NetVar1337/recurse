@@ -82,7 +82,9 @@ export function AgentChat({ inputRef }: Props) {
 	const refreshSessions = useSessionStore((s) => s.refresh);
 
 	const [input, setInput] = useState("");
-	const [showSessions, setShowSessions] = useState(true);
+	const [showSessions, setShowSessions] = useState(
+		() => !useSessionStore.getState().current,
+	);
 	const scrollRef = useRef<HTMLDivElement>(null);
 
 	const provider = useLlmStore((s) => s.provider);
@@ -393,4 +395,3 @@ function AssistantMessage({
 		</div>
 	);
 }
-

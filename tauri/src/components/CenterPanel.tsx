@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { DebugPanel } from "@/components/DebugPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
@@ -190,6 +191,7 @@ export function CenterPanel() {
 	const [xrefsLoading, setXrefsLoading] = useState(false);
 	const [xrefsError, setXrefsError] = useState<string | null>(null);
 	const [stringQuery, setStringQuery] = useState("");
+	const [importQuery, setImportQuery] = useState("");
 
 	// Large Rust binaries can carry 100k+ strings (youki: 113k). Rendering
 	// them all freezes the webview, so filter first and cap the row count.
@@ -211,6 +213,14 @@ export function CenterPanel() {
 			capped: matched.length > CAP,
 		};
 	}, [strings, stringQuery]);
+
+	const visibleImports = useMemo(() => {
+		const q = importQuery.trim().toLowerCase();
+		if (!q) return imports;
+		return imports.filter((imp) =>
+			(imp.name ?? "").toLowerCase().includes(q),
+		);
+	}, [imports, importQuery]);
 
 	// Address → function lookup so call instructions can resolve to their target.
 	const funcByAddr = useMemo(() => {
@@ -562,13 +572,13 @@ export function CenterPanel() {
 							{tab === "strings" && (
 								<div className="flex min-h-0 flex-1 flex-col">
 									<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5">
-										<input
+										<Input
 											value={stringQuery}
 											onChange={(e) =>
 												setStringQuery(e.target.value)
 											}
 											placeholder={`Filter ${strings.length.toLocaleString()} strings…`}
-											className="bg-background border-border w-64 rounded-md border px-2 py-1 font-mono text-xs outline-none"
+											className="w-64 font-mono"
 										/>
 										<span className="text-muted-foreground text-[11px]">
 											showing{" "}
@@ -614,33 +624,73 @@ export function CenterPanel() {
 													</td>
 												</tr>
 											))}
+											{visibleStrings.rows.length ===
+												0 && (
+												<tr>
+													<td
+														colSpan={3}
+														className="text-muted-foreground px-3 py-3 text-center"
+													>
+														{stringQuery.trim()
+															? `no strings match "${stringQuery.trim()}"`
+															: "no strings"}
+													</td>
+												</tr>
+											)}
 										</tbody>
 									</table>
 								</div>
 							)}
 
 							{tab === "imports" && (
-								<table className="w-full font-mono text-xs">
-									<thead className="bg-card sticky top-0">
-										<tr className="text-muted-foreground text-left text-[11px]">
-											<th className="px-3 py-1.5">
-												Import
-											</th>
-										</tr>
-									</thead>
-									<tbody>
-										{imports.map((imp, i) => (
-											<tr
-												key={i}
-												className="hover:bg-accent"
-											>
-												<td className="px-3 py-px">
-													{imp.name ?? "(unnamed)"}
-												</td>
+								<div className="flex min-h-0 flex-1 flex-col">
+									<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5">
+										<Input
+											value={importQuery}
+											onChange={(e) =>
+												setImportQuery(e.target.value)
+											}
+											placeholder={`Filter ${imports.length.toLocaleString()} imports…`}
+											className="w-64 font-mono"
+										/>
+										<span className="text-muted-foreground text-[11px]">
+											showing{" "}
+											{visibleImports.length.toLocaleString()}{" "}
+											of {imports.length.toLocaleString()}
+										</span>
+									</div>
+									<table className="w-full font-mono text-xs">
+										<thead className="bg-card sticky top-0">
+											<tr className="text-muted-foreground text-left text-[11px]">
+												<th className="px-3 py-1.5">
+													Import
+												</th>
 											</tr>
-										))}
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											{visibleImports.map((imp, i) => (
+												<tr
+													key={i}
+													className="hover:bg-accent"
+												>
+													<td className="px-3 py-px">
+														{imp.name ??
+															"(unnamed)"}
+													</td>
+												</tr>
+											))}
+											{visibleImports.length === 0 && (
+												<tr>
+													<td className="text-muted-foreground px-3 py-3 text-center">
+														{importQuery.trim()
+															? `no imports match "${importQuery.trim()}"`
+															: "no imports"}
+													</td>
+												</tr>
+											)}
+										</tbody>
+									</table>
+								</div>
 							)}
 						</div>
 
