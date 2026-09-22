@@ -23,6 +23,7 @@ crates/
   recurse-agent/              agent framework: LLM loop, tool runtime, SQLite memory
   recurse-static/          static analysis: ELF/PE/Mach-O parsing, multi-arch disassembly,
                            CFG and cross-reference recovery, the engine seam
+  recurse-vtil/            VTIL-inspired de-obfuscation/de-virtualization IL, lifter, optimizer
   recurse-debug/           cross-platform debugger (ptrace/Mach/Win32, breakpoints, stepping)
   recurse-eval/            headless eval harness (YAML-configured tiers)
 justfile                 single entry point for both halves
@@ -53,6 +54,10 @@ not use. No crate depends on Tauri, and each builds/tests standalone;
 - LLM agent backed by an OpenAI-compatible endpoint (OpenRouter by default) with a
   model picker; drives the session directly (disasm, xrefs, strings, imports, decompile)
 - Dark-first UI built with Tailwind CSS v4 + shadcn/ui
+- `lift` op: raises a function into a VTIL-style de-obfuscation IL and runs
+  propagation/folding/dead-code-elimination/branch-resolution passes over it —
+  useful when disassembly looks like a VM dispatcher or opaque-predicate chain
+  (see [docs/vtil-lift.md](docs/vtil-lift.md))
 
 ## Analysis backends
 
@@ -68,7 +73,7 @@ engine is a choice, not a hard dependency:
 
 Pick with the settings menu, the `RECURSE_BACKEND` environment variable, or the stored
 config. The agent gets one backend-neutral `analyze` tool (`functions`, `disasm`, `graph`,
-`decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw` for the engine console) —
+`lift`, `decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw` for the engine console) —
 filtered to the ops the active engine actually supports, so `decompile`/`raw` are only
 advertised when available. The UI consumes canonical result types, not any engine's JSON.
 See [docs/backends.md](docs/backends.md) for the trait, the crate choices, and the licensing

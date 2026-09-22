@@ -412,6 +412,47 @@ pub trait Engine: Send + Sync {
     /// Decompile the function containing `addr`.
     fn decompile(&self, addr: u64) -> Result<Decompilation, String>;
 
+    /// Lift the function containing `addr` into the VTIL-inspired IL
+    /// ([`recurse_vtil`]), run its optimizer passes to a fixpoint, and
+    /// return a VTIL-style text dump plus optimization stats. Implemented
+    /// once here on top of [`Engine::function_graph`] rather than per
+    /// backend, so it works unchanged against every [`Engine`] — including
+    /// a future one — without any backend reimplementing the lifter. See
+    /// `docs/vtil-lift.md`.
+    fn lift(&self, addr: u64) -> Result<Value, String> {
+        let graph = self.function_graph(addr)?;
+        let blocks: Vec<recurse_vtil::InputBlock> = graph
+            .blocks
+            .iter()
+            .map(|b| recurse_vtil::InputBlock {
+                addr: b.addr,
+                jump: b.jump,
+                fail: b.fail,
+                targets: b.targets.clone(),
+                ops: b
+                    .ops
+                    .iter()
+                    .map(|op| recurse_vtil::InputInsn {
+                        addr: op.addr,
+                        disasm: op.disasm.clone(),
+                        kind: op.kind.clone(),
+                        jump: op.jump,
+                        fail: op.fail,
+                    })
+                    .collect(),
+            })
+            .collect();
+        let (routine, stats) = recurse_vtil::lift_and_optimize(graph.addr, &graph.name, &blocks);
+        Ok(json!({
+            "op": "lift",
+            "addr": routine.entry,
+            "name": routine.name,
+            "instructions": routine.instr_count(),
+            "vtil": recurse_vtil::text::to_vtil_text(&routine),
+            "optimized": stats,
+        }))
+    }
+
     /// Engine-specific console passthrough. Returns
     /// the backend's structured or textual output unchanged.
     fn raw(&self, cmd: &str) -> Result<Value, String>;
@@ -479,6 +520,7 @@ pub fn tool_schema(capabilities: Capabilities) -> Value {
     let mut ops: Vec<&str> = vec!["analyze", "functions", "disasm"];
     if capabilities.graph {
         ops.push("graph");
+        ops.push("lift");
     }
     if capabilities.decompile {
         ops.push("decompile");
@@ -494,6 +536,11 @@ pub fn tool_schema(capabilities: Capabilities) -> Value {
          Ops: {}. `addr` accepts a number, `0x` hex, or a symbol name. Results are compact JSON.",
         ops.join(", ")
     );
+    if capabilities.graph {
+        description.push_str(
+            " `lift` raises a function into a VTIL-style de-obfuscation IL, runs constant-folding/propagation/dead-code-elimination passes, and returns the optimized text — useful when disassembly looks like a VM dispatcher or opaque-predicate chain.",
+        );
+    }
     if capabilities.raw {
         description.push_str(
             " `raw` runs an engine console command, available only when the selected engine provides one.",
@@ -555,6 +602,7 @@ pub const OPS: &[&str] = &[
     "functions",
     "disasm",
     "graph",
+    "lift",
     "decompile",
     "xrefs",
     "strings",
@@ -847,6 +895,17 @@ pub fn execute_tool(engine: &dyn Engine, args: &Value) -> Result<String, String>
             let mut value = serde_json::to_value(graph).map_err(|e| e.to_string())?;
             strip_bytes(&mut value);
             Ok(compact(value))
+        }
+        "lift" => {
+            let addr = required_addr(engine, args)?;
+            if !engine.capabilities().graph {
+                return Err(format!(
+                    "the {} backend cannot recover a control-flow graph, which `lift` requires",
+                    engine.backend().as_str()
+                ));
+            }
+            let lifted = engine.lift(addr)?;
+            Ok(compact(lifted))
         }
         "decompile" => {
             let addr = required_addr(engine, args)?;

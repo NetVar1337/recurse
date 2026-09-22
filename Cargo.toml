@@ -4,6 +4,7 @@
 #   tauri/src-tauri    desktop app (Tauri + pluggable analysis backends)
 #   crates/recurse-agent  agent framework (LLM loop, tools, SQLite memory)
 #   crates/recurse-static static analysis (native engine, r2 backend, disassembly)
+#   crates/recurse-vtil VTIL-inspired de-obfuscation/de-virtualization IL
 #   crates/recurse-debug  cross-platform debugger
 #   crates/recurse-eval headless eval harness
 #
@@ -15,6 +16,7 @@ resolver = "2"
 members = [
     "crates/recurse-agent",
     "crates/recurse-static",
+    "crates/recurse-vtil",
     "crates/recurse-debug",
     "crates/recurse-eval",
     "tauri/src-tauri",
