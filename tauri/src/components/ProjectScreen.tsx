@@ -1,7 +1,16 @@
-import { ChevronRight, FolderOpen, Plus, Trash2 } from "lucide-react";
+import {
+	ChevronRight,
+	Download,
+	FolderOpen,
+	Plus,
+	Trash2,
+	Upload,
+} from "lucide-react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Logo, LogoMark } from "@/components/Logo";
+import { api } from "@/api";
 import { useProjectStore } from "@/store/projectStore";
 import { useUiStore } from "@/store/uiStore";
 
@@ -26,6 +35,34 @@ export function ProjectScreen() {
 	const openProject = useProjectStore((s) => s.openProject);
 	const deleteProject = useProjectStore((s) => s.deleteProject);
 	const setNewProjectOpen = useUiStore((s) => s.setNewProjectOpen);
+	const [status, setStatus] = useState<string | null>(null);
+	const [exportingName, setExportingName] = useState<string | null>(null);
+
+	const importProject = async () => {
+		const path = await api.pickZip("Import project archive");
+		if (!path || typeof path !== "string") return;
+		setStatus(null);
+		try {
+			const project = await api.importProject(path);
+			setStatus(`Imported "${project.name}"`);
+			await useProjectStore.getState().loadProjects();
+		} catch (e) {
+			setStatus(`Import failed: ${String(e)}`);
+		}
+	};
+
+	const exportProject = async (name: string) => {
+		setExportingName(name);
+		setStatus(null);
+		try {
+			const path = await api.exportProject(name);
+			setStatus(`Exported to ${path}`);
+		} catch (e) {
+			setStatus(`Export failed: ${String(e)}`);
+		} finally {
+			setExportingName(null);
+		}
+	};
 
 	return (
 		<div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center overflow-auto px-6 py-14">
@@ -41,17 +78,33 @@ export function ProjectScreen() {
 			</div>
 
 			<div className="mt-9 flex flex-col items-center gap-2">
-				<Button
-					size="lg"
-					className="h-11 px-10 text-sm tracking-wide"
-					onClick={() => setNewProjectOpen(true)}
-				>
-					<Plus /> New Project
-				</Button>
+				<div className="flex items-center gap-2">
+					<Button
+						size="lg"
+						className="h-11 px-10 text-sm tracking-wide"
+						onClick={() => setNewProjectOpen(true)}
+					>
+						<Plus /> New Project
+					</Button>
+					<Button
+						size="lg"
+						variant="outline"
+						className="h-11 px-5 text-sm tracking-wide"
+						onClick={() => void importProject()}
+						title="Import a project exported with Export"
+					>
+						<Upload className="h-4 w-4" /> Import
+					</Button>
+				</div>
 				<span className="text-muted-foreground text-[11px]">
 					projects live in{" "}
 					<code className="text-primary font-mono">~/.recurse</code>
 				</span>
+				{status && (
+					<span className="text-muted-foreground max-w-md text-center text-[11px]">
+						{status}
+					</span>
+				)}
 			</div>
 
 			{loading && (
@@ -93,6 +146,19 @@ export function ProjectScreen() {
 										</span>
 										<ChevronRight className="text-muted-foreground h-4 w-4 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
 									</button>
+									<Button
+										variant="ghost"
+										size="icon"
+										className="h-7 w-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+										onClick={(e) => {
+											e.stopPropagation();
+											void exportProject(p.name);
+										}}
+										disabled={exportingName === p.name}
+										title={`Export ${p.name} as a zip`}
+									>
+										<Download className="h-3.5 w-3.5" />
+									</Button>
 									<Button
 										variant="ghost"
 										size="icon"
