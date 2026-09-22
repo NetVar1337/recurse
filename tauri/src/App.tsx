@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { AgentChat } from "@/components/AgentChat";
 import { CenterPanel } from "@/components/CenterPanel";
+import { CommandPalette } from "@/components/CommandPalette";
 import { FunctionList } from "@/components/FunctionList";
 import { Header } from "@/components/Header";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
@@ -25,6 +26,7 @@ function App() {
 	useEffect(() => {
 		useLlmStore.getState().init();
 		useSettingsStore.getState().initZoom();
+		useSettingsStore.getState().initTheme();
 		useProjectStore.getState().loadProjects();
 	}, []);
 
@@ -108,6 +110,7 @@ function App() {
 			)}
 
 			<NewProjectDialog />
+			<CommandPalette />
 		</div>
 	);
 }

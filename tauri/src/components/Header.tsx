@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { MessageSquare, Settings, X } from "lucide-react";
+import { MessageSquare, Moon, Settings, Sun, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +30,8 @@ export function Header() {
 	const backend = useSettingsStore((s) => s.backend);
 	const setBackend = useSettingsStore((s) => s.setBackend);
 	const initBackend = useSettingsStore((s) => s.initBackend);
+	const theme = useSettingsStore((s) => s.theme);
+	const toggleTheme = useSettingsStore((s) => s.toggleTheme);
 
 	useEffect(() => {
 		void initBackend();
@@ -76,6 +78,18 @@ export function Header() {
 						<X /> Close
 					</Button>
 				)}
+				<Button
+					variant="ghost"
+					size="icon"
+					onClick={toggleTheme}
+					title={
+						theme === "dark"
+							? "Switch to light theme"
+							: "Switch to dark theme"
+					}
+				>
+					{theme === "dark" ? <Sun /> : <Moon />}
+				</Button>
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
 						<Button variant="ghost" size="icon" title="Settings">
@@ -103,6 +117,11 @@ export function Header() {
 						<DropdownMenuItem onClick={() => void setBackend("r2")}>
 							{backend === "r2" ? "● " : "○ "}r2 — radare2
 							(opt-in)
+						</DropdownMenuItem>
+						<DropdownMenuSeparator />
+						<DropdownMenuLabel>Theme · {theme}</DropdownMenuLabel>
+						<DropdownMenuItem onClick={toggleTheme}>
+							Toggle light / dark
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuItem onClick={resetZoom}>
