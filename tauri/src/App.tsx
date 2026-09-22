@@ -13,6 +13,7 @@ import { useContextStore } from "@/store/contextStore";
 import { useProjectStore } from "@/store/projectStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { useUiStore } from "@/store/uiStore";
+import { useUpdateStore } from "@/store/updateStore";
 
 function App() {
 	const binary = useBinaryStore((s) => s.binary);
@@ -26,6 +27,7 @@ function App() {
 		useLlmStore.getState().init();
 		useSettingsStore.getState().initZoom();
 		useProjectStore.getState().loadProjects();
+		void useUpdateStore.getState().checkForUpdates();
 	}, []);
 
 	useEffect(() => {
