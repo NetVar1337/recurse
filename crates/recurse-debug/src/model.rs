@@ -130,10 +130,11 @@ pub struct Breakpoint {
 }
 
 /// Session lifecycle state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProcessState {
     /// No debuggee.
+    #[default]
     Idle,
     /// Attached/launched but stopped.
     Stopped,

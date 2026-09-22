@@ -283,6 +283,15 @@ export interface DebugStatus {
 	breakpoints: DebugBreakpoint[];
 }
 
+/** Live session snapshot, published by the debugger for follow-along. */
+export interface DebugSnapshot {
+	pid?: number | null;
+	state: string;
+	stop?: DebugStop | null;
+	breakpoints: DebugBreakpoint[];
+	frames: DebugFrame[];
+}
+
 /** A rendered memory read. */
 export interface DebugMemory {
 	addr: number;

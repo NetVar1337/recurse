@@ -2,6 +2,8 @@ import {
 	Bug,
 	CornerDownRight,
 	CornerUpRight,
+	Eye,
+	EyeOff,
 	Loader2,
 	Play,
 	Send,
@@ -87,6 +89,9 @@ export function DebugPanel() {
 	const run = useDebugStore((s) => s.run);
 	const sendStdin = useDebugStore((s) => s.sendStdin);
 	const pollOutput = useDebugStore((s) => s.pollOutput);
+	const pollSnapshot = useDebugStore((s) => s.pollSnapshot);
+	const follow = useDebugStore((s) => s.follow);
+	const setFollow = useDebugStore((s) => s.setFollow);
 	const [attachPid, setAttachPid] = useState("");
 	const [breakAt, setBreakAt] = useState("");
 	const [stdin, setStdin] = useState("");
@@ -95,10 +100,18 @@ export function DebugPanel() {
 	// Poll the debuggee's output while it is alive, so prompts appear even when
 	// a `continue` is still blocked waiting for a stop.
 	useEffect(() => {
-		if (!active) return;
+		if (!active && !follow) return;
 		const id = setInterval(() => void pollOutput(), 400);
 		return () => clearInterval(id);
-	}, [active, pollOutput]);
+	}, [active, follow, pollOutput]);
+
+	// Follow along: pull the live snapshot so an agent-driven session shows up.
+	useEffect(() => {
+		if (!follow) return;
+		void pollSnapshot();
+		const id = setInterval(() => void pollSnapshot(), 500);
+		return () => clearInterval(id);
+	}, [follow, pollSnapshot]);
 
 	// Keep the newest output in view.
 	useEffect(() => {
@@ -239,6 +252,20 @@ export function DebugPanel() {
 					disabled={busy || !active}
 				>
 					<X className="mr-1 h-3.5 w-3.5" /> Kill
+				</Button>
+				<div className="bg-border mx-1 h-5 w-px" />
+				<Button
+					size="sm"
+					variant={follow ? "secondary" : "ghost"}
+					onClick={() => setFollow(!follow)}
+					title="Follow the debug session live — including when the agent drives it"
+				>
+					{follow ? (
+						<Eye className="mr-1 h-3.5 w-3.5" />
+					) : (
+						<EyeOff className="mr-1 h-3.5 w-3.5" />
+					)}
+					Follow
 				</Button>
 				{busy && (
 					<Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />

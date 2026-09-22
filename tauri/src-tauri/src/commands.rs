@@ -305,6 +305,25 @@ pub async fn debug_command(
     serde_json::from_str(&out).map_err(|e| e.to_string())
 }
 
+/// Live snapshot of the debug session (pid, state, last stop, breakpoints,
+/// backtrace), or `null` when no session is active.
+///
+/// Read directly, without going through the debugger's worker thread, so the
+/// UI can follow an agent-driven session in real time — even while a
+/// `continue` is blocked waiting for a stop.
+#[tauri::command]
+pub fn debug_snapshot(state: State<'_, AppState>) -> Result<Value, String> {
+    let dbg = state
+        .debug
+        .lock()
+        .map_err(|e| format!("debug lock poisoned: {e}"))?
+        .clone();
+    match dbg {
+        Some(dbg) => serde_json::to_value(dbg.snapshot()).map_err(|e| e.to_string()),
+        None => Ok(Value::Null),
+    }
+}
+
 /// Hashes, Shannon entropy, size and permission string for the recon page.
 /// Reads the file once, off the UI thread.
 fn file_stats(path: &std::path::Path) -> Result<(Value, f64, u64, String), String> {

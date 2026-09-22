@@ -7,6 +7,7 @@ import type {
 	Backend,
 	BinaryInfo,
 	ChatMessage,
+	DebugSnapshot,
 	DecompileResult,
 	Function,
 	Import,
@@ -37,6 +38,7 @@ export const api = {
 		invoke<void>("rename_function", { addr, name }),
 	debugCommand: (op: string, args?: Record<string, unknown>) =>
 		invoke<unknown>("debug_command", { op, args: args ?? null }),
+	debugSnapshot: () => invoke<DebugSnapshot | null>("debug_snapshot"),
 	recon: () => invoke<Recon>("recon"),
 	analysisProgress: () =>
 		invoke<{ function_count: number; indexing: boolean }>(

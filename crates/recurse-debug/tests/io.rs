@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use recurse_debug::model::{LaunchOptions, StepKind};
+use recurse_debug::model::{LaunchOptions, ProcessState, StepKind};
 use recurse_debug::Debugger;
 
 /// A crackme that prompts on stdout and reads a flag from stdin.
@@ -67,4 +67,42 @@ fn step_at_entry_and_feed_stdin() {
     );
 
     let _ = dbg.kill();
+}
+
+#[test]
+fn snapshot_is_live_while_running() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(FIXTURE);
+    if !path.is_file() {
+        return;
+    }
+    let dbg = match Debugger::new() {
+        Ok(d) => Arc::new(d),
+        Err(_) => return,
+    };
+    dbg.launch(&LaunchOptions {
+        path: path.to_string_lossy().to_string(),
+        ..Default::default()
+    })
+    .expect("launch");
+    assert_eq!(dbg.snapshot().state, ProcessState::Stopped);
+
+    // Run the target (it blocks on input). The snapshot must report it is
+    // running *while* the `continue` is still blocked, so a UI can follow.
+    let runner = dbg.clone();
+    let cont = std::thread::spawn(move || runner.resume());
+    let mut saw_running = false;
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        if dbg.snapshot().state == ProcessState::Running {
+            saw_running = true;
+            break;
+        }
+    }
+    assert!(saw_running, "snapshot reports running while blocked");
+
+    dbg.write_stdin(b"x\n").expect("stdin");
+    let _ = cont.join();
+    assert_eq!(dbg.snapshot().state, ProcessState::Exited);
 }

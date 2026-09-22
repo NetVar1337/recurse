@@ -105,6 +105,7 @@ pub fn run() {
             commands::rename_function,
             commands::analysis_progress,
             commands::debug_command,
+            commands::debug_snapshot,
             commands::recon,
             commands::disassemble,
             commands::function_at,

@@ -24,6 +24,8 @@ interface DebugState {
 	log: string[];
 	busy: boolean;
 	error: string | null;
+	/** Follow the session live, even when the agent is driving it. */
+	follow: boolean;
 
 	/** Run one debugger op and fold its result into the store. */
 	run: (op: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -31,6 +33,9 @@ interface DebugState {
 	sendStdin: (text: string) => Promise<void>;
 	/** Drain the debuggee's captured output into `output`. */
 	pollOutput: () => Promise<void>;
+	/** Pull the live snapshot (follow-along). */
+	pollSnapshot: () => Promise<void>;
+	setFollow: (b: boolean) => void;
 	launch: (path: string) => Promise<void>;
 	attach: (pid: number) => Promise<void>;
 	detach: () => Promise<void>;
@@ -50,6 +55,7 @@ const initial = {
 	log: [] as string[],
 	busy: false,
 	error: null as string | null,
+	follow: false,
 };
 
 /** Append a line to the capped debug log. */
@@ -155,6 +161,26 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 			/* the worker may be busy; try again next tick */
 		}
 	},
+
+	pollSnapshot: async () => {
+		try {
+			const s = await api.debugSnapshot();
+			if (!s) return;
+			set({
+				active: s.pid != null,
+				pid: s.pid ?? null,
+				state: s.state,
+				stop: s.stop ?? null,
+				registers: s.stop?.registers ?? null,
+				breakpoints: s.breakpoints ?? [],
+				frames: s.frames ?? [],
+			});
+		} catch {
+			/* no session yet */
+		}
+	},
+
+	setFollow: (follow) => set({ follow }),
 
 	attach: async (pid) => {
 		await get().run("attach", { pid });

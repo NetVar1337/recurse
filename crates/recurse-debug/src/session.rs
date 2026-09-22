@@ -18,6 +18,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use serde::Serialize;
+
 use crate::arch;
 use crate::error::{Error, Result};
 use crate::model::{
@@ -109,11 +111,32 @@ impl Default for DebugIo {
     }
 }
 
+/// A live, lock-cheap view of the session.
+///
+/// Written by the worker thread after each operation and read directly by the
+/// UI (never through the worker), so the UI can *follow along* — even while a
+/// `continue` is still blocked waiting for a stop. This is what makes an
+/// agent-driven debug session visible in real time.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Snapshot {
+    /// Debuggee pid, if any.
+    pub pid: Option<u32>,
+    /// Lifecycle state.
+    pub state: ProcessState,
+    /// The last stop (with registers), if any.
+    pub stop: Option<Stop>,
+    /// Installed breakpoints.
+    pub breakpoints: Vec<Breakpoint>,
+    /// Backtrace at the last stop.
+    pub frames: Vec<Frame>,
+}
+
 /// A debug session handle. Cheap to clone-share behind an `Arc`.
 pub struct Debugger {
     tx: Option<Sender<Command>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     io: Arc<DebugIo>,
+    snapshot: Arc<Mutex<Snapshot>>,
 }
 
 /// One operation for the worker thread.
@@ -167,7 +190,8 @@ impl Debugger {
     /// Returns [`Error::Unsupported`] on a platform with no backend.
     pub fn with_symbols(symbols: Arc<dyn Symbols>) -> Result<Self> {
         let io = Arc::new(DebugIo::new());
-        let inner = Inner::new(symbols, io.clone())?;
+        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        let inner = Inner::new(symbols, io.clone(), snapshot.clone())?;
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("recurse-debug".to_string())
@@ -177,7 +201,16 @@ impl Debugger {
             tx: Some(tx),
             worker: Mutex::new(Some(worker)),
             io,
+            snapshot,
         })
+    }
+
+    /// A live snapshot of the session, read without touching the worker thread.
+    ///
+    /// Safe to call while a `continue` is blocked, so a UI can follow an
+    /// agent-driven session in real time.
+    pub fn snapshot(&self) -> Snapshot {
+        self.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     /// The load bias of the current debuggee (0 when unknown).
@@ -410,6 +443,8 @@ fn run_worker(mut inner: Inner, rx: Receiver<Command>) {
                 let _ = tx.send(inner.kill());
             }
         }
+        // Publish the new state so a UI following along updates live.
+        inner.publish();
     }
 }
 
@@ -420,6 +455,8 @@ struct Inner {
     pid: Option<u32>,
     state: ProcessState,
     last_stop: Option<StopReason>,
+    /// The last full stop (registers included), for the published snapshot.
+    last_full: Option<Stop>,
     breakpoints: BTreeMap<u64, Breakpoint>,
     next_id: u64,
     /// `runtime - static` address (ASLR/PIE load bias).
@@ -428,23 +465,50 @@ struct Inner {
     stepping: bool,
     /// Address of a breakpoint we are stopped on (pc already past the trap).
     stopped_at_bp: Option<u64>,
+    /// Shared live view, published after each operation.
+    snapshot: Arc<Mutex<Snapshot>>,
 }
 
 impl Inner {
     /// Build the target and initial state on the worker thread.
-    fn new(symbols: Arc<dyn Symbols>, io: Arc<DebugIo>) -> Result<Self> {
+    fn new(
+        symbols: Arc<dyn Symbols>,
+        io: Arc<DebugIo>,
+        snapshot: Arc<Mutex<Snapshot>>,
+    ) -> Result<Self> {
         Ok(Self {
             target: target::native(io)?,
             symbols,
             pid: None,
             state: ProcessState::Idle,
             last_stop: None,
+            last_full: None,
             breakpoints: BTreeMap::new(),
             next_id: 1,
             bias: 0,
             stepping: false,
             stopped_at_bp: None,
+            snapshot,
         })
+    }
+
+    /// Publish the current session state for the UI to read directly.
+    fn publish(&mut self) {
+        let frames = if matches!(self.state, ProcessState::Stopped) {
+            self.backtrace(None).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let snap = Snapshot {
+            pid: self.pid,
+            state: self.state,
+            stop: self.last_full.clone(),
+            breakpoints: self.breakpoints(),
+            frames,
+        };
+        if let Ok(mut s) = self.snapshot.lock() {
+            *s = snap;
+        }
     }
 
     /// The debuggee pid, or [`Error::NotRunning`].
@@ -480,12 +544,15 @@ impl Inner {
         self.bias = self.symbols.load_bias(pid, Some(registers.pc)).unwrap_or(0);
         self.state = ProcessState::Stopped;
         self.last_stop = Some(StopReason::Started);
-        Ok(Stop {
+        let stop = Stop {
             pid,
             thread,
             reason: StopReason::Started,
             registers,
-        })
+        };
+        self.last_full = Some(stop.clone());
+        self.publish();
+        Ok(stop)
     }
 
     /// Attach to a running process.
@@ -497,12 +564,15 @@ impl Inner {
         self.last_stop = Some(StopReason::Started);
         let thread = pid as ThreadId;
         let registers = self.target.get_regs(thread)?;
-        Ok(Stop {
+        let stop = Stop {
             pid,
             thread,
             reason: StopReason::Started,
             registers,
-        })
+        };
+        self.last_full = Some(stop.clone());
+        self.publish();
+        Ok(stop)
     }
 
     /// Install a breakpoint.
@@ -556,6 +626,8 @@ impl Inner {
             self.rearm(&lifted)?;
         }
         self.state = ProcessState::Running;
+        // Publish before blocking, so a follower sees the target is running.
+        self.publish();
         self.target.cont(thread, 0)?;
         self.wait_stop()
     }
@@ -682,7 +754,7 @@ impl Inner {
 
     /// Block for the next stop and shape it into a [`Stop`].
     fn wait_stop(&mut self) -> Result<Stop> {
-        match self.target.wait()? {
+        let stop = match self.target.wait()? {
             WaitEvent::Stopped { thread, signal } => {
                 let mut registers = self.target.get_regs(thread)?;
                 let reason = self.classify(signal, &registers);
@@ -692,26 +764,26 @@ impl Inner {
                 }
                 self.state = ProcessState::Stopped;
                 self.last_stop = Some(reason.clone());
-                Ok(Stop {
+                Stop {
                     pid: self.pid.unwrap_or(0),
                     thread,
                     reason,
                     registers,
-                })
+                }
             }
             WaitEvent::Exited { code } => {
                 self.pid = None;
                 self.state = ProcessState::Exited;
                 let reason = StopReason::Exited { code };
                 self.last_stop = Some(reason.clone());
-                Ok(terminal_stop(reason))
+                terminal_stop(reason)
             }
             WaitEvent::Signaled { signal } => {
                 self.pid = None;
                 self.state = ProcessState::Exited;
                 let reason = StopReason::Killed { signal };
                 self.last_stop = Some(reason.clone());
-                Ok(terminal_stop(reason))
+                terminal_stop(reason)
             }
             WaitEvent::Other => {
                 let reason = StopReason::Signal {
@@ -719,14 +791,17 @@ impl Inner {
                     name: "event".to_string(),
                 };
                 self.last_stop = Some(reason.clone());
-                Ok(Stop {
+                Stop {
                     pid: self.pid.unwrap_or(0),
                     thread: 0,
                     reason,
                     registers: Registers::default(),
-                })
+                }
             }
-        }
+        };
+        self.last_full = Some(stop.clone());
+        self.publish();
+        Ok(stop)
     }
 
     /// Turn a stop signal + registers into a [`StopReason`].
@@ -764,6 +839,7 @@ impl Inner {
     fn single_step(&mut self, thread: ThreadId) -> Result<Stop> {
         self.stepping = true;
         self.state = ProcessState::Running;
+        self.publish();
         self.target.step_insn(thread, 0)?;
         self.wait_stop()
     }
@@ -780,6 +856,7 @@ impl Inner {
         self.target.write(addr, trap)?;
         self.stepping = true;
         self.state = ProcessState::Running;
+        self.publish();
         self.target.cont(thread, 0)?;
         let stop = self.wait_stop()?;
         if self.pid.is_some() {
