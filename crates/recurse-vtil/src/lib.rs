@@ -51,6 +51,8 @@
 
 pub mod cfg;
 pub mod decompile;
+#[cfg(feature = "unicorn-engine")]
+pub mod emu;
 pub mod il;
 pub mod input;
 pub mod lift;

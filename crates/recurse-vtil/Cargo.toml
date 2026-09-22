@@ -12,6 +12,7 @@ categories = ["development-tools::debugging", "compilers"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+unicorn-engine = { version = "2.1.5", optional = true }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -23,3 +24,6 @@ expect_used = "deny"
 panic = "deny"
 dbg_macro = "deny"
 todo = "deny"
+
+[features]
+unicorn-engine = ["dep:unicorn-engine"]
