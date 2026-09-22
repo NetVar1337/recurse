@@ -19,6 +19,7 @@ pub const OPS: &[&str] = &[
     "attach",
     "continue",
     "step",
+    "interrupt",
     "break",
     "unbreak",
     "breakpoints",
@@ -149,6 +150,10 @@ pub fn execute_tool(dbg: &Debugger, op: &str, args: &Value) -> Result<String> {
             to_json(&dbg.attach(pid as u32)?)?
         }
         "continue" => to_json(&dbg.resume()?)?,
+        "interrupt" => {
+            dbg.interrupt()?;
+            json!({})
+        }
         "step" => {
             let kind = match args.get("kind").and_then(Value::as_str) {
                 Some("over") => StepKind::Over,

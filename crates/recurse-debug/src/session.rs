@@ -13,8 +13,8 @@
 //! target operation. [`Debugger`] is a handle that forwards commands to it, so
 //! the UI and the agent can call it from any thread.
 
-use std::collections::BTreeMap;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -32,6 +32,8 @@ use recurse_static::arch::Arch;
 
 /// `SIGTRAP` — the stop signal for traps (breakpoints and single-steps).
 const SIGTRAP: i32 = 5;
+/// `SIGSTOP` — used to pause a running debuggee (see [`Inner::interrupt`]).
+const SIGSTOP: i32 = 19;
 
 /// Maximum frames walked by [`Debugger::backtrace`].
 const MAX_FRAMES: usize = 64;
@@ -153,6 +155,8 @@ enum Command {
     Resume(Reply<Stop>),
     /// Step.
     Step(StepKind, Reply<Stop>),
+    /// Interrupt a running debuggee.
+    Interrupt(Reply<()>),
     /// Install a breakpoint.
     AddBreakpoint(BreakAt, Reply<Breakpoint>),
     /// Remove a breakpoint.
@@ -289,6 +293,15 @@ impl Debugger {
         self.call(move |tx| Command::Step(kind, tx))
     }
 
+    /// Ask a running debuggee to stop. Returns immediately; the `Run` that is
+    /// in flight then returns a [`StopReason::Paused`] stop.
+    ///
+    /// # Errors
+    /// [`Error::NotRunning`] with no debuggee.
+    pub fn interrupt(&self) -> Result<()> {
+        self.call(Command::Interrupt)
+    }
+
     /// Registers of `thread`, or of the main thread when `None`.
     ///
     /// # Errors
@@ -420,67 +433,133 @@ impl Drop for Debugger {
 }
 
 /// The worker loop: owns the target and executes commands serially.
+///
+/// Commands that arrive while the target is running are deferred and
+/// re-dispatched once it stops.
 fn run_worker(mut inner: Inner, rx: Receiver<Command>) {
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            Command::Launch(opts, tx) => {
-                let _ = tx.send(inner.launch(&opts));
-            }
-            Command::Attach(pid, tx) => {
-                let _ = tx.send(inner.attach(pid));
-            }
-            Command::Resume(tx) => {
-                let _ = tx.send(inner.resume());
-            }
-            Command::Step(kind, tx) => {
-                let _ = tx.send(inner.step(kind));
-            }
-            Command::AddBreakpoint(at, tx) => {
-                let _ = tx.send(inner.add_breakpoint(&at));
-            }
-            Command::RemoveBreakpoint(id, tx) => {
-                let _ = tx.send(inner.remove_breakpoint(id));
-            }
-            Command::Breakpoints(tx) => {
-                let _ = tx.send(Ok(inner.breakpoints()));
-            }
-            Command::Registers(thread, tx) => {
-                let _ = tx.send(inner.registers(thread));
-            }
-            Command::SetRegister(name, value, tx) => {
-                let _ = tx.send(inner.set_register(&name, value));
-            }
-            Command::ReadMemory(addr, len, tx) => {
-                let _ = tx.send(inner.read_memory(addr, len));
-            }
-            Command::WriteMemory(addr, bytes, tx) => {
-                let _ = tx.send(inner.write_memory(addr, &bytes));
-            }
-            Command::Threads(tx) => {
-                let _ = tx.send(inner.threads());
-            }
-            Command::Backtrace(thread, tx) => {
-                let _ = tx.send(inner.backtrace(thread));
-            }
-            Command::Disasm(addr, count, tx) => {
-                let _ = tx.send(inner.disasm(addr, count));
-            }
-            Command::Status(tx) => {
-                let _ = tx.send(Ok(inner.status()));
-            }
-            Command::LoadBias(tx) => {
-                let _ = tx.send(Ok(inner.bias));
-            }
-            Command::Detach(tx) => {
-                let _ = tx.send(inner.detach());
-            }
-            Command::Kill(tx) => {
-                let _ = tx.send(inner.kill());
-            }
-        }
-        // Publish the new state so a UI following along updates live.
+    let mut queue: VecDeque<Command> = VecDeque::new();
+    loop {
+        let cmd = match queue.pop_front() {
+            Some(c) => c,
+            None => match rx.recv() {
+                Ok(c) => c,
+                Err(_) => break,
+            },
+        };
+        let deferred = handle(cmd, &mut inner, &rx);
+        queue.extend(deferred);
         inner.publish();
     }
+}
+
+/// Execute one command. Returns any commands that arrived while the target was
+/// running, for the caller to re-dispatch.
+fn handle(cmd: Command, inner: &mut Inner, rx: &Receiver<Command>) -> Vec<Command> {
+    match cmd {
+        Command::Launch(opts, tx) => {
+            let _ = tx.send(inner.launch(&opts));
+        }
+        Command::Attach(pid, tx) => {
+            let _ = tx.send(inner.attach(pid));
+        }
+        Command::Resume(tx) => match inner.begin_resume() {
+            Ok(()) => return pump(inner, rx, tx),
+            Err(e) => {
+                let _ = tx.send(Err(e));
+            }
+        },
+        Command::Step(kind, tx) => match inner.begin_step(kind) {
+            Ok(()) => return pump(inner, rx, tx),
+            Err(e) => {
+                let _ = tx.send(Err(e));
+            }
+        },
+        Command::Interrupt(tx) => {
+            let _ = tx.send(inner.interrupt());
+        }
+        Command::AddBreakpoint(at, tx) => {
+            let _ = tx.send(inner.add_breakpoint(&at));
+        }
+        Command::RemoveBreakpoint(id, tx) => {
+            let _ = tx.send(inner.remove_breakpoint(id));
+        }
+        Command::Breakpoints(tx) => {
+            let _ = tx.send(Ok(inner.breakpoints()));
+        }
+        Command::Registers(thread, tx) => {
+            let _ = tx.send(inner.registers(thread));
+        }
+        Command::SetRegister(name, value, tx) => {
+            let _ = tx.send(inner.set_register(&name, value));
+        }
+        Command::ReadMemory(addr, len, tx) => {
+            let _ = tx.send(inner.read_memory(addr, len));
+        }
+        Command::WriteMemory(addr, bytes, tx) => {
+            let _ = tx.send(inner.write_memory(addr, &bytes));
+        }
+        Command::Threads(tx) => {
+            let _ = tx.send(inner.threads());
+        }
+        Command::Backtrace(thread, tx) => {
+            let _ = tx.send(inner.backtrace(thread));
+        }
+        Command::Disasm(addr, count, tx) => {
+            let _ = tx.send(inner.disasm(addr, count));
+        }
+        Command::Status(tx) => {
+            let _ = tx.send(Ok(inner.status()));
+        }
+        Command::LoadBias(tx) => {
+            let _ = tx.send(Ok(inner.bias));
+        }
+        Command::Detach(tx) => {
+            let _ = tx.send(inner.detach());
+        }
+        Command::Kill(tx) => {
+            let _ = tx.send(inner.kill());
+        }
+    }
+    Vec::new()
+}
+
+/// While the target runs, poll for a stop and service interrupts. Other
+/// commands are deferred until it stops.
+fn pump(inner: &mut Inner, rx: &Receiver<Command>, tx: Reply<Stop>) -> Vec<Command> {
+    let mut deferred = Vec::new();
+    loop {
+        match inner.poll_event() {
+            Ok(Some(event)) => {
+                let _ = tx.send(inner.finish(event));
+                return deferred;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                return deferred;
+            }
+        }
+        match rx.try_recv() {
+            Ok(Command::Interrupt(reply)) => {
+                let _ = reply.send(inner.interrupt());
+            }
+            Ok(cmd) => deferred.push(cmd),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => return deferred,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Bookkeeping for a run in progress: a lifted breakpoint to re-arm and a
+/// temporary one to remove when it stops.
+#[derive(Default)]
+struct Pending {
+    /// `(id, address, original bytes)` of a breakpoint lifted for this step.
+    lifted: Option<(u64, u64, Vec<u8>)>,
+    /// `(address, original bytes)` of a temporary breakpoint placed for
+    /// step-over/out.
+    temp: Option<(u64, Vec<u8>)>,
 }
 
 /// The mutable session state, owned by the worker thread.
@@ -504,6 +583,8 @@ struct Inner {
     snapshot: Arc<Mutex<Snapshot>>,
     /// The debuggee's architecture, for disassembling its memory.
     arch: Option<Arch>,
+    /// Breakpoint cleanup owed when the current run stops.
+    pending: Pending,
 }
 
 impl Inner {
@@ -527,6 +608,7 @@ impl Inner {
             stopped_at_bp: None,
             snapshot,
             arch: None,
+            pending: Pending::default(),
         })
     }
 
@@ -655,55 +737,6 @@ impl Inner {
         self.breakpoints.values().cloned().collect()
     }
 
-    /// Resume.
-    fn resume(&mut self) -> Result<Stop> {
-        let thread = self.thread()?;
-        let lifted = self.lift_breakpoint(thread)?;
-        if lifted.is_some() {
-            // Run the breakpointed instruction, then re-arm the trap.
-            self.stepping = true;
-            self.target.step_insn(thread, 0)?;
-            self.wait_stop()?;
-            self.rearm(&lifted)?;
-        }
-        self.state = ProcessState::Running;
-        // Publish before blocking, so a follower sees the target is running.
-        self.publish();
-        self.target.cont(thread, 0)?;
-        self.wait_stop()
-    }
-
-    /// Step.
-    fn step(&mut self, kind: StepKind) -> Result<Stop> {
-        let thread = self.thread()?;
-        let lifted = self.lift_breakpoint(thread)?;
-        let result = match kind {
-            StepKind::Into => self.single_step(thread),
-            StepKind::Over | StepKind::Out => {
-                let regs = self.target.get_regs(thread)?;
-                let bytes = self.target.read(regs.pc, 16).unwrap_or_default();
-                // A call is run to completion; anything else is a plain step.
-                // `Out` always runs to the return address. The "return address"
-                // is only trustworthy when it is actually readable: at `_start`
-                // the top of the stack is `argc`, not a return address.
-                let wants_run = kind == StepKind::Out || arch::is_call(&bytes);
-                let ret = if wants_run {
-                    self.read_word(regs.sp)
-                        .ok()
-                        .filter(|ret| self.readable(*ret))
-                } else {
-                    None
-                };
-                match ret {
-                    Some(ret) => self.run_to(thread, ret),
-                    None => self.single_step(thread),
-                }
-            }
-        };
-        self.rearm(&lifted)?;
-        result
-    }
-
     /// Read registers.
     fn registers(&mut self, thread: Option<ThreadId>) -> Result<Registers> {
         let t = thread.unwrap_or(self.thread()?);
@@ -785,7 +818,7 @@ impl Inner {
             .collect())
     }
 
-    /// Walk the frame-pointer chain.
+    /// Walk the frame-pointer chain into a backtrace.
     fn backtrace(&mut self, thread: Option<ThreadId>) -> Result<Vec<Frame>> {
         let t = thread.unwrap_or(self.thread()?);
         let regs = self.target.get_regs(t)?;
@@ -850,9 +883,95 @@ impl Inner {
         Ok(())
     }
 
+    /// Start a resume: step past any breakpoint we are stopped on, then run.
+    /// The worker then pumps [`Inner::poll_event`] until a stop.
+    fn begin_resume(&mut self) -> Result<()> {
+        let thread = self.thread()?;
+        let lifted = self.lift_breakpoint(thread)?;
+        if lifted.is_some() {
+            // Execute the breakpointed instruction so the trap does not re-fire.
+            self.stepping = true;
+            self.target.step_insn(thread, 0)?;
+            self.target.wait()?;
+            self.stepping = false;
+        }
+        self.pending = Pending { lifted, temp: None };
+        self.state = ProcessState::Running;
+        self.publish();
+        self.target.cont(thread, 0)?;
+        Ok(())
+    }
+
+    /// Start a step: single-step, or run to the return address for over/out.
+    /// The worker then pumps until a stop.
+    fn begin_step(&mut self, kind: StepKind) -> Result<()> {
+        let thread = self.thread()?;
+        let lifted = self.lift_breakpoint(thread)?;
+        self.pending = Pending { lifted, temp: None };
+        let single = match kind {
+            StepKind::Into => true,
+            StepKind::Over | StepKind::Out => {
+                let regs = self.target.get_regs(thread)?;
+                let bytes = self.target.read(regs.pc, 16).unwrap_or_default();
+                // A call runs to completion; anything else is a plain step.
+                // `Out` always runs to the return address. That address is
+                // only trusted when it is readable: at `_start` the top of the
+                // stack is `argc`, not a return address.
+                let wants_run = kind == StepKind::Out || arch::is_call(&bytes);
+                let ret = if wants_run {
+                    self.read_word(regs.sp)
+                        .ok()
+                        .filter(|ret| self.readable(*ret))
+                } else {
+                    None
+                };
+                match ret {
+                    Some(ret) => {
+                        let trap = arch::breakpoint_bytes();
+                        let original = self.target.read(ret, trap.len())?;
+                        self.target.write(ret, trap)?;
+                        self.pending.temp = Some((ret, original));
+                        false
+                    }
+                    None => true,
+                }
+            }
+        };
+        self.stepping = true;
+        self.state = ProcessState::Running;
+        self.publish();
+        if single {
+            self.target.step_insn(thread, 0)?;
+        } else {
+            self.target.cont(thread, 0)?;
+        }
+        Ok(())
+    }
+
+    /// Finish a run: shape the stop, then clean up the temporary breakpoint
+    /// and re-arm the lifted one.
+    fn finish(&mut self, event: WaitEvent) -> Result<Stop> {
+        let stop = self.apply_event(event)?;
+        self.finalize_pending()?;
+        self.publish();
+        Ok(stop)
+    }
+
+    /// Non-blocking wait, for the pump loop.
+    fn poll_event(&mut self) -> Result<Option<WaitEvent>> {
+        self.target.poll()
+    }
+
+    /// Ask the running debuggee to stop. Only the worker thread may issue
+    /// ptrace requests, which is why this runs inside the pump.
+    fn interrupt(&mut self) -> Result<()> {
+        self.pid()?;
+        self.target.interrupt()
+    }
+
     /// Block for the next stop and shape it into a [`Stop`].
-    fn wait_stop(&mut self) -> Result<Stop> {
-        let stop = match self.target.wait()? {
+    fn apply_event(&mut self, event: WaitEvent) -> Result<Stop> {
+        let stop = match event {
             WaitEvent::Stopped { thread, signal } => {
                 let mut registers = self.target.get_regs(thread)?;
                 let reason = self.classify(signal, &registers);
@@ -898,12 +1017,21 @@ impl Inner {
             }
         };
         self.last_full = Some(stop.clone());
-        self.publish();
         Ok(stop)
     }
 
-    /// Turn a stop signal + registers into a [`StopReason`].
+    /// Turn a stop signal + registers into a [`StopReason`], tracking a hit
+    /// breakpoint or an outstanding single-step.
     fn classify(&mut self, signal: i32, regs: &Registers) -> StopReason {
+        // A signal-0 stop is a PTRACE_INTERRUPT pause; SIGSTOP is the pause
+        // signal this backend sends instead (a TRACEME child cannot be
+        // interrupted with ptrace). Either way, the stop is ours, not the
+        // program's.
+        if signal == 0 || signal == SIGSTOP {
+            self.stepping = false;
+            self.stopped_at_bp = None;
+            return StopReason::Paused;
+        }
         if signal == SIGTRAP {
             let hit = arch::breakpoint_hit_addr(regs.pc);
             if let Some(bp) = self
@@ -933,42 +1061,7 @@ impl Inner {
         }
     }
 
-    /// Single-step and wait, marking the trap as a step.
-    fn single_step(&mut self, thread: ThreadId) -> Result<Stop> {
-        self.stepping = true;
-        self.state = ProcessState::Running;
-        self.publish();
-        self.target.step_insn(thread, 0)?;
-        self.wait_stop()
-    }
-
-    /// Run until `addr` via a temporary breakpoint, then remove it and rewind
-    /// the pc so the instruction there executes next.
-    fn run_to(&mut self, thread: ThreadId, addr: u64) -> Result<Stop> {
-        let trap = arch::breakpoint_bytes();
-        // If the address is not readable we cannot place a temporary
-        // breakpoint; fall back to a plain single-step.
-        let Ok(original) = self.target.read(addr, trap.len()) else {
-            return self.single_step(thread);
-        };
-        self.target.write(addr, trap)?;
-        self.stepping = true;
-        self.state = ProcessState::Running;
-        self.publish();
-        self.target.cont(thread, 0)?;
-        let stop = self.wait_stop()?;
-        if self.pid.is_some() {
-            self.target.write(addr, &original)?;
-            let mut regs = self.target.get_regs(thread)?;
-            if arch::breakpoint_hit_addr(regs.pc) == addr {
-                regs.pc = addr;
-                self.target.set_regs(thread, &regs)?;
-            }
-        }
-        Ok(stop)
-    }
-
-    /// If stopped on a breakpoint, disable it, restore its original bytes, and
+    /// If stopped on a breakpoint, disable it, restore its original bytes and
     /// rewind the pc. Returns `(id, address, original bytes)` to re-arm later.
     fn lift_breakpoint(&mut self, thread: ThreadId) -> Result<Option<(u64, u64, Vec<u8>)>> {
         let Some(addr) = self.stopped_at_bp.take() else {
@@ -995,13 +1088,27 @@ impl Inner {
         Ok(Some((id, addr, original)))
     }
 
-    /// Re-enable a lifted breakpoint and re-install its trap byte.
-    fn rearm(&mut self, lifted: &Option<(u64, u64, Vec<u8>)>) -> Result<()> {
-        if let Some((id, addr, _)) = lifted {
-            if let Some(bp) = self.breakpoints.get_mut(id) {
+    /// Undo the temporary breakpoint and re-arm the lifted one for the run
+    /// that just stopped (a no-op if the debuggee exited).
+    fn finalize_pending(&mut self) -> Result<()> {
+        let pending = std::mem::take(&mut self.pending);
+        let Some(pid) = self.pid else {
+            return Ok(());
+        };
+        let thread = pid as ThreadId;
+        if let Some((addr, original)) = pending.temp {
+            self.target.write(addr, &original)?;
+            let mut regs = self.target.get_regs(thread)?;
+            if arch::breakpoint_hit_addr(regs.pc) == addr {
+                regs.pc = addr;
+                self.target.set_regs(thread, &regs)?;
+            }
+        }
+        if let Some((id, addr, _)) = pending.lifted {
+            if let Some(bp) = self.breakpoints.get_mut(&id) {
                 bp.enabled = true;
             }
-            self.target.write(*addr, arch::breakpoint_bytes())?;
+            self.target.write(addr, arch::breakpoint_bytes())?;
         }
         Ok(())
     }

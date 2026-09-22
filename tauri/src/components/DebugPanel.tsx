@@ -5,6 +5,7 @@ import {
 	Eye,
 	EyeOff,
 	Loader2,
+	Pause,
 	Play,
 	Send,
 	StepForward,
@@ -54,6 +55,8 @@ function reasonLabel(r?: DebugStopReason): string {
 			return `breakpoint ${fmtAddr(r.addr)}`;
 		case "step":
 			return "step";
+		case "paused":
+			return "paused";
 		case "signal":
 			return `signal ${r.name ?? r.signal ?? "?"}`;
 		case "exited":
@@ -487,6 +490,15 @@ export function DebugPanel() {
 					title="Run (continue)"
 				>
 					<Play className="mr-1 h-3.5 w-3.5" /> Run
+				</Button>
+				<Button
+					size="sm"
+					variant="outline"
+					onClick={() => void run("interrupt")}
+					disabled={!active}
+					title="Pause the running target"
+				>
+					<Pause className="mr-1 h-3.5 w-3.5" /> Pause
 				</Button>
 				<Button
 					size="sm"

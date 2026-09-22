@@ -66,6 +66,8 @@ pub enum StopReason {
     },
     /// A single-step completed.
     Step,
+    /// Execution was interrupted by the debugger (a pause).
+    Paused,
     /// A signal was delivered.
     Signal {
         /// Signal number.
