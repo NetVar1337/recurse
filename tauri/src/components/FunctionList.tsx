@@ -121,7 +121,9 @@ export function FunctionList() {
 				/>
 			</div>
 			<ScrollArea className="flex-1">
-				<div className="flex flex-col">
+				{/* `pr-2.5` reserves a gutter for the overlay scrollbar (w-2.5),
+				    so it never covers the rename button on hover. */}
+				<div className="flex flex-col pr-2.5">
 					{busy && filtered.length === 0 ? (
 						<div className="text-muted-foreground flex items-center gap-2 px-3 py-3 text-xs">
 							<Loader2 className="h-3.5 w-3.5 animate-spin" />
