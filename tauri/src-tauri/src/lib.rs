@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod debug;
+pub mod debug_trace;
 pub mod engine;
 pub mod export;
 pub mod project;
@@ -60,6 +61,11 @@ pub struct AppState {
     pub current_session: Mutex<Option<String>>,
     /// Active debug session, created by `debug launch`/`attach`.
     pub debug: Arc<Mutex<Option<Arc<recurse_debug::Debugger>>>>,
+    /// Bounded log of every stop event a debug session produced this run
+    /// (launch/attach/continue/step), oldest first — a call/API trace
+    /// timeline distinct from the live single-stop `Snapshot`. Capped at
+    /// [`debug_trace::MAX_TRACE_ENTRIES`]; older entries drop first.
+    pub debug_trace: Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -98,6 +104,7 @@ pub fn run() {
             project: Mutex::new(None),
             current_session: Mutex::new(None),
             debug: Arc::new(Mutex::new(None)),
+            debug_trace: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         })
         .invoke_handler(tauri::generate_handler![
             commands::open_binary,
@@ -167,6 +174,8 @@ pub fn run() {
             crate::export::generate_report,
             crate::export::export_project,
             crate::export::import_project,
+            crate::debug_trace::debug_trace,
+            crate::debug_trace::debug_trace_clear,
         ]);
 
     die_on_failure(builder.run(tauri::generate_context!()));

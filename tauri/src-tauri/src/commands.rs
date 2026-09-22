@@ -302,7 +302,9 @@ pub async fn debug_command(
     })
     .await
     .map_err(|e| format!("debug task failed: {e}"))??;
-    serde_json::from_str(&out).map_err(|e| e.to_string())
+    let value: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+    crate::debug_trace::record_if_stop(&state, &value);
+    Ok(value)
 }
 
 /// Live snapshot of the debug session (pid, state, last stop, breakpoints,
