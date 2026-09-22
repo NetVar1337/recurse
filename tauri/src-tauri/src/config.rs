@@ -21,7 +21,7 @@ pub struct ConfigFile {
     pub backend: Option<String>,
 }
 
-fn get_key(key: &str) -> Option<String> {
+pub(crate) fn get_key(key: &str) -> Option<String> {
     let conn = db::connect().ok()?;
     conn.query_row(
         "SELECT value FROM config WHERE key = ?1",
@@ -42,7 +42,7 @@ pub fn load() -> ConfigFile {
     }
 }
 
-fn set_key(key: &str, value: Option<String>) -> Result<(), String> {
+pub(crate) fn set_key(key: &str, value: Option<String>) -> Result<(), String> {
     let conn = db::connect()?;
     match value {
         Some(v) => {
@@ -77,6 +77,19 @@ pub fn set_endpoint(endpoint: Option<String>) -> Result<(), String> {
 
 pub fn set_backend(backend: Option<String>) -> Result<(), String> {
     set_key("backend", backend)
+}
+
+/// Which provider (`crate::providers::ProviderPreset::id`) the agent
+/// currently uses. `None` means the legacy single-provider default
+/// (OpenRouter via `openrouter_api_key`/`endpoint`/`model`) — a fresh
+/// install with no provider ever selected keeps working exactly as
+/// before this feature existed.
+pub fn active_provider() -> Option<String> {
+    get_key("active_provider")
+}
+
+pub fn set_active_provider(id: Option<String>) -> Result<(), String> {
+    set_key("active_provider", id)
 }
 
 /// Resolve which analysis backend to instantiate. Precedence:

@@ -2,8 +2,9 @@
 //!
 //! Single file at `~/.recurse/recurse.db` (WAL mode). Table ownership:
 //!
-//! - host (`db.rs`, `project.rs`, `sessions.rs`, `config.rs`, `renames.rs`):
-//!   `config`, `projects`, `sessions`, `models`, `function_names`
+//! - host (`db.rs`, `project.rs`, `sessions.rs`, `config.rs`, `renames.rs`,
+//!   `providers.rs`): `config`, `projects`, `sessions`, `models`,
+//!   `function_names`, `provider_credentials`
 //! - recurse_agent (`recurse_agent::memory`): `memories`, `memories_fts`
 //!
 //! The filesystem under `~/.recurse/<project>/` is reserved for
@@ -52,6 +53,12 @@ CREATE TABLE IF NOT EXISTS function_names (
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (binary_path, addr)
 );
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    provider_id TEXT PRIMARY KEY,
+    api_key TEXT,
+    oauth_json TEXT,
+    updated_at INTEGER NOT NULL
+);
 ";
 
 pub fn now() -> i64 {
@@ -61,8 +68,28 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// The user's home directory, honoring a `HOME` environment variable
+/// override before falling back to the OS default.
+///
+/// `dirs::home_dir()` alone is not enough: on Windows its implementation
+/// resolves the real profile directory via the Known Folder API and
+/// **ignores `$HOME` entirely** — `crate::testhome`'s test isolation
+/// (`std::env::set_var("HOME", …)`) is a silent no-op there, so every
+/// `with_test_home`-based test was actually reading/writing the real
+/// user's `~/.recurse` on Windows instead of a throwaway directory. On
+/// Unix, `dirs::home_dir()` already reads `$HOME` itself, so checking it
+/// here first is a harmless no-op — this makes the override work
+/// uniformly on every platform instead of only where `dirs` happens to
+/// agree with it.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(dirs::home_dir)
+}
+
 pub fn db_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "could not determine home directory".to_string())?;
+    let home = home_dir().ok_or_else(|| "could not determine home directory".to_string())?;
     Ok(home.join(".recurse").join("recurse.db"))
 }
 
@@ -94,7 +121,7 @@ pub fn memory_store() -> Result<recurse_agent::memory::MemoryStore, String> {
 /// `project.json` / `sessions/` / `memory/*.md` / `config.json` / legacy
 /// `history/` dirs are removed, LLM-written project files are kept.
 pub fn cleanup_legacy_filesystem() {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = home_dir() else {
         return;
     };
     let root = home.join(".recurse");

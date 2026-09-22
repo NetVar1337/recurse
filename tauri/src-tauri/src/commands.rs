@@ -513,11 +513,12 @@ pub async fn agent_chat(
             sess.capabilities(),
         )
     };
-    let config = state
-        .llm
-        .lock()
-        .map_err(|e| format!("llm lock poisoned: {e}"))?
-        .clone();
+    // Resolved fresh on every turn (not the startup-time `state.llm`
+    // snapshot): a multi-provider OAuth credential needs its expiry
+    // checked, and transparently refreshed, on every call, not just once
+    // at launch. Falls back to the legacy single-provider `state.llm`
+    // config when no `crate::providers` entry has ever been selected.
+    let config = crate::providers::resolve_llm_config().await;
     let agent = state.agent.clone();
     // Arc clone: the worker task can't hold `State`, but it needs the live
     // engine session to serve the analysis tool from the UI's own analysis state.
@@ -1001,9 +1002,16 @@ fn fetch_models() -> Result<Vec<ModelInfo>, String> {
 /// and about fields: only `id` is required. Returns an empty list (not an
 /// error) when the server exposes no catalog, so the UI can fall back to a
 /// typed model id.
-fn fetch_custom_models(base: &str, api_key: &str) -> Result<Vec<ModelInfo>, String> {
+fn fetch_custom_models(
+    base: &str,
+    api_key: &str,
+    extra_headers: &[(String, String)],
+) -> Result<Vec<ModelInfo>, String> {
     let url = format!("{base}/models");
-    let request = ureq::get(&url);
+    let mut request = ureq::get(&url);
+    for (name, value) in extra_headers {
+        request = request.set(name, value);
+    }
     let request = if api_key.is_empty() {
         request
     } else {
@@ -1110,22 +1118,61 @@ fn cached_models(max_age_secs: i64) -> Option<Vec<ModelInfo>> {
     }
 }
 
-#[tauri::command]
-pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<ModelInfo>, String> {
-    let (endpoint, api_key) = {
-        let config = state
-            .llm
-            .lock()
-            .map_err(|e| format!("llm lock poisoned: {e}"))?;
-        (
-            config.endpoint.clone(),
-            config.api_key.clone().unwrap_or_default(),
+/// Fetch Anthropic's own model catalog (`GET /v1/models`, a real,
+/// documented endpoint distinct from the OpenAI-compatible `/models`
+/// shape `fetch_custom_models` handles) — used only for the
+/// `Protocol::AnthropicNative` (Claude OAuth) case, since that provider
+/// never speaks the OpenAI-compatible wire format at all.
+fn fetch_anthropic_models(api_key: &str) -> Result<Vec<ModelInfo>, String> {
+    let value: serde_json::Value = ureq::get("https://api.anthropic.com/v1/models")
+        .set(
+            "anthropic-version",
+            recurse_agent::anthropic::ANTHROPIC_VERSION,
         )
-    };
-    // A custom/local endpoint has its own catalog, which is not the hosted
-    // provider's and is not cached (the endpoint can change per run).
+        .set("anthropic-beta", recurse_agent::anthropic::OAUTH_BETA)
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .call()
+        .map_err(|e| format!("anthropic models request failed: {e}"))?
+        .into_json()
+        .map_err(|e| format!("anthropic models parse failed: {e}"))?;
+    let mut out = Vec::new();
+    if let Some(array) = value.get("data").and_then(|d| d.as_array()) {
+        for m in array {
+            let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let name = m.get("display_name").and_then(|v| v.as_str()).unwrap_or(id);
+            out.push(ModelInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                context_length: 0,
+                prompt_price: String::new(),
+                free: false,
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn list_models(
+    refresh: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<ModelInfo>, String> {
+    let config = crate::providers::resolve_llm_config().await;
+    if config.protocol == recurse_agent::agent::Protocol::AnthropicNative {
+        let key = config.api_key.as_deref().unwrap_or("");
+        return fetch_anthropic_models(key);
+    }
+    let (endpoint, api_key) = (
+        config.endpoint.clone(),
+        config.api_key.clone().unwrap_or_default(),
+    );
+    // A custom/local endpoint (or any newly selected `crate::providers`
+    // entry other than the legacy OpenRouter default) has its own
+    // catalog, which is not cached (the endpoint can change per run).
     if !is_hosted_provider(&endpoint) {
-        return fetch_custom_models(&models_base_url(&endpoint), &api_key);
+        return fetch_custom_models(&models_base_url(&endpoint), &api_key, &config.extra_headers);
     }
     const CACHE_TTL_SECS: i64 = 24 * 60 * 60;
     if !refresh {
@@ -1155,6 +1202,113 @@ pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<Mode
         .map_err(|e| format!("models lock poisoned: {e}"))?;
     *guard = Some(models.clone());
     Ok(models)
+}
+
+// ---------------------------------------------------------------------------
+// Multi-provider auth: `crate::providers`/`recurse_agent::oauth` glue.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn providers_list() -> Vec<crate::providers::ProviderStatus> {
+    crate::providers::list_status()
+}
+
+#[tauri::command]
+pub fn provider_save_api_key(id: String, key: String) -> Result<(), String> {
+    crate::providers::save_api_key(&id, Some(key))
+}
+
+#[tauri::command]
+pub fn provider_clear_credential(id: String) -> Result<(), String> {
+    crate::providers::clear_credential(&id)
+}
+
+#[tauri::command]
+pub fn provider_set_active(id: String) -> Result<(), String> {
+    if recurse_agent::providers::find(&id).is_none() {
+        return Err(format!("unknown provider: {id}"));
+    }
+    crate::config::set_active_provider(Some(id))
+}
+
+/// What the frontend needs to open the browser and later submit the
+/// pasted code — the PKCE verifier round-trips through the frontend
+/// rather than living in server-side state, so a restarted app (or a
+/// user who never finishes the flow) never leaves anything to clean up.
+#[derive(Serialize)]
+pub struct AnthropicLoginStart {
+    pub authorize_url: String,
+    pub verifier: String,
+}
+
+#[tauri::command]
+pub fn anthropic_oauth_start() -> AnthropicLoginStart {
+    let login = recurse_agent::oauth::anthropic::start_login();
+    AnthropicLoginStart {
+        authorize_url: login.authorize_url,
+        verifier: login.verifier,
+    }
+}
+
+/// Complete a Claude Pro/Max login: exchange the user-pasted `code#state`
+/// string for a real token, store it, and make this provider active.
+#[tauri::command]
+pub async fn anthropic_oauth_finish(pasted_code: String, verifier: String) -> Result<(), String> {
+    let token = recurse_agent::oauth::anthropic::exchange_code(&pasted_code, &verifier).await?;
+    crate::providers::save_oauth_token("anthropic-oauth", &token)?;
+    crate::config::set_active_provider(Some("anthropic-oauth".to_string()))
+}
+
+#[derive(Serialize)]
+pub struct DeviceLoginInfo {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub interval_secs: u64,
+    pub expires_in_secs: u64,
+}
+
+#[tauri::command]
+pub async fn github_copilot_device_start() -> Result<DeviceLoginInfo, String> {
+    let start = recurse_agent::oauth::github_copilot::start_device_flow().await?;
+    Ok(DeviceLoginInfo {
+        device_code: start.device_code,
+        user_code: start.user_code,
+        verification_uri: start.verification_uri,
+        interval_secs: start.interval_secs,
+        expires_in_secs: start.expires_in_secs,
+    })
+}
+
+/// Poll until the user approves the device in their browser (or the code
+/// expires), then exchange the resulting GitHub token for a Copilot
+/// session token, store it, and make this provider active. One blocking
+/// async command rather than frontend-side polling — the frontend just
+/// awaits this after showing the user/verification code from
+/// [`github_copilot_device_start`].
+#[tauri::command]
+pub async fn github_copilot_device_finish(
+    device_code: String,
+    interval_secs: u64,
+    expires_in_secs: u64,
+) -> Result<(), String> {
+    use recurse_agent::oauth::github_copilot::{
+        exchange_copilot_token, poll_device_flow, PollOutcome,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(expires_in_secs);
+    let interval = std::time::Duration::from_secs(interval_secs.max(1));
+    let ghu_token = loop {
+        if std::time::Instant::now() >= deadline {
+            return Err("device login expired before it was approved".to_string());
+        }
+        match poll_device_flow(&device_code).await? {
+            PollOutcome::Approved(token) => break token,
+            PollOutcome::Pending => tokio::time::sleep(interval).await,
+        }
+    };
+    let session_token = exchange_copilot_token(&ghu_token).await?;
+    crate::providers::save_oauth_token("github-copilot", &session_token)?;
+    crate::config::set_active_provider(Some("github-copilot".to_string()))
 }
 
 // ---------------------------------------------------------------------------
