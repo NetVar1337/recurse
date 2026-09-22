@@ -50,6 +50,7 @@
 //! [vtil2]: https://github.com/pop-rip/vtil2
 
 pub mod cfg;
+pub mod decompile;
 pub mod il;
 pub mod input;
 pub mod lift;

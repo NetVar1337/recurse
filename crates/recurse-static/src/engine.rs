@@ -421,27 +421,7 @@ pub trait Engine: Send + Sync {
     /// `docs/vtil-lift.md`.
     fn lift(&self, addr: u64) -> Result<Value, String> {
         let graph = self.function_graph(addr)?;
-        let blocks: Vec<recurse_vtil::InputBlock> = graph
-            .blocks
-            .iter()
-            .map(|b| recurse_vtil::InputBlock {
-                addr: b.addr,
-                jump: b.jump,
-                fail: b.fail,
-                targets: b.targets.clone(),
-                ops: b
-                    .ops
-                    .iter()
-                    .map(|op| recurse_vtil::InputInsn {
-                        addr: op.addr,
-                        disasm: op.disasm.clone(),
-                        kind: op.kind.clone(),
-                        jump: op.jump,
-                        fail: op.fail,
-                    })
-                    .collect(),
-            })
-            .collect();
+        let blocks = function_graph_to_vtil_blocks(&graph);
         let (routine, stats) = recurse_vtil::lift_and_optimize(graph.addr, &graph.name, &blocks);
         Ok(json!({
             "op": "lift",
@@ -492,6 +472,36 @@ pub trait Engine: Send + Sync {
     fn force_kill(&self) -> bool {
         false
     }
+}
+
+/// Adapt a [`FunctionGraph`] into [`recurse_vtil`]'s decoupled input shape
+/// (`InputBlock`/`InputInsn`) — the one place this conversion is written,
+/// shared by [`Engine::lift`]'s default body and any backend (`native`'s
+/// [`crate::native::NativeEngine::decompile`]) that builds its own
+/// [`Decompilation`] on top of [`recurse_vtil::decompile::decompile`]
+/// instead of the `lift` op's text dump.
+pub fn function_graph_to_vtil_blocks(graph: &FunctionGraph) -> Vec<recurse_vtil::InputBlock> {
+    graph
+        .blocks
+        .iter()
+        .map(|b| recurse_vtil::InputBlock {
+            addr: b.addr,
+            jump: b.jump,
+            fail: b.fail,
+            targets: b.targets.clone(),
+            ops: b
+                .ops
+                .iter()
+                .map(|op| recurse_vtil::InputInsn {
+                    addr: op.addr,
+                    disasm: op.disasm.clone(),
+                    kind: op.kind.clone(),
+                    jump: op.jump,
+                    fail: op.fail,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// JSON schema for the single backend-neutral analysis tool.
