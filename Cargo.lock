@@ -3367,11 +3367,20 @@ dependencies = [
  "gimli",
  "nix",
  "object",
+ "recurse-vtil",
  "rustc-demangle",
  "serde",
  "serde_json",
  "wasmparser",
  "wasmprinter",
+]
+
+[[package]]
+name = "recurse-vtil"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -733,6 +733,37 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
     assert!(err.contains("no console"), "got: {err}");
 }
 
+#[test]
+fn lift_op_raises_a_function_into_vtil_style_il() {
+    use recurse_agent::engine::{execute_tool, Engine};
+    let exe = std::env::current_exe().expect("test exe");
+    let engine = recurse_agent::native::NativeEngine::open(&exe).expect("open native engine");
+    engine.analyze().expect("analyze");
+    let functions = engine.functions().expect("functions");
+    let target = functions.first().expect("at least one function").addr;
+
+    let out =
+        execute_tool(&engine, &serde_json::json!({"op": "lift", "addr": target})).expect("lift op");
+    let env: serde_json::Value = serde_json::from_str(&out).expect("envelope");
+    assert_eq!(env["op"], "lift");
+    let vtil = env["vtil"].as_str().expect("vtil text field");
+    assert!(vtil.starts_with("begin_routine"), "got: {vtil}");
+    assert!(vtil.trim_end().ends_with("end_routine"), "got: {vtil}");
+    assert!(env["optimized"]["rounds"].as_u64().is_some());
+
+    // Advertised alongside `graph`, since the native backend can recover a
+    // CFG (`lift` is built on `function_graph`).
+    let caps = engine.capabilities();
+    let schema = recurse_agent::engine::tool_schema(caps);
+    let ops = schema["function"]["parameters"]["properties"]["op"]["enum"]
+        .as_array()
+        .expect("op enum");
+    assert!(
+        ops.iter().any(|v| v == "lift"),
+        "schema advertises lift: {ops:?}"
+    );
+}
+
 #[tokio::test]
 async fn bash_results_are_colour_stripped_through_the_tool_runtime() {
     // The escape-stripping has to apply on the path the model actually sees,

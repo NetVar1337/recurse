@@ -12,8 +12,9 @@ engine never touches the agent loop, the storefront, or the eval harness.
 
 - `trait Engine` — one method per operation: `analyze`, `summary`, `info`,
   `functions`, `function_at`, `disassemble`, `function_disasm`,
-  `function_graph`, `strings`, `imports`, `xrefs`, `decompile`, `raw`,
-  `resolve`, plus `pid`/`interrupt`/`force_kill` for out-of-process engines.
+  `function_graph`, `strings`, `imports`, `xrefs`, `decompile`, `lift`,
+  `raw`, `resolve`, plus `pid`/`interrupt`/`force_kill` for out-of-process
+  engines.
 - Canonical result types (`FunctionInfo`, `Instruction`, `Disassembly`,
   `FunctionGraph`, `StringRef`, `Import`, `Xref`, `Decompilation`). Their JSON
   field names are exactly what the UI renders, so the frontend is
@@ -23,12 +24,14 @@ engine never touches the agent loop, the storefront, or the eval harness.
   multi-architecture engine.
 - The backend-neutral agent tool (`analyze`) and its dispatcher,
   `execute_tool(&dyn Engine, args)`. Its `op` vocabulary is
-  `analyze | functions | disasm | graph | decompile | xrefs | strings | imports
-  | info | raw`. The vocabulary is filtered by `Engine::capabilities()`: an
+  `analyze | functions | disasm | graph | lift | decompile | xrefs | strings
+  | imports | info | raw`. The vocabulary is filtered by `Engine::capabilities()`: an
   engine without a decompiler or console never advertises those ops in the
   schema or the system prompt, and `execute_tool` rejects them up front. `raw`
   is the escape hatch for an engine console, present only when the selected
-  engine provides one.
+  engine provides one. `lift` needs only `capabilities().graph` (it is built
+  on `function_graph`, see below and `docs/vtil-lift.md`) so it is available
+  on every engine that can recover a CFG, including the native default.
 
 Hosts own the concrete engine (it needs a target path, and r2 needs a child
 process) and box it as `Box<dyn Engine>` (see

@@ -21,6 +21,10 @@ cpp_demangle = "0.4"
 # Managed-bytecode decoders: WebAssembly modules.
 wasmparser = "0.239"
 wasmprinter = "0.239"
+# VTIL-inspired de-obfuscation/de-virtualization IL backing `Engine::lift` /
+# `analyze op:"lift"`. Zero-dependency on this crate in the other direction
+# (see crates/recurse-vtil/src/input.rs) so it stays usable standalone.
+recurse-vtil = { path = "../recurse-vtil" }
 
 [target.'cfg(unix)'.dependencies]
 # Safe signal wrappers for Engine::interrupt / force_kill (r2 engine only).

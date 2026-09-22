@@ -351,6 +351,7 @@ pub fn system_prompt(target: &PromptTarget) -> String {
     let mut ops: Vec<&str> = vec!["`analyze`", "`functions`", "`disasm`"];
     if capabilities.graph {
         ops.push("`graph`");
+        ops.push("`lift`");
     }
     if capabilities.decompile {
         ops.push("`decompile`");
@@ -364,11 +365,16 @@ pub fn system_prompt(target: &PromptTarget) -> String {
     } else {
         ""
     };
+    let lift_step = if capabilities.graph {
+        ", `lift` for a VTIL-style de-obfuscated view when the code looks like a VM dispatcher or opaque predicate"
+    } else {
+        ""
+    };
     let mut prompt = format!(
         "You are Recurse, an expert reverse-engineering agent. Crack the target: recover the serial/key.\n\
          Target: {path} arch={arch} bits={bits} type={kind} ({})\n\
          Tooling: use the `analyze` tool for ALL binary inspection — never shell out to a disassembler. Ops: {}. Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
-         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG{decompile_step}. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
+         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG{decompile_step}{lift_step}. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
          Efficiency (measured and expected of you): never repeat an identical analyze call; keep queries narrow (`disasm` a window, not a whole huge function). Keep prose under 4 lines. If a sentence starts repeating, stop and either call a different tool or answer.",
         if kind.contains("pe") || kind.contains("mach0") { "PE/Mach-O — static analysis on Linux" } else { "" },
         ops.join(", ")
@@ -603,7 +609,8 @@ fn repetition_cut(text: &str) -> Option<usize> {
         return None;
     }
     for unit in MIN_REPEAT_UNIT..=max {
-        if !tail_repeats(bytes, unit, MIN_REPEAT_COPIES) || !repeat_unit_is_prose(&bytes[n - unit..])
+        if !tail_repeats(bytes, unit, MIN_REPEAT_COPIES)
+            || !repeat_unit_is_prose(&bytes[n - unit..])
         {
             continue;
         }
@@ -1340,9 +1347,7 @@ impl Agent {
             // turn alive and transiently ask for the next action instead of
             // persisting an empty answer and stopping.
             if outcome.loop_cut && outcome.content.trim().is_empty() {
-                return Err(
-                    "stopped: model output started repeating and the run was cut".into(),
-                );
+                return Err("stopped: model output started repeating and the run was cut".into());
             }
             if outcome.content.trim().is_empty() {
                 empty_final_retries += 1;
@@ -1456,5 +1461,4 @@ mod tests {
         let text = "the the the the the the the the the the the the";
         assert!(repetition_cut(text).is_none());
     }
-
 }
