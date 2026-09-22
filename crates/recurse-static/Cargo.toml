@@ -19,6 +19,10 @@ object = "0.36"
 capstone = "0.14"
 # Unwind-table (.eh_frame) parsing for exact function bounds.
 gimli = "0.31"
+# Windows PDB (CodeView) debug info: public symbol names + RVAs from a
+# .pdb file, for a binary shipped without its own debug info but with a
+# matching PDB available (from the build, or a symbol server download).
+pdb = "0.8"
 rustc-demangle = "0.1"
 cpp_demangle = "0.4"
 # Managed-bytecode decoders: WebAssembly modules.
