@@ -62,3 +62,6 @@ panic = "deny"
 dbg_macro = "deny"
 todo = "deny"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt"] }
+

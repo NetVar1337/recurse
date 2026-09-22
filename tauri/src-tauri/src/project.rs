@@ -19,7 +19,8 @@ pub struct Project {
 }
 
 fn root() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "could not determine home directory".to_string())?;
+    let home =
+        crate::db::home_dir().ok_or_else(|| "could not determine home directory".to_string())?;
     Ok(home.join(".recurse"))
 }
 
@@ -211,13 +212,46 @@ fn clean_rel(rel: &str) -> Result<String, String> {
         .ok_or_else(|| "path is not valid UTF-8".to_string())
 }
 
+/// Canonicalize `path`, or — when it doesn't exist yet (writing a new
+/// file/subdirectory under an existing project root) — canonicalize its
+/// nearest existing ancestor and re-append the non-existent tail.
+///
+/// Comparing a canonical base against a *raw* fallback (what
+/// `fs::canonicalize(path).unwrap_or_else(|_| path)` gives you for a
+/// not-yet-existing path) is wrong on Windows specifically:
+/// `canonicalize` there returns an extended-length `\\?\`-prefixed path,
+/// which a raw join never has, so `starts_with` never matches even for a
+/// perfectly legitimate new nested path — this real bug was invisible
+/// as long as tests happened to run against directories that already
+/// existed from a prior run (see `crate::db::home_dir`'s doc comment for
+/// the related HOME-isolation bug that was masking it).
+fn canonicalize_best_effort(path: &Path) -> PathBuf {
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(mut canon) = fs::canonicalize(current) {
+            for component in tail.iter().rev() {
+                canon.push(component);
+            }
+            return canon;
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name);
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 /// Resolve a project-relative path and keep it inside the project directory.
 fn safe_join(name: &str, rel: &str) -> Result<PathBuf, String> {
     let dir = project_dir(name)?;
     let rel = clean_rel(rel)?;
     let base = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
     let joined = dir.join(&rel);
-    let canon = fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());
+    let canon = canonicalize_best_effort(&joined);
     if !canon.starts_with(&base) {
         return Err("path escapes the project directory".into());
     }
@@ -237,6 +271,12 @@ pub fn write_file(name: &str, rel: &str, content: &str) -> Result<(), String> {
     fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+/// Relative paths this function pushes always use `/`, even on Windows
+/// (`Path::to_str()` there renders the native `\` separator) — matching
+/// the separator convention `write_file`/`read_file` already accept from
+/// callers (both parse `/`- or `\`-separated input identically via
+/// `Path::components()`), so a caller that writes with a `/` path gets
+/// the exact same string back from a listing, on every platform.
 fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -247,7 +287,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
             walk(&path, base, out);
         } else if let Ok(rel) = path.strip_prefix(base) {
             if let Some(s) = rel.to_str() {
-                out.push(s.to_string());
+                out.push(s.replace('\\', "/"));
             }
         }
     }

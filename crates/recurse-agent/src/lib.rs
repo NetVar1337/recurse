@@ -17,7 +17,10 @@
 //! runtime — the library never creates one.
 
 pub mod agent;
+pub mod anthropic;
 pub mod memory;
+pub mod oauth;
+pub mod providers;
 pub mod report;
 pub mod tools;
 pub mod verify;

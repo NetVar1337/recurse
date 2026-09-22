@@ -4,6 +4,7 @@ pub mod db;
 pub mod debug;
 pub mod engine;
 pub mod project;
+pub mod providers;
 pub mod renames;
 pub mod sessions;
 /// Test-only helpers (HOME isolation) for the storage modules' unit tests.
@@ -133,6 +134,14 @@ pub fn run() {
             commands::save_api_key,
             commands::set_endpoint,
             commands::list_models,
+            commands::providers_list,
+            commands::provider_save_api_key,
+            commands::provider_clear_credential,
+            commands::provider_set_active,
+            commands::anthropic_oauth_start,
+            commands::anthropic_oauth_finish,
+            commands::github_copilot_device_start,
+            commands::github_copilot_device_finish,
             commands::memories_list,
             commands::memory_get,
             commands::memory_save,
