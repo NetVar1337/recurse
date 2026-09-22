@@ -223,7 +223,7 @@ fn sequence_hash(seq: &[String]) -> u64 {
 /// robust to insertions/deletions anywhere in the sequence (not just a
 /// fixed-position diff), which is what actually happens across a real
 /// source patch.
-fn lcs_ratio(a: &[String], b: &[String]) -> f64 {
+pub(crate) fn lcs_ratio(a: &[String], b: &[String]) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 1.0;
     }
