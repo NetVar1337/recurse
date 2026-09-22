@@ -130,7 +130,15 @@ export interface DecompileResult {
 }
 
 export type CenterTab =
-	"recon" | "disasm" | "strings" | "imports" | "console" | "debug";
+	| "recon"
+	| "disasm"
+	| "strings"
+	| "imports"
+	| "console"
+	| "debug"
+	| "findings"
+	| "hex"
+	| "callgraph";
 
 export interface ModelInfo {
 	id: string;
