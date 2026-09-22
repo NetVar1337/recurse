@@ -1,13 +1,13 @@
 //! Headless task runner: drives one crackme end-to-end through
-//! [`librecurse::agent::Agent`] with debug tracing on, bounded turns and a
+//! [`recurse_agent::agent::Agent`] with debug tracing on, bounded turns and a
 //! wall-clock timeout, then grades the final answer. Rust only.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use librecurse::agent::{Agent, AgentEvent, LlmConfig, PromptTarget, ToolCall};
-use librecurse::engine::{BackendKind, Capabilities, Engine};
-use librecurse::memory::MemoryStore;
+use recurse_agent::agent::{Agent, AgentEvent, LlmConfig, PromptTarget, ToolCall};
+use recurse_agent::engine::{BackendKind, Capabilities, Engine};
+use recurse_agent::memory::MemoryStore;
 
 use crate::{contains_token, cost_usd, env_string, grade_flag, prompt_target_for, Task};
 
@@ -59,7 +59,7 @@ impl EvalOpts {
 /// (`native`). An unknown env value is ignored rather than fatal.
 ///
 /// ```
-/// use librecurse::engine::BackendKind;
+/// use recurse_agent::engine::BackendKind;
 /// use recurse_eval::runner::resolve_backend;
 /// std::env::remove_var("EVAL_BACKEND");
 /// std::env::remove_var("RECURSE_BACKEND");
@@ -148,7 +148,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
     // every later query is a cheap follow-up. The backend is `opts.backend`
     // (`EVAL_BACKEND` / the tier YAML / `RECURSE_BACKEND`).
     let engine: Option<std::sync::Arc<std::sync::Mutex<Box<dyn Engine>>>> = match opts.backend {
-        BackendKind::R2 => match librecurse::r2_backend::R2Engine::open(binary) {
+        BackendKind::R2 => match recurse_agent::r2_backend::R2Engine::open(binary) {
             Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(
                 Box::new(e) as Box<dyn Engine>
             ))),
@@ -157,7 +157,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                 None
             }
         },
-        BackendKind::Native => match librecurse::native::open(binary) {
+        BackendKind::Native => match recurse_agent::native::open(binary) {
             Ok(e) => Some(std::sync::Arc::new(std::sync::Mutex::new(e))),
             Err(e) => {
                 eprintln!("[eval] native engine unavailable ({e}); falling back to bash only");
@@ -178,8 +178,8 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         .and_then(|e| e.lock().ok().map(|g| g.capabilities()))
         .unwrap_or_else(Capabilities::none);
     let target: PromptTarget = prompt_target_for(task, &binary.to_string_lossy(), capabilities);
-    let mut tools = librecurse::tools::schema(capabilities);
-    tools.extend(librecurse::memory::memory_tool_schema());
+    let mut tools = recurse_agent::tools::schema(capabilities);
+    tools.extend(recurse_agent::memory::memory_tool_schema());
 
     let mut agent = Agent::new();
     agent.set_debug(true);
@@ -195,7 +195,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                         .unwrap_or(serde_json::Value::Null);
                     store.execute_tool(&mem_project, &tc.function.name, &args)
                 }
-                name if librecurse::engine::is_op(name) => {
+                name if recurse_agent::engine::is_op(name) => {
                     let name = name.to_string();
                     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::Value::Null);
@@ -206,7 +206,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                                 let guard = engine
                                     .lock()
                                     .map_err(|e| format!("analysis engine poisoned: {e}"))?;
-                                librecurse::engine::execute_call(guard.as_ref(), &name, &args)
+                                recurse_agent::engine::execute_call(guard.as_ref(), &name, &args)
                             })
                             .await
                             .map_err(|e| format!("analysis task failed: {e}"))?
@@ -214,7 +214,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
                         None => Err("analysis backend unavailable".to_string()),
                     }
                 }
-                _ => librecurse::tools::execute(&tc).await,
+                _ => recurse_agent::tools::execute(&tc).await,
             }
         }
     };
@@ -271,7 +271,7 @@ pub async fn run_task(task: &Task, binary: &Path, opts: &EvalOpts) -> Result<Tas
         .turns
         .iter()
         .flat_map(|t| t.tool_results.iter())
-        .filter(|r| librecurse::engine::is_op(&r.name))
+        .filter(|r| recurse_agent::engine::is_op(&r.name))
         .map(|r| r.duration_ms)
         .sum();
 

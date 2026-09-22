@@ -12,7 +12,7 @@ pub mod testhome;
 
 use std::sync::{Arc, Mutex};
 
-use librecurse::agent::{Agent, LlmConfig, ModelInfo};
+use recurse_agent::agent::{Agent, LlmConfig, ModelInfo};
 
 /// WebKitGTK registers a `GtkGestureZoom` on the web view under the data key
 /// `"wk-view-zoom-gesture"` that scales the whole page on trackpad pinch. Tauri
@@ -47,7 +47,7 @@ fn disable_pinch_zoom(_app: &tauri::App) {}
 pub struct AppState {
     /// The selected analysis backend (native or r2), owned behind one
     /// lock. Commands and the agent tool both route through the trait.
-    pub session: Arc<Mutex<Option<Box<dyn librecurse::engine::Engine>>>>,
+    pub session: Arc<Mutex<Option<Box<dyn recurse_agent::engine::Engine>>>>,
     /// Async mutex: turns hold it across `.await` points, which a std
     /// mutex must never do.
     pub agent: Arc<tokio::sync::Mutex<Agent>>,

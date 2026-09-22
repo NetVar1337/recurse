@@ -4,7 +4,7 @@
 //!
 //! - host (`db.rs`, `project.rs`, `sessions.rs`, `config.rs`, `renames.rs`):
 //!   `config`, `projects`, `sessions`, `models`, `function_names`
-//! - librecurse (`librecurse::memory`): `memories`, `memories_fts`
+//! - recurse_agent (`recurse_agent::memory`): `memories`, `memories_fts`
 //!
 //! The filesystem under `~/.recurse/<project>/` is reserved for
 //! LLM-written project code (`project_read_file` / `project_write_file`);
@@ -67,7 +67,7 @@ pub fn db_path() -> Result<PathBuf, String> {
 }
 
 /// Open the DB, creating parent dirs and running all migrations
-/// (host tables + librecurse memory tables). Safe to call on every access.
+/// (host tables + recurse_agent memory tables). Safe to call on every access.
 pub fn connect() -> Result<Connection, String> {
     let path = db_path()?;
     if let Some(parent) = path.parent() {
@@ -80,14 +80,14 @@ pub fn connect() -> Result<Connection, String> {
         .map_err(|e| format!("db pragmas: {e}"))?;
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| format!("db schema: {e}"))?;
-    librecurse::memory::ensure_schema(&conn)?;
+    recurse_agent::memory::ensure_schema(&conn)?;
     Ok(conn)
 }
 
 /// Memory store bound to the same DB file. All memory CRUD/search goes
-/// through librecurse — the host never touches the `memories` tables.
-pub fn memory_store() -> Result<librecurse::memory::MemoryStore, String> {
-    Ok(librecurse::memory::MemoryStore::new(db_path()?))
+/// through recurse_agent — the host never touches the `memories` tables.
+pub fn memory_store() -> Result<recurse_agent::memory::MemoryStore, String> {
+    Ok(recurse_agent::memory::MemoryStore::new(db_path()?))
 }
 
 /// Delete pre-SQLite filesystem metadata. No migration: stale

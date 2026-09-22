@@ -4,7 +4,7 @@
 //!
 //! This is systems code — ELF/PE/Mach-O parsing, multi-architecture
 //! disassembly, unwind tables — and is deliberately independent of the agent
-//! (the `librecurse` crate). The agent, the debugger, and the UI all consume it.
+//! (the `recurse_agent` crate). The agent, the debugger, and the UI all consume it.
 //!
 //! * [`engine`] — the backend-agnostic `Engine` trait, canonical result types,
 //!   and the agent's `analyze` tool schema/dispatcher.

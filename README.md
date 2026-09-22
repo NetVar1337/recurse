@@ -20,7 +20,7 @@ tauri/                   desktop app (Tauri + React)
   src-tauri/               Tauri Rust backend (engine sessions, agent wiring)
   package.json             app scripts (Vite, Vitest, Tauri CLI)
 crates/
-  librecurse/              agent framework: LLM loop, tool runtime, SQLite memory
+  recurse-agent/              agent framework: LLM loop, tool runtime, SQLite memory
   recurse-static/          static analysis: ELF/PE/Mach-O parsing, multi-arch disassembly,
                            CFG and cross-reference recovery, the engine seam
   recurse-debug/           cross-platform debugger (ptrace/Mach/Win32, breakpoints, stepping)
@@ -28,7 +28,7 @@ crates/
 justfile                 single entry point for both halves
 ```
 
-`librecurse` is only the agent; static analysis lives in `recurse-static` and the
+`recurse-agent` is only the agent; static analysis lives in `recurse-static` and the
 debugger in `recurse-debug`, so the agent pulls in neither systems code it does
 not use. No crate depends on Tauri, and each builds/tests standalone;
 `recurse-eval` drives the agent headlessly. All are workspace members, so one
@@ -48,7 +48,7 @@ not use. No crate depends on Tauri, and each builds/tests standalone;
 - Live analysis session on any binary — including extension-less files
 - Persistent project memory in SQLite with FTS5/BM25 retrieval — renames, findings
   and notes survive `/clear` and reopen, and seed the next session
-- Headless core (`librecurse`) with per-turn debug tracing; the same agent loop runs
+- Headless core (`recurse-agent`) with per-turn debug tracing; the same agent loop runs
   in the UI and in the eval harness
 - LLM agent backed by an OpenAI-compatible endpoint (OpenRouter by default) with a
   model picker; drives the session directly (disasm, xrefs, strings, imports, decompile)

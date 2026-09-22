@@ -2,13 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
-use librecurse::engine::{Engine, Target, XrefDirection};
+use recurse_agent::engine::{Engine, Target, XrefDirection};
 
 use crate::config;
 use crate::project::{self, Project};
 use crate::sessions::{self, Session};
 use crate::AppState;
-use librecurse::agent::{self, AgentEvent, ModelInfo, ToolCall};
+use recurse_agent::agent::{self, AgentEvent, ModelInfo, ToolCall};
 
 fn session_of(
     state: &AppState,
@@ -472,7 +472,7 @@ pub fn get_backend() -> BackendStatus {
 /// the next binary open.
 #[tauri::command]
 pub fn set_backend(backend: String) -> Result<(), String> {
-    let parsed = librecurse::engine::BackendKind::parse(&backend)
+    let parsed = recurse_agent::engine::BackendKind::parse(&backend)
         .ok_or_else(|| format!("unknown backend: {backend}"))?;
     config::set_backend(Some(parsed.as_str().to_string()))
 }
@@ -534,10 +534,10 @@ pub async fn agent_chat(
     // a panicking worker still reports through this clone.
     let panic_channel = on_event.clone();
     let worker = tauri::async_runtime::spawn(async move {
-        let mut tools = librecurse::tools::schema(capabilities);
-        tools.extend(librecurse::memory::memory_tool_schema());
+        let mut tools = recurse_agent::tools::schema(capabilities);
+        tools.extend(recurse_agent::memory::memory_tool_schema());
         tools.push(recurse_debug::tool::tool_schema());
-        // Memory is owned by librecurse (SQLite + BM25); the host only
+        // Memory is owned by recurse_agent (SQLite + BM25); the host only
         // resolves which project the turn belongs to.
         let mem_project = project.clone().unwrap_or_else(|| "default".to_string());
         let memory = crate::db::memory_store()
@@ -545,7 +545,7 @@ pub async fn agent_chat(
             .unwrap_or_default();
         // The engine's metadata shape stays on the host side: the library only ever
         // sees the normalized PromptTarget interface.
-        let target = librecurse::agent::PromptTarget {
+        let target = recurse_agent::agent::PromptTarget {
             path,
             arch: info["bin"]["arch"].as_str().unwrap_or("?").to_string(),
             bits: info["bin"]["bits"].as_u64().unwrap_or(0),
@@ -559,7 +559,7 @@ pub async fn agent_chat(
         let mut guard = agent.lock().await;
         // Clone per call so the returned future owns its data (the run
         // loop is generic over the future, no boxing needed).
-        // Memory tools are owned by librecurse and served from SQLite;
+        // Memory tools are owned by recurse_agent and served from SQLite;
         // everything else falls through to the base tool runtime.
         let mut exec = |tc: &ToolCall| {
             let tc = tc.clone();
@@ -580,7 +580,7 @@ pub async fn agent_chat(
                     // engine the UI is already driving, so analysis state is
                     // shared and the result is projected/capped the same way
                     // as in the harness. Accept the op as the tool name too.
-                    name if librecurse::engine::is_op(name) => {
+                    name if recurse_agent::engine::is_op(name) => {
                         let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::Value::Null);
                         let guard = session_state
@@ -588,7 +588,7 @@ pub async fn agent_chat(
                             .map_err(|e| format!("session lock poisoned: {e}"))?;
                         match guard.as_ref() {
                             Some(engine) => {
-                                librecurse::engine::execute_call(engine.as_ref(), name, &args)
+                                recurse_agent::engine::execute_call(engine.as_ref(), name, &args)
                             }
                             None => Err("no binary loaded".to_string()),
                         }
@@ -608,7 +608,7 @@ pub async fn agent_chat(
                         .await
                         .map_err(|e| format!("debug task failed: {e}"))?
                     }
-                    _ => librecurse::tools::execute(&tc).await,
+                    _ => recurse_agent::tools::execute(&tc).await,
                 }
             }
         };
@@ -891,7 +891,7 @@ pub fn set_endpoint_impl(state: &AppState, endpoint: &str) -> Result<(), String>
         .llm
         .lock()
         .map_err(|e| format!("llm lock poisoned: {e}"))?;
-    config.endpoint = librecurse::agent::normalize_endpoint(trimmed);
+    config.endpoint = recurse_agent::agent::normalize_endpoint(trimmed);
     Ok(())
 }
 
@@ -1158,7 +1158,7 @@ pub fn list_models(refresh: bool, state: State<'_, AppState>) -> Result<Vec<Mode
 }
 
 // ---------------------------------------------------------------------------
-// Memories (owned by librecurse, stored in SQLite + FTS5/BM25)
+// Memories (owned by recurse_agent, stored in SQLite + FTS5/BM25)
 // ---------------------------------------------------------------------------
 
 fn mem_project(project: Option<&str>) -> String {

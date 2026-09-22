@@ -2,7 +2,7 @@
 #
 # Members:
 #   tauri/src-tauri    desktop app (Tauri + pluggable analysis backends)
-#   crates/librecurse  agent framework (LLM loop, tools, SQLite memory)
+#   crates/recurse-agent  agent framework (LLM loop, tools, SQLite memory)
 #   crates/recurse-static static analysis (native engine, r2 backend, disassembly)
 #   crates/recurse-debug  cross-platform debugger
 #   crates/recurse-eval headless eval harness
@@ -13,7 +13,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/librecurse",
+    "crates/recurse-agent",
     "crates/recurse-static",
     "crates/recurse-debug",
     "crates/recurse-eval",

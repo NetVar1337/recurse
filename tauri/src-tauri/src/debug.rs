@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use librecurse::engine::Engine;
+use recurse_agent::engine::Engine;
 use recurse_debug::symbols::Symbols;
 use recurse_debug::Debugger;
 use serde_json::Value;
@@ -148,7 +148,7 @@ mod tests {
     fn engine_symbols_resolve_functions() {
         let exe = std::env::current_exe().unwrap();
         let engine: Box<dyn Engine> =
-            Box::new(librecurse::native::NativeEngine::open(&exe).unwrap());
+            Box::new(recurse_agent::native::NativeEngine::open(&exe).unwrap());
         engine.analyze().unwrap();
         let first = engine.functions().unwrap().into_iter().next().unwrap();
 

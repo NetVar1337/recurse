@@ -1,6 +1,6 @@
 //! Cross-platform debugger for Recurse, written from scratch in Rust.
 //!
-//! This crate is deliberately independent of the agent (`librecurse`): it is
+//! This crate is deliberately independent of the agent (`recurse_agent`): it is
 //! low-level systems code (ptrace, the Mach task API, the Win32 debug API) and
 //! must not sit in the agent's dependency graph. The host wires it to both the
 //! agent (as the [`tool`] tool) and the UI.

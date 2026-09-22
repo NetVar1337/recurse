@@ -1,7 +1,7 @@
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use librecurse::agent::LlmConfig;
+use recurse_agent::agent::LlmConfig;
 
 use crate::db;
 
@@ -82,12 +82,12 @@ pub fn set_backend(backend: Option<String>) -> Result<(), String> {
 /// Resolve which analysis backend to instantiate. Precedence:
 /// stored config > `RECURSE_BACKEND` environment > built-in default (`native`).
 /// Unknown names fall back rather than making the app unusable.
-pub fn backend() -> librecurse::engine::BackendKind {
+pub fn backend() -> recurse_agent::engine::BackendKind {
     load()
         .backend
         .as_deref()
-        .and_then(librecurse::engine::BackendKind::parse)
-        .unwrap_or_else(librecurse::engine::BackendKind::from_env)
+        .and_then(recurse_agent::engine::BackendKind::parse)
+        .unwrap_or_else(recurse_agent::engine::BackendKind::from_env)
 }
 
 /// Resolve the runtime LLM config the agent loop consumes.

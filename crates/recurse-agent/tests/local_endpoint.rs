@@ -11,7 +11,7 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
-use librecurse::agent::{complete_http, ChatMessage};
+use recurse_agent::agent::{complete_http, ChatMessage};
 
 /// Minimal user turn (the constructor is internal to the crate).
 fn user(content: &str) -> ChatMessage {

@@ -2374,18 +2374,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "librecurse"
-version = "0.1.0"
-dependencies = [
- "recurse-static",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "libredox"
 version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3308,8 +3296,8 @@ dependencies = [
  "glib",
  "glob",
  "libc",
- "librecurse",
  "md-5",
+ "recurse-agent",
  "recurse-debug",
  "regex",
  "rusqlite",
@@ -3326,6 +3314,18 @@ dependencies = [
  "wait-timeout",
  "walkdir",
  "webkit2gtk",
+]
+
+[[package]]
+name = "recurse-agent"
+version = "0.1.0"
+dependencies = [
+ "recurse-static",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -3347,7 +3347,7 @@ version = "0.1.0"
 dependencies = [
  "dotenvy",
  "flate2",
- "librecurse",
+ "recurse-agent",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

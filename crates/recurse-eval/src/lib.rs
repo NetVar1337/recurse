@@ -173,14 +173,14 @@ pub fn contains_token(answer: &str, flag: &str) -> bool {
     false
 }
 
-/// Map a task's dataset metadata to the agent's [`librecurse::agent::PromptTarget`].
+/// Map a task's dataset metadata to the agent's [`recurse_agent::agent::PromptTarget`].
 /// `capabilities` come from the live engine so the prompt only advertises ops
 /// the selected backend can serve.
 pub fn prompt_target_for(
     task: &Task,
     binary_path: &str,
-    capabilities: librecurse::engine::Capabilities,
-) -> librecurse::agent::PromptTarget {
+    capabilities: recurse_agent::engine::Capabilities,
+) -> recurse_agent::agent::PromptTarget {
     let java = task.language.to_lowercase().contains("java") || task.arch == "java";
     let kind = if java {
         "java"
@@ -201,7 +201,7 @@ pub fn prompt_target_for(
         "java" => ("java".to_string(), 0),
         _ => ("?".to_string(), 0),
     };
-    librecurse::agent::PromptTarget {
+    recurse_agent::agent::PromptTarget {
         path: binary_path.to_string(),
         arch,
         bits,

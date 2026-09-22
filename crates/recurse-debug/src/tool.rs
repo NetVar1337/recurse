@@ -2,7 +2,7 @@
 //!
 //! The host appends [`tool_schema`] to the agent's tools and routes matching
 //! calls to [`execute_tool`] — exactly how the memory tools are wired, so
-//! `librecurse` never depends on this crate.
+//! `recurse_agent` never depends on this crate.
 
 use serde_json::{json, Value};
 

@@ -1,4 +1,4 @@
-//! Agent memory, owned by librecurse.
+//! Agent memory, owned by recurse_agent.
 //!
 //! All memory lives in SQLite (same `recurse.db` file the host uses for
 //! projects/sessions/config — this module owns the `memories` tables, the
@@ -323,7 +323,7 @@ fn tool(name: &str, description: &str, params: Value) -> Value {
     })
 }
 
-/// Tool declarations owned by librecurse. The host appends these to the
+/// Tool declarations owned by recurse_agent. The host appends these to the
 /// base `bash/read/write/edit` schema and routes execution to
 /// [`MemoryStore::execute_tool`].
 pub fn memory_tool_schema() -> Vec<Value> {
@@ -373,7 +373,7 @@ mod tests {
 
     fn test_store() -> (MemoryStore, TempfileGuard) {
         let dir = std::env::temp_dir().join(format!(
-            "librecurse-memtest-{}-{}",
+            "recurse_agent-memtest-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

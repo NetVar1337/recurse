@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use librecurse::engine::Engine;
-use librecurse::native::NativeEngine;
+use recurse_agent::engine::Engine;
+use recurse_agent::native::NativeEngine;
 
 #[test]
 fn renames_override_names_and_resolve() {

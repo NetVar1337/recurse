@@ -2,12 +2,12 @@
 //! disassemble, and reference a real binary (the test executable itself).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use librecurse::engine::{Engine, Target, XrefDirection};
+use recurse_agent::engine::{Engine, Target, XrefDirection};
 
 #[test]
 fn native_backend_parses_discovers_and_disassembles() {
     let exe = std::env::current_exe().expect("test executable path");
-    let engine = librecurse::native::NativeEngine::open(&exe).expect("open native engine");
+    let engine = recurse_agent::native::NativeEngine::open(&exe).expect("open native engine");
 
     let info = engine.info().expect("info");
     assert!(info["bin"]["arch"].is_string());
@@ -63,7 +63,7 @@ fn native_backend_parses_discovers_and_disassembles() {
 #[test]
 fn native_backend_reports_missing_decompiler_clearly() {
     let exe = std::env::current_exe().expect("test executable path");
-    let engine = librecurse::native::NativeEngine::open(&exe).expect("open native engine");
+    let engine = recurse_agent::native::NativeEngine::open(&exe).expect("open native engine");
     assert!(!engine.capabilities().decompile);
     let err = engine.decompile(0).expect_err("no decompiler");
     assert!(err.contains("no decompiler"));
@@ -77,7 +77,7 @@ fn native_resolves_demangled_cpp_names() {
     if !bin.is_file() {
         return;
     }
-    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    let engine = recurse_agent::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     // The binary has `_Z9readInputv` etc.; the model types the base name it
     // saw in the demangled function list, so resolve must be loose.
@@ -100,7 +100,7 @@ fn native_annotates_disassembly_and_names_imports() {
     if !bin.is_file() {
         return;
     }
-    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    let engine = recurse_agent::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     // PLT stubs are named after the import they forward to (imp.<name>).
     assert!(
@@ -140,7 +140,7 @@ fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
     if !bin.is_file() {
         return;
     }
-    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    let engine = recurse_agent::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     let main = engine.resolve("main").expect("resolve").expect("main");
     // UI-facing disassembly carries hex bytes.
@@ -155,7 +155,7 @@ fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
         "push rbp is 0x55"
     );
     // The agent tool strips them (bulky, re-derivable).
-    let out = librecurse::engine::execute_tool(
+    let out = recurse_agent::engine::execute_tool(
         &engine,
         &serde_json::json!({"op": "disasm", "addr": main}),
     )
@@ -164,7 +164,7 @@ fn native_instructions_carry_bytes_but_the_agent_tool_strips_them() {
         !out.contains("\"bytes\""),
         "agent disasm has no bytes: {out}"
     );
-    let g = librecurse::engine::execute_tool(
+    let g = recurse_agent::engine::execute_tool(
         &engine,
         &serde_json::json!({"op": "graph", "addr": main}),
     )
@@ -179,7 +179,7 @@ fn native_resolves_indirect_targets_on_a_corpus_binary() {
     if !bin.is_file() {
         return;
     }
-    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    let engine = recurse_agent::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     // Find an indirect call/jump whose data slot resolved into executable code.
     let mut found = None;
@@ -217,7 +217,7 @@ fn native_reports_data_xrefs_and_import_stubs() {
     if !bin.is_file() {
         return;
     }
-    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    let engine = recurse_agent::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     // Each import forwards through a discovered stub, whose address is carried.
     assert!(
@@ -251,7 +251,7 @@ fn native_strings_by_address_and_mangled_resolve() {
     if !bin.is_file() {
         return;
     }
-    let engine = librecurse::native::NativeEngine::open(&bin).expect("open");
+    let engine = recurse_agent::native::NativeEngine::open(&bin).expect("open");
     engine.analyze().expect("analyze");
     // A mangled C++ query (`_Z4mainiPPc`) resolves like its base name.
     assert_eq!(
@@ -265,7 +265,7 @@ fn native_strings_by_address_and_mangled_resolve() {
         .find(|s| s.string.len() > 4)
         .expect("a string");
     let inside = s.addr + 1;
-    let out = librecurse::engine::execute_tool(
+    let out = recurse_agent::engine::execute_tool(
         &engine,
         &serde_json::json!({"op": "strings", "addr": inside}),
     )

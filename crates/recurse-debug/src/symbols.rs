@@ -2,7 +2,7 @@
 //!
 //! The debugger is symbol-agnostic: internally it works in addresses. The host
 //! implements [`Symbols`] over its analysis engine, so the debugger can accept
-//! symbol names and name stack frames without depending on `librecurse`.
+//! symbol names and name stack frames without depending on `recurse_agent`.
 
 /// Resolves between names and addresses and reports the load bias.
 pub trait Symbols: Send + Sync {

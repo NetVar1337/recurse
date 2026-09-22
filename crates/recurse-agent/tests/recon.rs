@@ -5,8 +5,8 @@
 
 use std::path::Path;
 
-use librecurse::engine::Engine;
-use librecurse::native::NativeEngine;
+use recurse_agent::engine::Engine;
+use recurse_agent::native::NativeEngine;
 
 #[test]
 fn recon_reports_hardening_and_analysis() {

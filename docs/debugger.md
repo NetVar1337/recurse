@@ -9,26 +9,26 @@
 > gutter is a follow-up (it needs the runtime bias exposed to the UI).
 
 A from-scratch, cross-platform debugger in Rust, in its **own crate**, exposed
-to the agent as a tool and wired into the UI. `librecurse` stays what it is — the
+to the agent as a tool and wired into the UI. `recurse-agent` stays what it is — the
 agent framework (LLM loop, tool runtime, SQLite memory). All low-level systems
 work (ptrace, Mach, the Win32 debug API, register/memory access, unwinding)
 lives here.
 
 ## Why a separate crate
 
-- **Separation of concerns.** `librecurse` is the agent. The analysis seam
+- **Separation of concerns.** `recurse-agent` is the agent. The analysis seam
   (`recurse_static::engine`) and the debugger are *systems* code; neither belongs in
   the agent crate's dependency graph. A consumer that only wants the agent must
   not pull in `ptrace`/`windows-sys`/`mach2`.
 - **Platform code is `unsafe`-heavy.** Isolating it keeps the unsafe surface in
   one audited crate with a small, safe public API (the same posture as
-  `librecurse::signals`, but larger).
+  `recurse_agent::signals`, but larger).
 - **Independent testing.** The debugger is testable against fixture binaries
   without an LLM, an API key, or the UI.
 
 New crate: `crates/recurse-debug/` (package `recurse-debug`, lib
 `recurse_debug`). Added to the workspace members; the host (`tauri/src-tauri`)
-depends on it. `librecurse` does **not**.
+depends on it. `recurse-agent` does **not**.
 
 ## Goals
 
@@ -185,8 +185,8 @@ frame.
 
 Mirrors the existing `analyze` tool: one tool, an `op` vocabulary, compact JSON
 results, capped output. Defined in `recurse-debug::tool` and appended to the
-agent schema **by the host** (exactly how `librecurse::memory` tools are
-appended), so `librecurse` never depends on the debugger.
+agent schema **by the host** (exactly how `recurse_agent::memory` tools are
+appended), so `recurse-agent` never depends on the debugger.
 
 Tool name: `debug`.
 

@@ -1,7 +1,7 @@
 //! Ignored benchmark for the native backend. Run with:
 //!
 //! ```sh
-//! cargo test -p librecurse --test bench_native -- --ignored --nocapture
+//! cargo test -p recurse_agent --test bench_native -- --ignored --nocapture
 //! ```
 //!
 //! Times every analysis method on the eval corpus (tiny crackmes) and on the
@@ -13,8 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use librecurse::engine::{Engine, Target, XrefDirection};
-use librecurse::native::NativeEngine;
+use recurse_agent::engine::{Engine, Target, XrefDirection};
+use recurse_agent::native::NativeEngine;
 
 fn corpus() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../recurse-eval/corpus");

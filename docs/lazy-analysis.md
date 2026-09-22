@@ -162,11 +162,11 @@ immediately:
 
 ## Measuring it
 
-`crates/librecurse/tests/bench_native.rs` is an ignored benchmark that times
+`crates/recurse-agent/tests/bench_native.rs` is an ignored benchmark that times
 each method over the eval corpus and the test executable:
 
 ```sh
-cargo test -p librecurse --test bench_native -- --ignored --nocapture
+cargo test -p recurse-agent --test bench_native -- --ignored --nocapture
 ```
 
 To reproduce the large-binary numbers, point it at a big stripped binary (or a

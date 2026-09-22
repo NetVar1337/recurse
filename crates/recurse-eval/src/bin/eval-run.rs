@@ -91,7 +91,7 @@ async fn main() {
 
     // Setup failures are loud here (unlike a test): an explicit run that can't
     // run must not look like a pass.
-    let api_key = librecurse::agent::LlmConfig::default()
+    let api_key = recurse_agent::agent::LlmConfig::default()
         .api_key
         .filter(|k| !k.is_empty())
         .unwrap_or_else(|| {
@@ -121,7 +121,7 @@ async fn main() {
 
     // r2 is only required when it is selected; the native
     // backend is in-process and needs no external tool.
-    if opts.backend == librecurse::engine::BackendKind::R2 && !r2_available() {
+    if opts.backend == recurse_agent::engine::BackendKind::R2 && !r2_available() {
         die("r2 is selected but its executable is not on PATH — \
              install it or run with EVAL_BACKEND=native");
     }

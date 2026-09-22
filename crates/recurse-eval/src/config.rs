@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use librecurse::engine::BackendKind;
+use recurse_agent::engine::BackendKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

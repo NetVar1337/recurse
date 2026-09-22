@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use librecurse::agent::{Agent, LlmConfig, ToolCall};
+use recurse_agent::agent::{Agent, LlmConfig, ToolCall};
 use recurse_eval::config::EvalConfig;
 use recurse_eval::select::{select_tasks, DatasetRecord};
 use recurse_eval::{
@@ -65,7 +65,7 @@ run:
 
 #[test]
 fn run_backend_parses_from_yaml() {
-    use librecurse::engine::BackendKind;
+    use recurse_agent::engine::BackendKind;
     let native: EvalConfig = serde_yaml::from_str("run:\n  backend: native\n").expect("parse");
     assert_eq!(native.run.backend, Some(BackendKind::Native));
     let external: EvalConfig = serde_yaml::from_str("run:\n  backend: r2\n").expect("parse");
@@ -195,13 +195,17 @@ fn target_mapping() {
         url: String::new(),
         tags: Vec::new(),
     };
-    let t = prompt_target_for(&task, "C:\\x.exe", librecurse::engine::Capabilities::all());
+    let t = prompt_target_for(
+        &task,
+        "C:\\x.exe",
+        recurse_agent::engine::Capabilities::all(),
+    );
     assert_eq!(t.kind, "pe");
     assert_eq!(t.bits, 32);
     let mut arm = task.clone();
     arm.platform = "Unix/linux etc.".into();
     arm.arch = "ARM".into();
-    let t = prompt_target_for(&arm, "/tmp/x", librecurse::engine::Capabilities::all());
+    let t = prompt_target_for(&arm, "/tmp/x", recurse_agent::engine::Capabilities::all());
     assert_eq!(t.kind, "elf");
     assert_eq!(t.arch, "arm");
 }
@@ -213,17 +217,17 @@ async fn echo_path_records_no_model_turns() {
     let mut agent = Agent::new();
     agent.set_debug(true);
     let config = LlmConfig::new("http://127.0.0.1:9".into(), None, "m".into());
-    let target = librecurse::agent::PromptTarget {
+    let target = recurse_agent::agent::PromptTarget {
         path: "/tmp/x".into(),
         arch: "x86".into(),
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
-        capabilities: librecurse::engine::Capabilities::all(),
+        capabilities: recurse_agent::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
+    let tools = recurse_agent::tools::schema(recurse_agent::engine::Capabilities::all());
     let mut exec = |_: &ToolCall| async { Ok("".to_string()) };
-    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    let mut emit = |_: recurse_agent::agent::AgentEvent| {};
     agent
         .run("t", &config, &target, "hi", &tools, &mut exec, &mut emit)
         .await
@@ -358,22 +362,22 @@ async fn mock_loop_records_exact_turns() {
     ])
     .await;
     let config = LlmConfig::new(endpoint, Some("test".into()), "mock".into());
-    let target = librecurse::agent::PromptTarget {
+    let target = recurse_agent::agent::PromptTarget {
         path: "/tmp/x".into(),
         arch: "x86".into(),
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
-        capabilities: librecurse::engine::Capabilities::all(),
+        capabilities: recurse_agent::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
+    let tools = recurse_agent::tools::schema(recurse_agent::engine::Capabilities::all());
     let mut agent = Agent::new();
     agent.set_debug(true);
     let mut exec = |tc: &ToolCall| {
         let tc = tc.clone();
-        async move { librecurse::tools::execute(&tc).await }
+        async move { recurse_agent::tools::execute(&tc).await }
     };
-    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    let mut emit = |_: recurse_agent::agent::AgentEvent| {};
     agent
         .run_limited(
             "mock-run",
@@ -463,22 +467,22 @@ async fn trace_stores_each_message_once() {
     ])
     .await;
     let config = LlmConfig::new(endpoint, Some("test".into()), "mock".into());
-    let target = librecurse::agent::PromptTarget {
+    let target = recurse_agent::agent::PromptTarget {
         path: "/tmp/x".into(),
         arch: "x86".into(),
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
-        capabilities: librecurse::engine::Capabilities::all(),
+        capabilities: recurse_agent::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
+    let tools = recurse_agent::tools::schema(recurse_agent::engine::Capabilities::all());
     let mut agent = Agent::new();
     agent.set_debug(true);
     let mut exec = |tc: &ToolCall| {
         let tc = tc.clone();
-        async move { librecurse::tools::execute(&tc).await }
+        async move { recurse_agent::tools::execute(&tc).await }
     };
-    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    let mut emit = |_: recurse_agent::agent::AgentEvent| {};
     agent
         .run_limited(
             "dedup", &config, &target, "go", &tools, 4, &mut exec, &mut emit,
@@ -546,18 +550,18 @@ async fn rate_limit_is_retried_then_succeeds() {
     ])
     .await;
     let config = LlmConfig::new(endpoint, Some("test".into()), "mock".into());
-    let target = librecurse::agent::PromptTarget {
+    let target = recurse_agent::agent::PromptTarget {
         path: "/tmp/x".into(),
         arch: "x86".into(),
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
-        capabilities: librecurse::engine::Capabilities::all(),
+        capabilities: recurse_agent::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
+    let tools = recurse_agent::tools::schema(recurse_agent::engine::Capabilities::all());
     let mut agent = Agent::new();
     let mut exec = |_: &ToolCall| async { Ok(String::new()) };
-    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    let mut emit = |_: recurse_agent::agent::AgentEvent| {};
     agent
         .run_limited(
             "rl", &config, &target, "go", &tools, 3, &mut exec, &mut emit,
@@ -600,20 +604,20 @@ async fn empty_tool_result_is_replaced_not_sent_verbatim() {
     ])
     .await;
     let config = LlmConfig::new(endpoint, Some("test".into()), "mock".into());
-    let target = librecurse::agent::PromptTarget {
+    let target = recurse_agent::agent::PromptTarget {
         path: "/tmp/x".into(),
         arch: "x86".into(),
         bits: 64,
         kind: "elf".into(),
         memory: String::new(),
-        capabilities: librecurse::engine::Capabilities::all(),
+        capabilities: recurse_agent::engine::Capabilities::all(),
     };
-    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
+    let tools = recurse_agent::tools::schema(recurse_agent::engine::Capabilities::all());
     let mut agent = Agent::new();
     agent.set_debug(true);
     // Tool runtime that returns nothing at all, like a silent success.
     let mut exec = |_: &ToolCall| async { Ok(String::new()) };
-    let mut emit = |_: librecurse::agent::AgentEvent| {};
+    let mut emit = |_: recurse_agent::agent::AgentEvent| {};
     agent
         .run_limited(
             "empty", &config, &target, "go", &tools, 3, &mut exec, &mut emit,
@@ -636,24 +640,24 @@ async fn analyze_is_one_tool_and_the_runtime_refuses_to_fake_it() {
     // Analysis must go through the backend-neutral tool, not bash. The base
     // runtime has no engine attached, so it must say so rather than silently
     // "succeed".
-    let tools = librecurse::tools::schema(librecurse::engine::Capabilities::all());
+    let tools = recurse_agent::tools::schema(recurse_agent::engine::Capabilities::all());
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
-    assert!(names.contains(&librecurse::engine::TOOL_NAME));
+    assert!(names.contains(&recurse_agent::engine::TOOL_NAME));
     // One analysis tool, not a family of r2_disasm/r2_xref/... tools.
     assert_eq!(
         names
             .iter()
-            .filter(|n| **n == librecurse::engine::TOOL_NAME)
+            .filter(|n| **n == recurse_agent::engine::TOOL_NAME)
             .count(),
         1,
         "exactly one analysis tool: {names:?}"
     );
     let desc = tools
         .iter()
-        .find(|t| t["function"]["name"] == librecurse::engine::TOOL_NAME)
+        .find(|t| t["function"]["name"] == recurse_agent::engine::TOOL_NAME)
         .and_then(|t| t["function"]["description"].as_str())
         .expect("analysis tool described");
     assert!(
@@ -665,12 +669,12 @@ async fn analyze_is_one_tool_and_the_runtime_refuses_to_fake_it() {
     let tc = ToolCall {
         id: "x".into(),
         call_type: "function".into(),
-        function: librecurse::agent::ToolCallFn {
-            name: librecurse::engine::TOOL_NAME.into(),
+        function: recurse_agent::agent::ToolCallFn {
+            name: recurse_agent::engine::TOOL_NAME.into(),
             arguments: r#"{"op":"functions"}"#.into(),
         },
     };
-    let err = librecurse::tools::execute(&tc)
+    let err = recurse_agent::tools::execute(&tc)
         .await
         .expect_err("base runtime cannot serve analysis");
     assert!(err.contains("served by the host"), "got: {err}");
@@ -679,9 +683,9 @@ async fn analyze_is_one_tool_and_the_runtime_refuses_to_fake_it() {
 #[test]
 fn native_engine_serves_the_neutral_tool_end_to_end() {
     // The whole seam: a concrete backend + the neutral tool dispatcher.
-    use librecurse::engine::{execute_tool, Engine};
+    use recurse_agent::engine::{execute_tool, Engine};
     let exe = std::env::current_exe().expect("test exe");
-    let engine = librecurse::native::NativeEngine::open(&exe).expect("open native engine");
+    let engine = recurse_agent::native::NativeEngine::open(&exe).expect("open native engine");
     engine.analyze().expect("analyze");
     let out = execute_tool(&engine, &serde_json::json!({"op": "functions", "limit": 5}))
         .expect("functions op");
@@ -698,7 +702,7 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
     // them (the log comparison showed 20 wasted native calls).
     let caps = engine.capabilities();
     assert!(!caps.decompile && !caps.raw);
-    let schema = librecurse::engine::tool_schema(caps);
+    let schema = recurse_agent::engine::tool_schema(caps);
     let ops = schema["function"]["parameters"]["properties"]["op"]["enum"]
         .as_array()
         .expect("op enum");
@@ -708,7 +712,7 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
     );
     assert!(!ops.iter().any(|v| v == "raw"), "schema hides raw");
 
-    let target = librecurse::agent::PromptTarget {
+    let target = recurse_agent::agent::PromptTarget {
         path: exe.to_string_lossy().into_owned(),
         arch: "x86".into(),
         bits: 64,
@@ -716,7 +720,7 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
         memory: String::new(),
         capabilities: caps,
     };
-    let prompt = librecurse::agent::system_prompt(&target);
+    let prompt = recurse_agent::agent::system_prompt(&target);
     assert!(
         !prompt.contains("decompile"),
         "prompt hides decompile: {prompt}"
@@ -736,7 +740,7 @@ async fn bash_results_are_colour_stripped_through_the_tool_runtime() {
     let tc = ToolCall {
         id: "b".into(),
         call_type: "function".into(),
-        function: librecurse::agent::ToolCallFn {
+        function: recurse_agent::agent::ToolCallFn {
             name: "bash".into(),
             // Built, not hand-written: JSON has no \033 escape, so a literal
             // raw string here would fail to parse as arguments.
@@ -746,7 +750,7 @@ async fn bash_results_are_colour_stripped_through_the_tool_runtime() {
             .to_string(),
         },
     };
-    let out = librecurse::tools::execute(&tc).await.expect("bash runs");
+    let out = recurse_agent::tools::execute(&tc).await.expect("bash runs");
     assert_eq!(out.trim(), "red");
     assert!(
         !out.contains('\u{1b}'),
