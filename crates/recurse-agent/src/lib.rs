@@ -21,7 +21,9 @@ pub mod anthropic;
 pub mod memory;
 pub mod oauth;
 pub mod providers;
+pub mod report;
 pub mod tools;
+pub mod verify;
 
 // Static analysis, re-exported so `recurse_agent::engine` and friends keep
 // working for hosts and the eval harness.

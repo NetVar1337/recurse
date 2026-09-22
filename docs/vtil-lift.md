@@ -94,46 +94,70 @@ missing half, written for Recurse specifically:
   fetch and the compare it feeds are almost never in the same block. See
   the module doc in `crates/recurse-vtil/src/opt.rs` for where this still
   stops short of VTIL's real optimizer — no memory/alias analysis
-  (`Ldd`/`Str` are opaque to every pass here), and no symbolic execution
-  (`VTIL-Architecture/symex`, VTIL's own tracer/pointer/memory model), so a
-  computed jump/call target is never resolved. Building a symbolic tracer
-  over the same `Cfg` this dataflow already uses is the natural next step.
+  (`Ldd`/`Str` are opaque to every pass here).
+- **`symex.rs`** — VTIL's own `symex` (`tracer`/`variable`/`pointer`/
+  `memory`/`context`) is the part of the real project this crate had not
+  attempted until now: registers tracked as symbolic expression trees
+  (`Expr`), not just a literal-or-copy fact, over the same whole-routine
+  `Cfg`/worklist shape `opt.rs` uses. This resolves identities constant
+  folding structurally cannot see — `(a ^ b) ^ b` collapses to `a`
+  symbolically even when `a`/`b` are never literal on any path, which is
+  exactly the double-XOR-with-the-same-key idiom RE keeps running into.
+  Every `Expr::Unknown` (a load, a call result, an unmodelled opcode) is a
+  fresh, distinct value — never treated as equal to any other unknown —
+  which is what keeps the simplifier sound; see the module doc for the
+  regression test that guards exactly that. Still registers only: a
+  computed jump/call target is never resolved, since nothing read from
+  memory is more than opaque input here (VTIL's own `pointer`/`memory`
+  machinery is what would move that boundary, and remains future work for
+  this crate too).
+- **`decompile.rs`** — a structuring decompiler over the optimized IL,
+  wired into `NativeEngine::decompile` (`capabilities().decompile` is now
+  `true` for the native backend — the single biggest gap the original
+  improvement list named: "`Engine::decompile` on native is a hard `Err`").
+  Cooper/Harvey/Kennedy dominators plus back-edge detection
+  (`cfg.rs`) drive two recognisers: `if`/`else` (a two-successor block that
+  isn't a loop header) and `while` (a two-successor block that *is* a loop
+  header, where exactly one successor can reach the header again — forward
+  reachability, not dominance: a loop's sole exit block is typically
+  dominated by the header too, since it has no other way in, so dominance
+  alone can't tell "inside the loop" from "only reachable through the
+  loop" apart). Whatever isn't recognised (irreducible control flow, a
+  shared join point already emitted) falls back to a labelled `goto` —
+  never wrong, just not prettified — and every block is always labelled
+  for exactly that reason. No type/variable recovery, no calling-convention
+  awareness: this reads operands and renders `dst = dst OP rhs;`-shaped
+  statements directly from the IL, not from `symex::Expr` (a caller can
+  still run that separately and cross-reference by address; folding it into
+  this rendering is future work). Total coverage holds here too: an
+  unlifted instruction still appears, as an `__asm("...")` line.
 - **`text.rs`** — a VTIL-style `begin_routine`/`block_0x...`/`end_routine`
   dump, the same reading convention as VTIL-Core's own
   `Sample Routines/*.vtil` files.
 
-## Mixed Boolean-Arithmetic: honest scope
+### A soundness bug the decompiler's own tests caught
 
-[A²MBA-LLVM](https://github.com/xqzme69/A2MBA-LLVM) is an LLVM pass that
-*hardens* expressions against exactly the kind of algebraic simplification
-`opt::simplify_algebraic` performs — composing bitwise/arithmetic terms that
-are equal by idempotence, the identity element, or a self-inverse law into
-something that looks nontrivial. This crate uses that same small identity
-set in the *simplifying* direction (deobfuscation, not obfuscation), and
-stops there deliberately: recognising the general multi-term MBA identities
-A²MBA-LLVM's paper mapping documents, or running the kind of bounded
-equality-saturation search its own hybrid mode (and tools like GAMBA/ProMBA)
-use, needs an expression-tree/e-graph pass over the block. That is real,
-scoped future work, not something this PR claims to solve — see the
-`Identity` doc comment in `opt.rs` for the exact line.
-
-## Related tooling this PR does not fold in as code
-
-A few more repositories worth naming, and why they stayed out of the diff:
-
-- [`bl4ckr0ss3/knife`](https://github.com/bl4ckr0ss3/knife) is a complete,
-  separate Rust RE toolkit (its own triage/CFG/audit/TUI, its own MCP
-  server) — a sibling tool, not a library Recurse depends on. Its
-  `analysis/ir.rs` pseudocode lifter is a different, complementary point in
-  the design space (decompiler-shaped output) from VTIL's IL (optimizer-
-  shaped, physical-register-preserving output); worth a closer look as
-  *prior art* for a future decompile-style pass, not something to vendor.
-- [`OrbitCurve/firmware-reverse-engineering`](https://github.com/OrbitCurve/firmware-reverse-engineering)
-  and [`zhaoxuya520/reverse-skill`](https://github.com/zhaoxuya520/reverse-skill)
-  are agent-skill packs (Claude Code / Codex plugin markdown + scripts), not
-  Rust crates — nothing in them is a dependency Recurse's workspace can
-  build against. They're a documentation/workflow layer that sits *above*
-  Recurse (or any RE tool), independent of this crate.
+Worth recording plainly: writing `decompile.rs`'s loop-recognition test
+(a real `for`-shaped counter loop) surfaced a genuine bug in
+`opt::propagate_and_fold_global` from the whole-routine dataflow work —
+not a decompiler bug. The original implementation mutated instructions
+*during* the fixpoint, from whatever `known_in` a block's first visit
+happened to see. A loop header's first visit only ever sees its entry
+edge (the back edge's predecessor state doesn't exist yet), so a
+loop-carried counter looked constant for exactly one premature pass —
+long enough to rewrite `add ecx, 1` down to `mov ecx, 1` before the
+analysis ever widened to the correct "unknown across the loop" fact,
+at which point the increment was already gone and unrecoverable,
+producing a folded-to-always-true condition and an infinite loop in the
+*rendered* pseudocode. The fix (now in `opt.rs`) separates the two
+phases every dataflow-with-transformation pass needs: converge
+`known_in`/`known_out` first, over throwaway clones of each block's
+instructions (no mutation of `routine` at all), then rewrite each block
+exactly once from its final, fully-converged state. See
+`propagate_and_fold_global`'s doc comment for the full explanation, and
+`decompile::tests::self_loop_becomes_a_while_loop` /
+`opt::tests::constant_setcond_resolves_js_to_unconditional_jmp` for the
+regression coverage.
 
 ## Trying it
 

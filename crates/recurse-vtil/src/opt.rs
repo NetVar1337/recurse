@@ -258,16 +258,34 @@ fn meet(a: &HashMap<Register, Known>, b: &HashMap<Register, Known>) -> HashMap<R
 /// predecessor's own exit state becomes available, so nothing is missed.
 /// Terminates because each register's tracked fact can only be dropped by a
 /// merge, never re-introduced once two predecessors disagree on it.
+///
+/// Deliberately **two phases**, not one: phase 1 converges every block's
+/// `known_in` *without* touching `routine` (each visit re-runs
+/// [`propagate_and_fold_seeded`] over a throwaway clone of the block's
+/// instructions, keeping only the resulting state); phase 2 rewrites each
+/// block exactly once, from its final, fully-converged `known_in`. Folding
+/// destructively *during* the fixpoint — mutating an instruction from a
+/// visit whose `known_in` a later, correctly-widened visit would have
+/// disagreed with — is unsound across a loop: the first visit to a loop
+/// header sees only the entry edge (the back edge's predecessor state does
+/// not exist yet), so a loop-carried value looks constant for exactly one
+/// premature pass. If that pass is allowed to rewrite `add ecx, 1` down to
+/// `mov ecx, 1`, the increment is gone — a later, correctly widened
+/// (`ecx` no longer known-constant) visit has no way to recover it, because
+/// the instruction it needed is no longer there. Keeping analysis
+/// non-destructive until the whole routine has converged is what makes the
+/// single, final rewrite pass sound.
 fn propagate_and_fold_global(routine: &mut Routine, cfg: &Cfg) -> (usize, usize) {
     let mut known_in: HashMap<u64, HashMap<Register, Known>> = HashMap::new();
     let mut known_out: HashMap<u64, HashMap<Register, Known>> = HashMap::new();
-    let mut propagated = 0usize;
-    let mut folded = 0usize;
 
     let mut worklist: std::collections::VecDeque<u64> = cfg.order.iter().copied().collect();
     let mut dequeues = 0usize;
     let max_dequeues = cfg.order.len().saturating_mul(64).max(256);
 
+    // Phase 1: converge `known_in`/`known_out` for every block. Reads
+    // `routine` only (a scratch clone absorbs the transfer function's
+    // would-be edits), never writes it.
     while let Some(addr) = worklist.pop_front() {
         dequeues += 1;
         if dequeues > max_dequeues {
@@ -294,12 +312,11 @@ fn propagate_and_fold_global(routine: &mut Routine, cfg: &Cfg) -> (usize, usize)
         }
         known_in.insert(addr, in_state.clone());
 
-        let Some(block) = routine.blocks.iter_mut().find(|b| b.addr == addr) else {
+        let Some(block) = routine.blocks.iter().find(|b| b.addr == addr) else {
             continue;
         };
-        let (p, f, out_state) = propagate_and_fold_seeded(&mut block.instrs, in_state);
-        propagated += p;
-        folded += f;
+        let mut scratch = block.instrs.clone();
+        let (_, _, out_state) = propagate_and_fold_seeded(&mut scratch, in_state);
 
         let changed_out = known_out.get(&addr) != Some(&out_state);
         known_out.insert(addr, out_state);
@@ -308,6 +325,19 @@ fn propagate_and_fold_global(routine: &mut Routine, cfg: &Cfg) -> (usize, usize)
                 worklist.push_back(succ);
             }
         }
+    }
+
+    // Phase 2: one real rewrite pass per block, from its converged
+    // known_in — the facts are now the true meet over every path
+    // (including any loop's back edge), so this application cannot later
+    // be invalidated the way an intra-fixpoint one could.
+    let mut propagated = 0usize;
+    let mut folded = 0usize;
+    for block in &mut routine.blocks {
+        let in_state = known_in.get(&block.addr).cloned().unwrap_or_default();
+        let (p, f, _) = propagate_and_fold_seeded(&mut block.instrs, in_state);
+        propagated += p;
+        folded += f;
     }
 
     (propagated, folded)

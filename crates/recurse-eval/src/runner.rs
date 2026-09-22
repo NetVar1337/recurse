@@ -103,13 +103,14 @@ pub struct TaskOutcome {
     pub workdir: PathBuf,
 }
 
-/// The task prompt, phrased for the active backend's capabilities: the native
-/// backend has no decompiler, so asking for `decompile` there just wastes a
-/// turn on an error the model then has to recover from.
+/// The task prompt, phrased for the active backend's capabilities. Both
+/// backends advertise `decompile` now: `native` renders pseudocode via
+/// `recurse-vtil` (see `docs/vtil-lift.md`), `r2` via its own decompiler
+/// plugin when installed.
 fn task_prompt(binary: &Path, backend: BackendKind) -> String {
     let ops = match backend {
         BackendKind::R2 => "functions, disasm, decompile, xrefs, strings, imports",
-        BackendKind::Native => "functions, disasm, xrefs, strings, imports",
+        BackendKind::Native => "functions, disasm, decompile, lift, xrefs, strings, imports",
     };
     format!(
         "Recover a valid serial/key for the binary at {}.\n\

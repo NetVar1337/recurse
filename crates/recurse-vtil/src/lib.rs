@@ -32,14 +32,17 @@
 //! VM-dispatcher-style control flow, where [`opt::resolve_constant_branches`]
 //! collapses a constant-driven conditional into the single real edge.
 //!
-//! Every scope limit — block-local dataflow only, ten relational conditions,
-//! a small single/two-instruction algebraic identity set, no memory
-//! pointer modelling beyond the native operand text — is documented at the
-//! function or type that draws the line, rather than left implicit. See
-//! `docs/vtil-lift.md` in the repository root for the full picture and
-//! related prior art (A²MBA-LLVM's Mixed Boolean-Arithmetic hardening,
-//! approached here only through the identities [`opt::simplify_algebraic`]
-//! already needs in the *simplifying* direction).
+//! Every scope limit — no memory/alias modelling beyond the native operand
+//! text, ten relational conditions, a fixed structural identity set rather
+//! than an e-graph/SMT search — is documented at the function or type that
+//! draws the line, rather than left implicit. See `docs/vtil-lift.md` in
+//! the repository root for the full picture and related prior art
+//! (A²MBA-LLVM's Mixed Boolean-Arithmetic hardening, approached here only
+//! through the identities [`opt::simplify_algebraic`] and [`symex`] already
+//! need in the *simplifying* direction). Dataflow ([`opt`]) and symbolic
+//! execution ([`symex`]) both run over the whole routine
+//! ([`cfg::Cfg`]-driven forward worklists with meet-at-merge), not just one
+//! block, so a value set far from where it is used still resolves.
 //!
 //! [vtil]: https://github.com/vtil-project
 //! [vtil-core]: https://github.com/vtil-project/VTIL-Core
@@ -47,12 +50,17 @@
 //! [vtil2]: https://github.com/pop-rip/vtil2
 
 pub mod cfg;
+pub mod decompile;
+#[cfg(feature = "unicorn-engine")]
+pub mod emu;
 pub mod il;
 pub mod input;
 pub mod lift;
 pub mod liveness;
 pub mod opt;
 pub mod regalias;
+pub mod symex;
+pub mod taint;
 pub mod text;
 
 pub use il::{Block, Cond, Instr, Op, Operand, Register, Routine};
