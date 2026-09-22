@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
+import { DebugPanel } from "@/components/DebugPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -313,6 +314,7 @@ export function CenterPanel() {
 				<Tabs value={tab} onValueChange={setTabSafe} className="flex-1">
 					<TabsList className="h-9 bg-transparent p-1">
 						<TabsTrigger value="recon">Recon</TabsTrigger>
+						<TabsTrigger value="debug">Debug</TabsTrigger>
 						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
 						<TabsTrigger value="strings">Strings</TabsTrigger>
 						<TabsTrigger value="imports">Imports</TabsTrigger>
@@ -387,6 +389,8 @@ export function CenterPanel() {
 			<div className="flex min-h-0 min-w-0 flex-1 flex-col">
 				{tab === "recon" ? (
 					<ReconPanel key={binaryPath} />
+				) : tab === "debug" ? (
+					<DebugPanel />
 				) : tab === "disasm" && viewMode === "graph" && selected ? (
 					<Suspense
 						fallback={

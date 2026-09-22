@@ -35,6 +35,8 @@ export const api = {
 	functions: () => invoke<Function[]>("functions"),
 	renameFunction: (addr: number, name: string) =>
 		invoke<void>("rename_function", { addr, name }),
+	debugCommand: (op: string, args?: Record<string, unknown>) =>
+		invoke<unknown>("debug_command", { op, args: args ?? null }),
 	recon: () => invoke<Recon>("recon"),
 	analysisProgress: () =>
 		invoke<{ function_count: number; indexing: boolean }>(

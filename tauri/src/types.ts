@@ -129,7 +129,8 @@ export interface DecompileResult {
 	[k: string]: unknown;
 }
 
-export type CenterTab = "recon" | "disasm" | "strings" | "imports" | "console";
+export type CenterTab =
+	"recon" | "disasm" | "strings" | "imports" | "console" | "debug";
 
 export interface ModelInfo {
 	id: string;
@@ -238,6 +239,57 @@ export interface FunctionGraph {
 	name?: string;
 	blocks?: GraphBlock[];
 	[k: string]: unknown;
+}
+
+export interface DebugRegisters {
+	pc: number;
+	sp: number;
+	fp: number;
+	values: Record<string, number>;
+}
+
+/** A tagged stop reason (`{reason: "breakpoint", addr, id}`, …). */
+export interface DebugStopReason {
+	reason: string;
+	addr?: number;
+	id?: number;
+	signal?: number;
+	name?: string;
+	code?: number;
+}
+
+export interface DebugStop {
+	pid: number;
+	thread: number;
+	reason: DebugStopReason;
+	registers: DebugRegisters;
+}
+
+export interface DebugBreakpoint {
+	id: number;
+	addr: number;
+	enabled: boolean;
+}
+
+export interface DebugFrame {
+	addr: number;
+	name?: string;
+}
+
+export interface DebugStatus {
+	pid?: number | null;
+	state: string;
+	stop?: DebugStopReason;
+	breakpoints: DebugBreakpoint[];
+}
+
+/** A rendered memory read. */
+export interface DebugMemory {
+	addr: number;
+	len?: number;
+	hex?: string;
+	ascii?: string;
+	words?: number[];
 }
 
 export interface Session {

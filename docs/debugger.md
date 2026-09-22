@@ -1,5 +1,13 @@
 # Debugger — design and plan
 
+> **Status.** M1–M3 are implemented: the `recurse-debug` crate with a Linux
+> `ptrace` backend (launch/attach, software breakpoints, step into/over/out,
+> registers, memory, threads, backtrace), the host glue (`EngineSymbols`,
+> `debug_command`) and the agent `debug` tool, and a UI **Debug** tab. Next:
+> M4 (memory write, hardware breakpoints, watchpoints, richer ASLR mapping) and
+> M5 (macOS + Windows backends). Breakpoint toggling from the disassembly
+> gutter is a follow-up (it needs the runtime bias exposed to the UI).
+
 A from-scratch, cross-platform debugger in Rust, in its **own crate**, exposed
 to the agent as a tool and wired into the UI. `librecurse` stays what it is — the
 agent framework (LLM loop, tool runtime, SQLite memory). All low-level systems
