@@ -16,6 +16,7 @@
 
 pub mod arch;
 pub mod cpp;
+pub mod diff;
 pub mod dwarf;
 pub mod engine;
 pub mod native;
