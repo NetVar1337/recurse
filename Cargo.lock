@@ -3359,6 +3359,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "recurse-mcp"
+version = "0.1.0"
+dependencies = [
+ "recurse-static",
+ "serde_json",
+]
+
+[[package]]
 name = "recurse-static"
 version = "0.1.0"
 dependencies = [

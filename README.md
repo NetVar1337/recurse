@@ -24,6 +24,7 @@ crates/
   recurse-static/          static analysis: ELF/PE/Mach-O parsing, multi-arch disassembly,
                            CFG and cross-reference recovery, the engine seam
   recurse-vtil/            VTIL-inspired de-obfuscation/de-virtualization IL, lifter, optimizer
+  recurse-mcp/             standalone headless MCP server (stdio) over the engine — no Tauri, no IDA
   recurse-debug/           cross-platform debugger (ptrace/Mach/Win32, breakpoints, stepping)
   recurse-eval/            headless eval harness (YAML-configured tiers)
 justfile                 single entry point for both halves
@@ -61,6 +62,9 @@ not use. No crate depends on Tauri, and each builds/tests standalone;
 - Native decompiler: `decompile` renders C-like pseudocode (`if`/`while`
   structuring, total instruction coverage) from the same `recurse-vtil`
   pipeline — no external tool, no r2 required
+- Standalone `recurse-mcp` server: the same `Engine` over MCP stdio for any
+  MCP-capable agent (Claude Code, Cursor, Claude Desktop, …) — no Tauri, no
+  IDA seat, no Python bridge (see [docs/recurse-mcp.md](docs/recurse-mcp.md))
 
 ## Analysis backends
 

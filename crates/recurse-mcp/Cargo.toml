@@ -1,0 +1,30 @@
+[package]
+name = "recurse-mcp"
+description = "Standalone headless MCP server exposing Recurse's binary-analysis engine over stdio to any MCP client (Claude Code, Cursor, Claude Desktop, ...) -- no Tauri UI, no IDA license"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "recurse-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "recurse_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+recurse-static = { path = "../recurse-static" }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
