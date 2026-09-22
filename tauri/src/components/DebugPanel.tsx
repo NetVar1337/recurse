@@ -8,7 +8,7 @@ import {
 	StepForward,
 	X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { pickBinary } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -90,6 +90,7 @@ export function DebugPanel() {
 	const [attachPid, setAttachPid] = useState("");
 	const [breakAt, setBreakAt] = useState("");
 	const [stdin, setStdin] = useState("");
+	const outputRef = useRef<HTMLDivElement>(null);
 
 	// Poll the debuggee's output while it is alive, so prompts appear even when
 	// a `continue` is still blocked waiting for a stop.
@@ -98,6 +99,13 @@ export function DebugPanel() {
 		const id = setInterval(() => void pollOutput(), 400);
 		return () => clearInterval(id);
 	}, [active, pollOutput]);
+
+	// Keep the newest output in view.
+	useEffect(() => {
+		if (outputRef.current) {
+			outputRef.current.scrollTop = outputRef.current.scrollHeight;
+		}
+	}, [output]);
 
 	const onSendStdin = async () => {
 		const text = stdin;
@@ -362,11 +370,11 @@ export function DebugPanel() {
 				<div className="text-muted-foreground px-3 py-1 text-[11px] font-semibold tracking-wider uppercase">
 					Program output
 				</div>
-				<ScrollArea className="h-32">
-					<pre className="scroll-host p-2 font-mono text-[10.5px] whitespace-pre-wrap">
-						{output}
+				<div ref={outputRef} className="scroll-host h-32 overflow-auto">
+					<pre className="p-2 font-mono text-[10.5px] whitespace-pre-wrap">
+						{output.replace(/\r/g, "")}
 					</pre>
-				</ScrollArea>
+				</div>
 				<div className="flex items-center gap-1.5 border-t px-2 py-1.5">
 					<Input
 						value={stdin}

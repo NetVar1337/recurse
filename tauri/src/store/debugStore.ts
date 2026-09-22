@@ -97,6 +97,7 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 
 	run: async (op, args) => {
 		set({ busy: true, error: null });
+		if (op === "continue" || op === "step") set({ state: "running" });
 		appendLog(`> ${op}${args ? ` ${JSON.stringify(args)}` : ""}`);
 		try {
 			const out = await api.debugCommand(op, args);
@@ -146,7 +147,7 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 			const out = (await api.debugCommand("output")) as {
 				text?: string;
 			};
-			const text = out?.text ?? "";
+			const text = (out?.text ?? "").replace(/\r/g, "");
 			if (text) {
 				set((s) => ({ output: (s.output + text).slice(-20000) }));
 			}

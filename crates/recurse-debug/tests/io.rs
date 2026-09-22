@@ -39,17 +39,30 @@ fn step_at_entry_and_feed_stdin() {
         dbg.step(StepKind::Over).expect("step at entry");
     }
 
-    // Feed stdin while `continue` is blocked waiting for the target.
+    // Start the program; it prints its prompt and blocks on input. Because the
+    // debuggee runs on a tty, the prompt is line-buffered and must appear
+    // *before* we send anything.
     let writer = dbg.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        writer.write_stdin(b"hunter2\n").expect("write stdin");
-    });
-    dbg.resume().expect("resume");
+    let cont = std::thread::spawn(move || writer.resume().map(|s| s.reason));
+    let mut prompt = String::new();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        prompt = String::from_utf8_lossy(&dbg.output()).to_string();
+        if prompt.contains("Give Me Your Flag") {
+            break;
+        }
+    }
+    assert!(
+        prompt.contains("Give Me Your Flag"),
+        "prompt appeared before input: {prompt:?}"
+    );
 
+    // Now answer the prompt and let it finish.
+    dbg.write_stdin(b"hunter2\n").expect("write stdin");
+    let _ = cont.join().unwrap();
     let output = String::from_utf8_lossy(&dbg.output()).to_string();
     assert!(
-        output.contains("Give Me Your Flag"),
+        output.contains("Bad"),
         "debuggee output captured: {output:?}"
     );
 
