@@ -10,7 +10,7 @@ import {
 	StepForward,
 	X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api, pickBinary } from "@/api";
 import { DebugCpu } from "@/components/DebugCpu";
@@ -77,48 +77,110 @@ function Empty({ label }: { label: string }) {
 	return <div className="text-muted-foreground p-3 text-[11px]">{label}</div>;
 }
 
-/** Right column, top: general registers and flags. */
-function RegistersPane() {
-	const regs = useDebugStore((s) => s.registers);
-	if (!regs) return <Empty label="no registers" />;
-	const skip = new Set(["rip", "eflags", "orig_rax", "pc", "sp"]);
-	const gp = Object.entries(regs.values).filter(([k]) => !skip.has(k));
+/** A small uppercase title bar for a docked pane. */
+function PaneHeader({ children }: { children: ReactNode }) {
 	return (
-		<div className="p-2 font-mono text-[11px]">
-			<div className="mb-0.5 flex justify-between">
-				<span className="text-muted-foreground">rip</span>
-				<span className="text-primary">{fmtAddr(regs.pc)}</span>
-			</div>
-			<div className="mb-0.5 flex justify-between">
-				<span className="text-muted-foreground">rsp</span>
-				<span>{fmtAddr(regs.sp)}</span>
-			</div>
-			<div className="mb-0.5 flex justify-between">
-				<span className="text-muted-foreground">rbp</span>
-				<span>{fmtAddr(regs.fp)}</span>
-			</div>
-			<div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
-				{gp.map(([k, v]) => (
-					<div key={k} className="flex justify-between gap-2">
-						<span className="text-muted-foreground">{k}</span>
-						<span className="truncate">{fmtAddr(v)}</span>
-					</div>
-				))}
-			</div>
-			<div className="text-muted-foreground mt-1.5">
-				flags{" "}
-				<span className="text-foreground">
-					{flagsOf(regs.values.eflags ?? 0) || "—"}
-				</span>
-			</div>
+		<div className="text-muted-foreground border-border shrink-0 border-b px-3 py-1 text-[11px] font-semibold tracking-wider uppercase">
+			{children}
 		</div>
 	);
 }
 
-/** Right column, bottom: the words at the stack pointer. */
+/** One editable register: click the value to write a new one. */
+function RegisterRow({
+	name,
+	value,
+	emphasis,
+}: {
+	name: string;
+	value: number;
+	emphasis?: boolean;
+}) {
+	const run = useDebugStore((s) => s.run);
+	const [editing, setEditing] = useState(false);
+	const [draft, setDraft] = useState("");
+
+	const commit = () => {
+		setEditing(false);
+		const v = draft.trim();
+		if (v) void run("setreg", { name, value: v });
+	};
+
+	return (
+		<div className="flex justify-between gap-2">
+			<span className="text-muted-foreground">{name}</span>
+			{editing ? (
+				<input
+					autoFocus
+					value={draft}
+					onChange={(e) => setDraft(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") commit();
+						else if (e.key === "Escape") setEditing(false);
+					}}
+					onBlur={commit}
+					className="w-full min-w-0 bg-transparent text-right outline-none"
+				/>
+			) : (
+				<button
+					className={cn(
+						"min-w-0 truncate hover:underline",
+						emphasis && "text-primary",
+					)}
+					title="Click to edit"
+					onClick={() => {
+						setDraft(fmtAddr(value));
+						setEditing(true);
+					}}
+				>
+					{fmtAddr(value)}
+				</button>
+			)}
+		</div>
+	);
+}
+
+/** Right column, top: general registers and flags. */
+function RegistersPane() {
+	const regs = useDebugStore((s) => s.registers);
+	const skip = new Set(["rip", "eflags", "orig_rax", "pc", "sp"]);
+	const gp = (regs ? Object.entries(regs.values) : []).filter(
+		([k]) => !skip.has(k),
+	);
+	return (
+		<div className="flex min-h-0 flex-col">
+			<PaneHeader>Registers</PaneHeader>
+			{!regs ? (
+				<Empty label="no registers" />
+			) : (
+				<div className="scroll-host max-h-72 overflow-auto p-2 font-mono text-[11px]">
+					<RegisterRow name="rip" value={regs.pc} emphasis />
+					<RegisterRow name="rsp" value={regs.sp} />
+					<RegisterRow name="rbp" value={regs.fp} />
+					<div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
+						{gp.map(([k, v]) => (
+							<RegisterRow key={k} name={k} value={v} />
+						))}
+					</div>
+					<div className="text-muted-foreground mt-1.5">
+						flags{" "}
+						<span className="text-foreground">
+							{flagsOf(regs.values.eflags ?? 0) || "—"}
+						</span>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+/** Right column, bottom: the words at the stack pointer, with value hints. */
 function StackPane() {
 	const sp = useDebugStore((s) => s.registers?.sp ?? null);
 	const active = useDebugStore((s) => s.active);
+	const bias = useDebugStore((s) => s.bias);
+	const funcs = useAnalysisStore((s) => s.funcs);
+	const strings = useAnalysisStore((s) => s.strings);
 	const [data, setData] = useState<{ sp: number; words: number[] } | null>(
 		null,
 	);
@@ -141,19 +203,74 @@ function StackPane() {
 		};
 	}, [sp, active]);
 
-	if (sp == null) return <Empty label="no stack" />;
-	const words = data && data.sp === sp ? data.words : [];
+	// Static address -> function name, for code pointers on the stack.
+	const codeMap = useMemo(() => {
+		const m = new Map<number, string>();
+		for (const f of funcs) {
+			if (typeof f.addr === "number") {
+				m.set(
+					f.addr,
+					f.name ?? f.realname ?? `sub_${f.addr.toString(16)}`,
+				);
+			}
+		}
+		return m;
+	}, [funcs]);
+
+	// Static address -> string, for pointers to string data.
+	const strMap = useMemo(() => {
+		const m = new Map<number, string>();
+		for (const s of strings) m.set(s.vaddr, s.string ?? "");
+		return m;
+	}, [strings]);
+
+	/** Resolve a stack word to a symbol, a string, or a stack offset. */
+	const hint = (v: number): string => {
+		if (v === 0) return "";
+		const code = codeMap.get(v - bias);
+		if (code) return code;
+		const text = strMap.get(v - bias);
+		if (text !== undefined) return `"${text.slice(0, 48)}"`;
+		if (sp != null && v > sp && v < sp + 0x400) {
+			return `=> rsp+0x${(v - sp).toString(16)}`;
+		}
+		return "";
+	};
+
+	const words = sp != null && data && data.sp === sp ? data.words : [];
 	return (
-		<div className="scroll-host min-h-0 flex-1 overflow-auto p-1 font-mono text-[11px]">
-			{words.map((w, i) => (
-				<div key={i} className="flex gap-2 px-1">
-					<span className="text-muted-foreground">
-						{fmtAddr(sp + i * 8)}
-					</span>
-					<span className="text-foreground">{fmtAddr(w)}</span>
+		<div className="flex min-h-0 flex-1 flex-col">
+			<PaneHeader>Stack</PaneHeader>
+			{sp == null ? (
+				<Empty label="no stack" />
+			) : (
+				<div className="scroll-host min-h-0 flex-1 overflow-auto py-1 font-mono text-[11px]">
+					{words.map((w, i) => {
+						const top = i === 0;
+						return (
+							<div
+								key={i}
+								className={cn(
+									"flex gap-2 px-1 pr-2",
+									top && "bg-primary/25",
+								)}
+							>
+								<span className="text-muted-foreground">
+									{fmtAddr(sp + i * 8)}
+								</span>
+								<span className="text-foreground w-[18ch] shrink-0">
+									{fmtAddr(w)}
+								</span>
+								<span className="truncate text-amber-600 dark:text-amber-500/80">
+									{top ? "◀ rsp " : ""}
+									{hint(w)}
+								</span>
+							</div>
+						);
+					})}
+					{words.length === 0 && <Empty label="unreadable" />}
 				</div>
-			))}
-			{words.length === 0 && <Empty label="unreadable" />}
+			)}
 		</div>
 	);
 }

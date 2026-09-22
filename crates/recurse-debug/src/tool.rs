@@ -23,6 +23,7 @@ pub const OPS: &[&str] = &[
     "unbreak",
     "breakpoints",
     "regs",
+    "setreg",
     "read",
     "write",
     "backtrace",
@@ -89,6 +90,14 @@ pub fn tool_schema() -> Value {
                     },
                     "id": { "type": "integer", "description": "For `unbreak`: breakpoint id." },
                     "thread": { "type": "integer", "description": "Optional thread id." },
+                    "name": {
+                        "type": "string",
+                        "description": "For `setreg`: register name (e.g. `rax`, `rip`)."
+                    },
+                    "value": {
+                        "type": ["string", "integer"],
+                        "description": "For `setreg`: the new value (number or `0x` hex)."
+                    },
                     "len": { "type": "integer", "description": "For `read`: byte count." },
                     "count": {
                         "type": "integer",
@@ -172,6 +181,17 @@ pub fn execute_tool(dbg: &Debugger, op: &str, args: &Value) -> Result<String> {
         }
         "breakpoints" => to_json(&dbg.breakpoints()?)?,
         "regs" => to_json(&dbg.registers(args.get("thread").and_then(Value::as_u64))?)?,
+        "setreg" => {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::msg("setreg: `name` is required"))?;
+            let value = args
+                .get("value")
+                .and_then(parse_addr)
+                .ok_or_else(|| Error::msg("setreg: `value` is required"))?;
+            to_json(&dbg.set_register(name, value)?)?
+        }
         "read" => {
             let addr = args
                 .get("addr")

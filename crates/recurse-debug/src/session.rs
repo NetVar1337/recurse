@@ -161,6 +161,8 @@ enum Command {
     Breakpoints(Reply<Vec<Breakpoint>>),
     /// Read registers.
     Registers(Option<ThreadId>, Reply<Registers>),
+    /// Write one register.
+    SetRegister(String, u64, Reply<Registers>),
     /// Read memory.
     ReadMemory(u64, usize, Reply<Vec<u8>>),
     /// Write memory.
@@ -293,6 +295,15 @@ impl Debugger {
     /// [`Error::NotRunning`] with no debuggee.
     pub fn registers(&self, thread: Option<ThreadId>) -> Result<Registers> {
         self.call(move |tx| Command::Registers(thread, tx))
+    }
+
+    /// Set register `name` to `value`, returning the updated registers.
+    ///
+    /// # Errors
+    /// [`Error::NotRunning`] with no debuggee, or the OS error.
+    pub fn set_register(&self, name: &str, value: u64) -> Result<Registers> {
+        let name = name.to_string();
+        self.call(move |tx| Command::SetRegister(name, value, tx))
     }
 
     /// Read `len` bytes of the debuggee's memory at `addr`.
@@ -435,6 +446,9 @@ fn run_worker(mut inner: Inner, rx: Receiver<Command>) {
             }
             Command::Registers(thread, tx) => {
                 let _ = tx.send(inner.registers(thread));
+            }
+            Command::SetRegister(name, value, tx) => {
+                let _ = tx.send(inner.set_register(&name, value));
             }
             Command::ReadMemory(addr, len, tx) => {
                 let _ = tx.send(inner.read_memory(addr, len));
@@ -694,6 +708,31 @@ impl Inner {
     fn registers(&mut self, thread: Option<ThreadId>) -> Result<Registers> {
         let t = thread.unwrap_or(self.thread()?);
         self.target.get_regs(t)
+    }
+
+    /// Set one register, keeping the pc/sp/fp shortcuts in sync.
+    fn set_register(&mut self, name: &str, value: u64) -> Result<Registers> {
+        let thread = self.thread()?;
+        let mut regs = self.target.get_regs(thread)?;
+        match name {
+            "pc" | "rip" => {
+                regs.pc = value;
+                regs.values.insert("rip".to_string(), value);
+            }
+            "sp" | "rsp" => {
+                regs.sp = value;
+                regs.values.insert("rsp".to_string(), value);
+            }
+            "fp" | "rbp" => {
+                regs.fp = value;
+                regs.values.insert("rbp".to_string(), value);
+            }
+            other => {
+                regs.values.insert(other.to_string(), value);
+            }
+        }
+        self.target.set_regs(thread, &regs)?;
+        Ok(regs)
     }
 
     /// Read memory.

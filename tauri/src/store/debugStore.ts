@@ -117,7 +117,7 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 				set({ ...initial, log: get().log });
 			} else if (op === "break" || op === "unbreak") {
 				await refreshBreakpoints();
-			} else if (op === "regs") {
+			} else if (op === "regs" || op === "setreg") {
 				set({ registers: out as DebugRegisters });
 			} else if (op === "backtrace") {
 				set({ frames: (out as DebugFrame[]) ?? [] });

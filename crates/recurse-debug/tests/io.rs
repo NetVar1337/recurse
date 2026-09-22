@@ -128,3 +128,26 @@ fn disassembles_live_memory() {
     assert!(!insns[0].bytes.is_empty());
     let _ = dbg.kill();
 }
+
+#[test]
+fn sets_a_register() {
+    let dbg = match Debugger::new() {
+        Ok(d) => Arc::new(d),
+        Err(_) => return,
+    };
+    if dbg
+        .launch(&LaunchOptions {
+            path: "/bin/true".into(),
+            ..Default::default()
+        })
+        .is_err()
+    {
+        return;
+    }
+    let updated = dbg.set_register("rax", 0xdead_beef).expect("setreg");
+    assert_eq!(updated.values.get("rax"), Some(&0xdead_beef));
+    // The write must be visible on the next read.
+    let again = dbg.registers(None).expect("regs");
+    assert_eq!(again.values.get("rax"), Some(&0xdead_beef));
+    let _ = dbg.kill();
+}
