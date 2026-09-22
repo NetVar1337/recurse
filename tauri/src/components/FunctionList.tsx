@@ -144,11 +144,9 @@ export function FunctionList() {
 										key={`${f.addr}-${name}`}
 										className={cn(
 											"group flex items-center border-l-2 pr-1 text-xs",
-											editing
-												? "border-primary bg-white"
-												: active
-													? "border-primary bg-primary text-primary-foreground"
-													: "hover:bg-accent border-transparent",
+											active
+												? "border-primary bg-primary text-primary-foreground"
+												: "hover:bg-accent border-transparent",
 										)}
 									>
 										{editing ? (
@@ -172,9 +170,9 @@ export function FunctionList() {
 													}
 													void commitRename();
 												}}
-												// Explicit white-on-black: the row's active colours would
-												// otherwise make the typed name invisible.
-												className="m-1 h-6 flex-1 border-black/20 bg-white text-xs text-black placeholder:text-black/40"
+												// Blend with the row: no border, no fill, and the
+												// same colour as a normal function name.
+												className="h-6 flex-1 border-0 bg-transparent px-3 py-0 text-xs shadow-none focus-visible:ring-0"
 											/>
 										) : (
 											<>
