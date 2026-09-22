@@ -13,7 +13,7 @@
 //! target operation. [`Debugger`] is a handle that forwards commands to it, so
 //! the UI and the agent can call it from any thread.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -29,6 +29,7 @@ use crate::model::{
 use crate::symbols::{NoSymbols, Symbols};
 use crate::target::{self, Target, WaitEvent};
 use recurse_static::arch::Arch;
+use recurse_static::unwind::Unwinder;
 
 /// `SIGTRAP` — the stop signal for traps (breakpoints and single-steps).
 const SIGTRAP: i32 = 5;
@@ -585,6 +586,8 @@ struct Inner {
     arch: Option<Arch>,
     /// Breakpoint cleanup owed when the current run stops.
     pending: Pending,
+    /// CFI unwinder for the debuggee's `.eh_frame`, when it has one.
+    cfi: Option<Arc<Unwinder>>,
 }
 
 impl Inner {
@@ -609,6 +612,7 @@ impl Inner {
             snapshot,
             arch: None,
             pending: Pending::default(),
+            cfi: None,
         })
     }
 
@@ -657,7 +661,9 @@ impl Inner {
     /// Launch a debuggee.
     fn launch(&mut self, opts: &LaunchOptions) -> Result<Stop> {
         let pid = self.target.launch(opts)?;
-        self.arch = Arch::detect(std::path::Path::new(&opts.path));
+        let path = std::path::Path::new(&opts.path);
+        self.arch = Arch::detect(path);
+        self.cfi = Unwinder::from_path(path).map(Arc::new);
         self.pid = Some(pid);
         let thread = pid as ThreadId;
         let registers = self.target.get_regs(thread)?;
@@ -680,7 +686,9 @@ impl Inner {
     /// Attach to a running process.
     fn attach(&mut self, pid: u32) -> Result<Stop> {
         self.target.attach(pid)?;
-        self.arch = Arch::detect(std::path::Path::new(&format!("/proc/{pid}/exe")));
+        let path = std::path::PathBuf::from(format!("/proc/{pid}/exe"));
+        self.arch = Arch::detect(&path);
+        self.cfi = Unwinder::from_path(&path).map(Arc::new);
         self.pid = Some(pid);
         self.bias = self.symbols.load_bias(pid, None).unwrap_or(0);
         self.state = ProcessState::Stopped;
@@ -818,13 +826,81 @@ impl Inner {
             .collect())
     }
 
-    /// Walk the frame-pointer chain into a backtrace.
+    /// Walk the stack into a backtrace.
+    ///
+    /// Uses the binary's CFI first (correct on optimized code), falling back to
+    /// a frame-pointer walk when the unwind data cannot be evaluated.
     fn backtrace(&mut self, thread: Option<ThreadId>) -> Result<Vec<Frame>> {
         let t = thread.unwrap_or(self.thread()?);
         let regs = self.target.get_regs(t)?;
         let bias = self.bias;
         let symbols = self.symbols.clone();
         let name = |addr: u64| symbols.name_at(addr.wrapping_sub(bias));
+        if let Some(frames) = self.backtrace_cfi(&regs, &name) {
+            return Ok(frames);
+        }
+        self.backtrace_fp(&regs, &name)
+    }
+
+    /// CFI-based backtrace. `None` when the first frame cannot be unwound.
+    fn backtrace_cfi(
+        &mut self,
+        regs: &Registers,
+        name: &dyn Fn(u64) -> Option<String>,
+    ) -> Option<Vec<Frame>> {
+        let unwinder = self.cfi.clone()?;
+        let arch = self.arch?;
+        let sp = arch.stack_pointer();
+        let pc_reg = arch.pc_register();
+        let callee = arch.callee_saved();
+
+        let mut dwarf: HashMap<u16, u64> = HashMap::new();
+        for (k, v) in &regs.values {
+            if let Some(d) = arch.dwarf_register(k) {
+                dwarf.insert(d, *v);
+            }
+        }
+
+        let mut frames = vec![Frame {
+            addr: regs.pc,
+            name: name(regs.pc),
+        }];
+        let mut pc = regs.pc;
+        let mut unwound = false;
+        for _ in 0..MAX_FRAMES {
+            let mut read_word = |addr: u64| -> Option<u64> {
+                let bytes = self.target.read(addr, 8).ok()?;
+                let arr: [u8; 8] = bytes.as_slice().try_into().ok()?;
+                Some(u64::from_ne_bytes(arr))
+            };
+            let get_reg = |d: u16| dwarf.get(&d).copied();
+            let Some(frame) = unwinder.unwind(pc, callee, &get_reg, &mut read_word) else {
+                break;
+            };
+            unwound = true;
+            if frame.return_address == 0 {
+                break;
+            }
+            frames.push(Frame {
+                addr: frame.return_address,
+                name: name(frame.return_address),
+            });
+            dwarf.insert(sp, frame.cfa);
+            dwarf.insert(pc_reg, frame.return_address);
+            for (d, v) in frame.restored {
+                dwarf.insert(d, v);
+            }
+            pc = frame.return_address;
+        }
+        unwound.then_some(frames)
+    }
+
+    /// Frame-pointer walk, as a fallback when there is no unwind data.
+    fn backtrace_fp(
+        &mut self,
+        regs: &Registers,
+        name: &dyn Fn(u64) -> Option<String>,
+    ) -> Result<Vec<Frame>> {
         let mut frames = vec![Frame {
             addr: regs.pc,
             name: name(regs.pc),
@@ -834,8 +910,14 @@ impl Inner {
             if fp == 0 {
                 break;
             }
-            let ret = self.read_word(fp.wrapping_add(8))?;
-            let next = self.read_word(fp)?;
+            let ret = match self.read_word(fp.wrapping_add(8)) {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+            let next = match self.read_word(fp) {
+                Ok(n) => n,
+                Err(_) => break,
+            };
             if ret == 0 {
                 break;
             }

@@ -218,3 +218,81 @@ fn is_thumb(file: &object::File<'_>) -> bool {
         s.kind() == SymbolKind::Text && s.address() & 1 == 1
     })
 }
+
+impl Arch {
+    /// DWARF register number for a register name, for unwinding.
+    ///
+    /// ```
+    /// use recurse_static::arch::Arch;
+    /// let exe = std::env::current_exe().unwrap();
+    /// let arch = Arch::detect(&exe).unwrap();
+    /// assert!(arch.dwarf_register("rsp").is_some() || arch.dwarf_register("sp").is_some());
+    /// ```
+    pub fn dwarf_register(&self, name: &str) -> Option<u16> {
+        match self.architecture {
+            Architecture::X86_64 | Architecture::X86_64_X32 => Some(match name {
+                "rax" => 0,
+                "rdx" => 1,
+                "rcx" => 2,
+                "rbx" => 3,
+                "rsi" => 4,
+                "rdi" => 5,
+                "rbp" => 6,
+                "rsp" => 7,
+                "r8" => 8,
+                "r9" => 9,
+                "r10" => 10,
+                "r11" => 11,
+                "r12" => 12,
+                "r13" => 13,
+                "r14" => 14,
+                "r15" => 15,
+                "rip" => 16,
+                _ => return None,
+            }),
+            Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => {
+                if let Some(n) = name.strip_prefix('x').and_then(|s| s.parse::<u16>().ok()) {
+                    if n <= 30 {
+                        return Some(n);
+                    }
+                }
+                match name {
+                    "sp" => Some(31),
+                    "pc" => Some(32),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// DWARF register number of the stack pointer.
+    pub fn stack_pointer(&self) -> u16 {
+        match self.architecture {
+            Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => 31,
+            _ => 7,
+        }
+    }
+
+    /// DWARF register number of the program counter.
+    pub fn pc_register(&self) -> u16 {
+        match self.architecture {
+            Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => 32,
+            _ => 16,
+        }
+    }
+
+    /// DWARF numbers of the callee-saved registers; a backtrace restores these
+    /// at each step so the next frame's CFI can be evaluated.
+    pub fn callee_saved(&self) -> &'static [u16] {
+        match self.architecture {
+            // rbx, rbp, r12..r15 (x86-64).
+            Architecture::X86_64 | Architecture::X86_64_X32 => &[3, 6, 12, 13, 14, 15],
+            // x19..x28, x29 (fp), x30 (lr).
+            Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => {
+                &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+            }
+            _ => &[],
+        }
+    }
+}

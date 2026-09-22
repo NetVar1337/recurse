@@ -20,5 +20,6 @@ pub mod native;
 pub mod r2;
 pub mod r2_backend;
 pub mod signals;
+pub mod unwind;
 
 pub use engine::{BackendKind, Capabilities, Engine};
