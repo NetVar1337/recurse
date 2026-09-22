@@ -46,7 +46,7 @@ impl Symbols for ElfSymbols {
         self.by_name.get(name).copied()
     }
 
-    fn load_bias(&self, _pid: u32) -> Option<u64> {
+    fn load_bias(&self, _pid: u32, _runtime_entry: Option<u64>) -> Option<u64> {
         // The fixture is linked `-no-pie`, so static == runtime.
         Some(0)
     }

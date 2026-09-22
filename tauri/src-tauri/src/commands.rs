@@ -281,6 +281,30 @@ pub async fn recon(state: State<'_, AppState>) -> Result<Value, String> {
     recon_impl(&state).await
 }
 
+/// Run one debugger op (`launch`, `attach`, `continue`, `step`, `break`,
+/// `unbreak`, `breakpoints`, `regs`, `read`, `write`, `backtrace`, `threads`,
+/// `status`, `detach`, `kill`).
+///
+/// One command covers the whole vocabulary: `launch`/`attach` create the
+/// session, `detach`/`kill` clear it. The debugger blocks in `waitpid` while
+/// running, so the work runs on a blocking thread and never stalls the UI.
+#[tauri::command]
+pub async fn debug_command(
+    op: String,
+    args: Option<Value>,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let session = state.session.clone();
+    let debug = state.debug.clone();
+    let args = args.unwrap_or(Value::Null);
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        crate::debug::run_op(session, debug, &op, &args)
+    })
+    .await
+    .map_err(|e| format!("debug task failed: {e}"))??;
+    serde_json::from_str(&out).map_err(|e| e.to_string())
+}
+
 /// Hashes, Shannon entropy, size and permission string for the recon page.
 /// Reads the file once, off the UI thread.
 fn file_stats(path: &std::path::Path) -> Result<(Value, f64, u64, String), String> {
@@ -479,6 +503,9 @@ pub async fn agent_chat(
     // Arc clone: the worker task can't hold `State`, but it needs the live
     // engine session to serve the analysis tool from the UI's own analysis state.
     let session_state = state.session.clone();
+    // Arc clone: the debugger tool runs on a blocking thread and must outlive
+    // the borrow of `State`.
+    let debug_state = state.debug.clone();
     let project = current_project(&state)?;
     let project_storage = project.clone();
     let config_storage = config.clone();
@@ -490,6 +517,7 @@ pub async fn agent_chat(
     let worker = tauri::async_runtime::spawn(async move {
         let mut tools = librecurse::tools::schema(capabilities);
         tools.extend(librecurse::memory::memory_tool_schema());
+        tools.push(recurse_debug::tool::tool_schema());
         // Memory is owned by librecurse (SQLite + BM25); the host only
         // resolves which project the turn belongs to.
         let mem_project = project.clone().unwrap_or_else(|| "default".to_string());
@@ -520,6 +548,7 @@ pub async fn agent_chat(
             // Clone per call: the closure must stay `FnMut`, so it can't move
             // the Arc into the first future it produces.
             let session_state = session_state.clone();
+            let debug_state = debug_state.clone();
             async move {
                 match tc.function.name.as_str() {
                     "memory_save" | "memory_load" | "memory_search" => {
@@ -544,6 +573,21 @@ pub async fn agent_chat(
                             }
                             None => Err("no binary loaded".to_string()),
                         }
+                    }
+                    // Debugger tool: served from the host's debug session (the
+                    // same one the UI drives), on a blocking thread because it
+                    // waits in `waitpid` while running.
+                    name if recurse_debug::tool::is_op(name) => {
+                        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        let op = name.to_string();
+                        let session = session_state.clone();
+                        let debug = debug_state.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            crate::debug::run_op(session, debug, &op, &args)
+                        })
+                        .await
+                        .map_err(|e| format!("debug task failed: {e}"))?
                     }
                     _ => librecurse::tools::execute(&tc).await,
                 }

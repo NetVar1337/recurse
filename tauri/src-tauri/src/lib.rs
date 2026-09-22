@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod config;
 pub mod db;
+pub mod debug;
 pub mod engine;
 pub mod project;
 pub mod renames;
@@ -54,6 +55,8 @@ pub struct AppState {
     pub models: Mutex<Option<Vec<ModelInfo>>>,
     pub project: Mutex<Option<crate::project::Project>>,
     pub current_session: Mutex<Option<String>>,
+    /// Active debug session, created by `debug launch`/`attach`.
+    pub debug: Arc<Mutex<Option<Arc<recurse_debug::Debugger>>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -91,6 +94,7 @@ pub fn run() {
             models: Mutex::new(None),
             project: Mutex::new(None),
             current_session: Mutex::new(None),
+            debug: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             commands::open_binary,
@@ -100,6 +104,7 @@ pub fn run() {
             commands::functions,
             commands::rename_function,
             commands::analysis_progress,
+            commands::debug_command,
             commands::recon,
             commands::disassemble,
             commands::function_at,

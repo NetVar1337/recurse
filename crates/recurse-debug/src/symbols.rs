@@ -13,8 +13,12 @@ pub trait Symbols: Send + Sync {
     fn resolve(&self, name: &str) -> Option<u64>;
 
     /// `runtime - static` address for a process (the ASLR/PIE load bias).
-    /// `None` when it cannot be determined; the session then assumes `0`.
-    fn load_bias(&self, pid: u32) -> Option<u64>;
+    ///
+    /// `runtime_entry` is the program counter at the initial stop after a
+    /// launch (the entry point as loaded); `None` when attaching, where the
+    /// host falls back to a best-effort guess. Returning `None` makes the
+    /// session assume a bias of `0`.
+    fn load_bias(&self, pid: u32, runtime_entry: Option<u64>) -> Option<u64>;
 }
 
 /// A [`Symbols`] that knows nothing — addresses only, frames unnamed.
@@ -36,7 +40,7 @@ impl Symbols for NoSymbols {
         None
     }
 
-    fn load_bias(&self, _pid: u32) -> Option<u64> {
+    fn load_bias(&self, _pid: u32, _runtime_entry: Option<u64>) -> Option<u64> {
         None
     }
 }

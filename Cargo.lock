@@ -3317,6 +3317,7 @@ dependencies = [
  "libc",
  "librecurse",
  "md-5",
+ "recurse-debug",
  "regex",
  "rusqlite",
  "serde",

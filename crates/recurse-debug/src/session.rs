@@ -90,11 +90,13 @@ impl Debugger {
         let mut inner = self.lock()?;
         let pid = inner.target.launch(opts)?;
         inner.pid = Some(pid);
-        inner.bias = self.symbols.load_bias(pid).unwrap_or(0);
-        inner.state = ProcessState::Stopped;
-        inner.last_stop = Some(StopReason::Started);
         let thread = pid as ThreadId;
         let registers = inner.target.get_regs(thread)?;
+        // The initial stop is at the entry point as loaded, which gives the
+        // PIE/ASLR bias against the static entry the host knows.
+        inner.bias = self.symbols.load_bias(pid, Some(registers.pc)).unwrap_or(0);
+        inner.state = ProcessState::Stopped;
+        inner.last_stop = Some(StopReason::Started);
         Ok(Stop {
             pid,
             thread,
@@ -112,7 +114,7 @@ impl Debugger {
         let mut inner = self.lock()?;
         inner.target.attach(pid)?;
         inner.pid = Some(pid);
-        inner.bias = self.symbols.load_bias(pid).unwrap_or(0);
+        inner.bias = self.symbols.load_bias(pid, None).unwrap_or(0);
         inner.state = ProcessState::Stopped;
         inner.last_stop = Some(StopReason::Started);
         let thread = pid as ThreadId;
