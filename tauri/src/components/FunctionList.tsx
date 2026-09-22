@@ -1,5 +1,5 @@
-import { Loader2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Loader2, Pencil } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -42,10 +42,34 @@ export function FunctionList() {
 	const funcs = useAnalysisStore((s) => s.funcs);
 	const selected = useAnalysisStore((s) => s.selected);
 	const selectFn = useAnalysisStore((s) => s.selectFn);
+	const renameFunction = useAnalysisStore((s) => s.renameFunction);
 	const busy = useBinaryStore((s) => s.busy);
 	const indexing = useBinaryStore((s) => s.indexing);
 	const entry = useBinaryStore((s) => s.binary?.info?.bin?.entry);
 	const [query, setQuery] = useState("");
+	const [renaming, setRenaming] = useState<number | null>(null);
+	const [draft, setDraft] = useState("");
+	const skipBlur = useRef(false);
+
+	/** Begin editing the name of the function at `addr`. */
+	const startRename = (addr: number, current: string) => {
+		setDraft(current);
+		setRenaming(addr);
+	};
+
+	/** Save the in-progress rename (blank clears it). */
+	const commitRename = async () => {
+		const addr = renaming;
+		if (addr === null) return;
+		setRenaming(null);
+		await renameFunction(addr, draft.trim());
+	};
+
+	/** Abandon the in-progress rename. */
+	const cancelRename = () => {
+		skipBlur.current = true;
+		setRenaming(null);
+	};
 	const [prevFuncs, setPrevFuncs] = useState(funcs);
 	if (prevFuncs !== funcs) {
 		setPrevFuncs(funcs);
@@ -112,30 +136,88 @@ export function FunctionList() {
 									f.signature ??
 									`sub_${f.addr.toString(16)}`;
 								const active = selected?.addr === f.addr;
+								const editing = renaming === f.addr;
 								return (
-									<button
+									<div
 										key={`${f.addr}-${name}`}
 										className={cn(
-											"flex items-center gap-2 border-l-2 px-3 py-1 text-left text-xs",
+											"group flex items-center border-l-2 pr-1 text-xs",
 											active
 												? "border-primary bg-primary text-primary-foreground"
 												: "hover:bg-accent border-transparent",
 										)}
-										onClick={() => selectFn(f)}
-										title={`${name}\n${fmtAddr(f.addr)} · size ${f.size ?? "?"}`}
 									>
-										<span
-											className={cn(
-												"font-mono",
-												active
-													? "text-primary-foreground"
-													: "text-primary",
-											)}
-										>
-											{fmtAddr(f.addr)}
-										</span>
-										<span className="truncate">{name}</span>
-									</button>
+										{editing ? (
+											<Input
+												autoFocus
+												value={draft}
+												placeholder="name (blank clears)"
+												onChange={(e) =>
+													setDraft(e.target.value)
+												}
+												onKeyDown={(e) => {
+													if (e.key === "Enter")
+														e.currentTarget.blur();
+													else if (e.key === "Escape")
+														cancelRename();
+												}}
+												onBlur={() => {
+													if (skipBlur.current) {
+														skipBlur.current = false;
+														return;
+													}
+													void commitRename();
+												}}
+												className="m-1 h-6 flex-1 text-xs"
+											/>
+										) : (
+											<>
+												<button
+													className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1 text-left"
+													onClick={() => selectFn(f)}
+													onDoubleClick={() =>
+														startRename(
+															f.addr,
+															name,
+														)
+													}
+													title={`${name}\n${fmtAddr(f.addr)} · size ${f.size ?? "?"}\ndouble-click or ✎ to rename`}
+												>
+													<span
+														className={cn(
+															"font-mono",
+															active
+																? "text-primary-foreground"
+																: "text-primary",
+														)}
+													>
+														{fmtAddr(f.addr)}
+													</span>
+													<span className="truncate">
+														{name}
+													</span>
+												</button>
+												<button
+													className={cn(
+														"hidden shrink-0 rounded p-1 group-hover:block",
+														active
+															? "hover:bg-primary-foreground/20"
+															: "text-muted-foreground hover:bg-accent hover:text-foreground",
+													)}
+													title="Rename function"
+													onClick={(e) => {
+														e.stopPropagation();
+														startRename(
+															f.addr,
+															name,
+														);
+													}}
+												>
+													<Pencil className="h-3 w-3" />
+												</button>
+											</>
+										)}
+									</div>
 								);
 							})}
 							{filtered.length === 0 && (

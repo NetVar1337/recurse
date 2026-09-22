@@ -90,6 +90,8 @@ pub fn open_binary_impl(path: String, state: &AppState) -> Result<Value, String>
     );
     let mut guard = session_of(state)?;
     let sess = crate::engine::build(std::path::Path::new(&path))?;
+    // Restore any analyst renames recorded for this target.
+    sess.set_renames(crate::renames::load(&sess.path().to_string_lossy()));
     let mut summary = sess.summary()?;
     // Host metadata the UI uses to hide affordances the backend cannot serve
     // (decompile / raw console on the native backend).
@@ -166,6 +168,24 @@ pub fn functions(state: State<'_, AppState>) -> Result<Value, String> {
     let funcs = with_sess(&guard)?.functions()?;
     eprintln!("[recurse] functions: {}", funcs.len());
     serde_json::to_value(funcs).map_err(|e| e.to_string())
+}
+
+/// Core of [`rename_function`]; see [`open_binary_impl`]. Persists an analyst
+/// rename (blank clears it) and installs the updated overrides into the active
+/// engine, so the function list, the disassembly annotation, and the agent all
+/// see it.
+pub fn rename_function_impl(state: &AppState, addr: u64, name: &str) -> Result<(), String> {
+    let guard = session_of(state)?;
+    let engine = with_sess(&guard)?;
+    let path = engine.path().to_string_lossy().to_string();
+    crate::renames::set(&path, addr, Some(name))?;
+    engine.set_renames(crate::renames::load(&path));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn rename_function(addr: u64, name: String, state: State<'_, AppState>) -> Result<(), String> {
+    rename_function_impl(&state, addr, &name)
 }
 
 /// Current function count plus whether the backend is still discovering

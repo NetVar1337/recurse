@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod engine;
 pub mod project;
+pub mod renames;
 pub mod sessions;
 /// Test-only helpers (HOME isolation) for the storage modules' unit tests.
 #[doc(hidden)]
@@ -97,6 +98,7 @@ pub fn run() {
             commands::close_binary,
             commands::binary_info,
             commands::functions,
+            commands::rename_function,
             commands::analysis_progress,
             commands::recon,
             commands::disassemble,

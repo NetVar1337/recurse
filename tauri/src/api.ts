@@ -33,6 +33,8 @@ export const api = {
 	analyze: () => invoke<void>("analyze"),
 	closeBinary: () => invoke<void>("close_binary"),
 	functions: () => invoke<Function[]>("functions"),
+	renameFunction: (addr: number, name: string) =>
+		invoke<void>("rename_function", { addr, name }),
 	recon: () => invoke<Recon>("recon"),
 	analysisProgress: () =>
 		invoke<{ function_count: number; indexing: boolean }>(

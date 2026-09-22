@@ -29,6 +29,7 @@ interface AnalysisState {
 		imports: Import[];
 	}) => void;
 	setFunctions: (funcs: Function[]) => void;
+	renameFunction: (addr: number, name: string) => Promise<void>;
 	reset: () => void;
 	selectFn: (fn: Function) => void;
 	refreshDisasm: () => Promise<void>;
@@ -59,6 +60,30 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
 	setAll: ({ funcs, strings, imports }) => set({ funcs, strings, imports }),
 
 	setFunctions: (funcs) => set({ funcs }),
+
+	renameFunction: async (addr, name) => {
+		const trimmed = name.trim();
+		await api.renameFunction(addr, trimmed);
+		const sel = get().selected;
+		if (!trimmed) {
+			// Clearing restores the engine's original name.
+			const funcs = await api.functions();
+			set({
+				funcs,
+				selected:
+					sel?.addr === addr
+						? (funcs.find((f) => f.addr === addr) ?? sel)
+						: sel,
+			});
+			return;
+		}
+		set({
+			funcs: get().funcs.map((f) =>
+				f.addr === addr ? { ...f, name: trimmed } : f,
+			),
+			selected: sel?.addr === addr ? { ...sel, name: trimmed } : sel,
+		});
+	},
 
 	reset: () => set({ ...initial, decompiling: false }),
 

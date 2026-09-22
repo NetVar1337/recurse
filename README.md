@@ -36,6 +36,8 @@ drives it headlessly. All three are workspace members, so one `Cargo.lock` and o
 - Recon page: binary info, MD5/SHA1/SHA256/CRC32 hashes, entropy, linked libraries,
   a self-contained hardening report (RELRO / PIE / NX / canary / FORTIFY / RPATH —
   no external `checksec`), and analysis counts
+- Rename functions from the list (double-click or the ✎ button); names persist in
+  SQLite and show up in the function list, disassembly annotations, and to the agent
 - Grounded agent: every address is a clickable object (function list, graph nodes,
   xrefs, decompiler annotations) — not pasted text that the model can hallucinate
 - Live analysis session on any binary — including extension-less files

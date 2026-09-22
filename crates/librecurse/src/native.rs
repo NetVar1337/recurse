@@ -98,6 +98,9 @@ struct NativeState {
     /// `.pdata`). The background indexer skips these — their extent is already
     /// exact, so it only needs to recurse into functions of unknown size.
     fde_sized: HashSet<u64>,
+    /// Analyst name overrides (`address -> name`), applied over the discovered
+    /// names in listings, lookup, and annotation.
+    renames: HashMap<u64, String>,
     /// Every code and data reference seen by the linear sweep, sorted by source
     /// address. Built once so a cross-reference query never has to re-decode
     /// the binary (which would stall the UI on a large target).
@@ -127,6 +130,7 @@ impl NativeState {
             labels: None,
             strings: None,
             fde_sized: HashSet::new(),
+            renames: HashMap::new(),
             xrefs: Vec::new(),
             xrefs_by_target: HashMap::new(),
             indexing: false,
@@ -676,6 +680,10 @@ impl NativeEngine {
         // Discovered function names are the friendliest, so they win.
         for f in state.functions.values() {
             names.insert(f.addr, f.name.clone());
+        }
+        // Analyst renames win over everything else.
+        for (addr, name) in &state.renames {
+            names.insert(*addr, name.clone());
         }
         let string_map = strings.iter().map(|s| (s.addr, s.string.clone())).collect();
         state.labels = Some(Labels {
@@ -2125,6 +2133,15 @@ fn libraries(file: &object::File<'_>) -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// Clone a function with any analyst rename applied to its display name.
+fn apply_rename(state: &NativeState, f: &FunctionInfo) -> FunctionInfo {
+    let mut f = f.clone();
+    if let Some(name) = state.renames.get(&f.addr) {
+        f.name = name.clone();
+    }
+    f
+}
+
 /// Fraction of executable bytes that belong to a discovered function.
 fn coverage(functions: &BTreeMap<u64, FunctionInfo>, file: &object::File<'_>) -> f64 {
     let text = text_ranges(file);
@@ -2446,7 +2463,19 @@ impl Engine for NativeEngine {
             .state
             .lock()
             .map_err(|e| format!("native state poisoned: {e}"))?;
-        Ok(state.functions.values().cloned().collect())
+        Ok(state
+            .functions
+            .values()
+            .map(|f| apply_rename(&state, f))
+            .collect())
+    }
+
+    fn set_renames(&self, renames: std::collections::HashMap<u64, String>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.renames = renames;
+            // Annotation labels embed function names; rebuild on next use.
+            state.labels = None;
+        }
     }
 
     fn function_at(&self, addr: u64) -> Result<Option<FunctionInfo>, String> {
@@ -2460,7 +2489,7 @@ impl Engine for NativeEngine {
             .functions
             .range(..=addr)
             .next_back()
-            .map(|(_, f)| f.clone())
+            .map(|(_, f)| apply_rename(&state, f))
             .filter(|f| {
                 f.size
                     .map(|s| addr < f.addr.saturating_add(s))
@@ -2695,6 +2724,14 @@ impl Engine for NativeEngine {
                 .state
                 .lock()
                 .map_err(|e| format!("native state poisoned: {e}"))?;
+            // An analyst rename resolves to its address.
+            if let Some((addr, _)) = state
+                .renames
+                .iter()
+                .find(|(_, n)| name_matches(name, n) || name_matches(&query_demangled, n))
+            {
+                return Ok(Some(*addr));
+            }
             if let Some((_, f)) = state.functions.iter().find(|(_, f)| {
                 name_matches(name, &f.name) || name_matches(&query_demangled, &f.name)
             }) {

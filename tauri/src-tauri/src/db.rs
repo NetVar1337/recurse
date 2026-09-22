@@ -2,8 +2,8 @@
 //!
 //! Single file at `~/.recurse/recurse.db` (WAL mode). Table ownership:
 //!
-//! - host (`db.rs`, `project.rs`, `sessions.rs`, `config.rs`): `config`,
-//!   `projects`, `sessions`, `models`
+//! - host (`db.rs`, `project.rs`, `sessions.rs`, `config.rs`, `renames.rs`):
+//!   `config`, `projects`, `sessions`, `models`, `function_names`
 //! - librecurse (`librecurse::memory`): `memories`, `memories_fts`
 //!
 //! The filesystem under `~/.recurse/<project>/` is reserved for
@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS models (
     prompt_price TEXT NOT NULL DEFAULT '',
     is_free INTEGER NOT NULL DEFAULT 0,
     fetched_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS function_names (
+    binary_path TEXT NOT NULL,
+    addr INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (binary_path, addr)
 );
 ";
 

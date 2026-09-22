@@ -419,6 +419,13 @@ pub trait Engine: Send + Sync {
     /// Resolve a symbol name to an address, if the backend knows it.
     fn resolve(&self, name: &str) -> Result<Option<u64>, String>;
 
+    /// Install analyst name overrides (`address -> name`), replacing any
+    /// previous set. Backends apply them to `functions`, `function_at`,
+    /// `resolve`, and disassembly annotation where they can, so a rename is
+    /// visible to both the UI and the agent. An empty map clears all
+    /// overrides. Default: no-op.
+    fn set_renames(&self, _renames: std::collections::HashMap<u64, String>) {}
+
     /// True while the backend is still expanding its function index in the
     /// background. A lazy backend reports `true` after [`Engine::analyze`]
     /// until its background pass finishes; synchronous backends always report
