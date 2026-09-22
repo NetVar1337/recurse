@@ -12,8 +12,9 @@ engine never touches the agent loop, the storefront, or the eval harness.
 
 - `trait Engine` — one method per operation: `analyze`, `summary`, `info`,
   `functions`, `function_at`, `disassemble`, `function_disasm`,
-  `function_graph`, `strings`, `imports`, `xrefs`, `decompile`, `raw`,
-  `resolve`, plus `pid`/`interrupt`/`force_kill` for out-of-process engines.
+  `function_graph`, `strings`, `imports`, `xrefs`, `decompile`, `lift`,
+  `raw`, `resolve`, plus `pid`/`interrupt`/`force_kill` for out-of-process
+  engines.
 - Canonical result types (`FunctionInfo`, `Instruction`, `Disassembly`,
   `FunctionGraph`, `StringRef`, `Import`, `Xref`, `Decompilation`). Their JSON
   field names are exactly what the UI renders, so the frontend is
@@ -23,12 +24,14 @@ engine never touches the agent loop, the storefront, or the eval harness.
   multi-architecture engine.
 - The backend-neutral agent tool (`analyze`) and its dispatcher,
   `execute_tool(&dyn Engine, args)`. Its `op` vocabulary is
-  `analyze | functions | disasm | graph | decompile | xrefs | strings | imports
-  | info | raw`. The vocabulary is filtered by `Engine::capabilities()`: an
+  `analyze | functions | disasm | graph | lift | decompile | xrefs | strings
+  | imports | info | raw`. The vocabulary is filtered by `Engine::capabilities()`: an
   engine without a decompiler or console never advertises those ops in the
   schema or the system prompt, and `execute_tool` rejects them up front. `raw`
   is the escape hatch for an engine console, present only when the selected
-  engine provides one.
+  engine provides one. `lift` needs only `capabilities().graph` (it is built
+  on `function_graph`, see below and `docs/vtil-lift.md`) so it is available
+  on every engine that can recover a CFG, including the native default.
 
 Hosts own the concrete engine (it needs a target path, and r2 needs a child
 process) and box it as `Box<dyn Engine>` (see
@@ -61,8 +64,11 @@ Scope, stated honestly:
   branch targets.
 - Jump tables / switches are recovered (indexed-memory and base+offset idioms)
   and shown as `case` edges in the graph.
-- No built-in decompiler (`capabilities().decompile == false`). The agent tool
-  reports that precisely rather than failing generically.
+- Decompiler (`recurse_vtil::decompile`, `capabilities().decompile == true`):
+  lift → optimize → structure, rendering C-like pseudocode with real
+  `if`/`while` recognition and total instruction coverage (an unlifted
+  instruction still appears, as an `__asm(...)` line) — not a Hex-Rays-class
+  decompiler (no type/variable recovery). See `docs/vtil-lift.md`.
 - Architectures Capstone does not cover (AVR, CSky, LoongArch, Xtensa, …) are
   detected and reported, not disassembled.
 
@@ -102,7 +108,7 @@ envelopes), `regex` (host-side scans).
 | `goblin` | MIT, but `object` is the ecosystem standard and what `gimli`/`addr2line` use. |
 | `zydis` | MIT but x86-only and bindgen over C++. No advantage over Capstone. |
 | `petgraph` | MIT/Apache, but the CFG is a small `Vec<BasicBlock>` and needs no graph library. |
-| RetDec / Ghidra / snowman | Decompilers. RetDec is MIT but a large C++ sidecar; Ghidra is Apache but a JVM; snowman is GPL. Decompilation is not built in — the r2 engine provides it behind the capability flag. |
+| RetDec / Ghidra / snowman | Full Hex-Rays-class decompilers. RetDec is MIT but a large C++ sidecar; Ghidra is Apache but a JVM; snowman is GPL. `recurse-vtil`'s own lift → optimize → structure pipeline (`crates/recurse-vtil/src/decompile.rs`) covers the native engine's decompiler instead, permissively and in-process; r2's own decompiler remains available too when selected. |
 
 If linking a C library at all is unacceptable, swap `capstone` for the
 `yaxpeax-*` decoders behind the same `Engine` methods; nothing above the trait

@@ -9,7 +9,7 @@ const OPENROUTER_MODELS: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL: &str = "openrouter/auto";
 
 /// Shared HTTP client (connection pooling across turns).
-fn http_client() -> &'static reqwest::Client {
+pub(crate) fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(reqwest::Client::new)
 }
@@ -103,6 +103,20 @@ impl ChatMessage {
     }
 }
 
+/// Which wire protocol [`LlmConfig::endpoint`] speaks. Almost every
+/// provider (including ones with their own native API) now also exposes
+/// an OpenAI-compatible endpoint, so [`Protocol::OpenAiCompatible`] is
+/// the default and covers the large majority of `crate::providers`'
+/// catalog. [`Protocol::AnthropicNative`] exists only for a Claude
+/// Pro/Max OAuth credential, which is not valid against an
+/// OpenAI-compatible route at all — see `crate::anthropic`'s module doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Protocol {
+    #[default]
+    OpenAiCompatible,
+    AnthropicNative,
+}
+
 /// Runtime LLM configuration. A plain interface type: hosts construct it
 /// (from their own config file, environment, or UI) and hand it to the
 /// run loop — the library never reads configuration storage itself.
@@ -111,18 +125,39 @@ pub struct LlmConfig {
     pub endpoint: String,
     pub api_key: Option<String>,
     pub model: String,
+    pub protocol: Protocol,
+    /// Extra static headers some providers require beyond a bearer token
+    /// (e.g. GitHub Copilot's `Editor-Version`/`Copilot-Integration-Id`;
+    /// see `crate::providers::ProviderPreset::extra_headers`).
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl LlmConfig {
     /// Explicit construction from resolved values. `endpoint` may be a base
     /// URL (`https://host/v1`) or a full completions URL — see
-    /// [`normalize_endpoint`].
+    /// [`normalize_endpoint`]. Defaults to [`Protocol::OpenAiCompatible`]
+    /// with no extra headers; use [`LlmConfig::with_protocol`]/
+    /// [`LlmConfig::with_extra_headers`] to change either.
     pub fn new(endpoint: String, api_key: Option<String>, model: String) -> Self {
         Self {
             endpoint: normalize_endpoint(&endpoint),
             api_key,
             model,
+            protocol: Protocol::OpenAiCompatible,
+            extra_headers: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: Protocol) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
+    #[must_use]
+    pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 }
 
@@ -144,6 +179,8 @@ impl Default for LlmConfig {
             endpoint,
             api_key,
             model,
+            protocol: Protocol::OpenAiCompatible,
+            extra_headers: Vec::new(),
         }
     }
 }
@@ -165,11 +202,11 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
 }
 
 /// Total attempts for one request before giving up (initial try included).
-const MAX_SEND_ATTEMPTS: u32 = 4;
+pub(crate) const MAX_SEND_ATTEMPTS: u32 = 4;
 /// Ceiling on a single wait, so a hostile/incorrect hint can't hang a run.
-const MAX_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(70);
+pub(crate) const MAX_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(70);
 
-fn is_rate_limited(resp: &reqwest::Response) -> bool {
+pub(crate) fn is_rate_limited(resp: &reqwest::Response) -> bool {
     resp.status().as_u16() == 429
 }
 
@@ -177,12 +214,12 @@ fn is_rate_limited(resp: &reqwest::Response) -> bool {
 /// received, so nothing was streamed and re-sending cannot duplicate a turn
 /// (`is_request` covers connection-level failures such as a reused-but-closed
 /// pooled connection, which `is_connect` misses).
-fn is_transient_send(e: &reqwest::Error) -> bool {
+pub(crate) fn is_transient_send(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout() || e.is_request()
 }
 
 /// Exponential backoff: 500ms, 1s, 2s, ...
-fn backoff(attempt: u32) -> std::time::Duration {
+pub(crate) fn backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(500 * 2u64.saturating_pow(attempt.saturating_sub(1)))
 }
 
@@ -190,7 +227,7 @@ fn backoff(attempt: u32) -> std::time::Duration {
 /// `Retry-After` (seconds, or an HTTP date we don't parse) and OpenRouter's
 /// `X-RateLimit-Reset` (unix milliseconds) — falling back to exponential
 /// backoff. Always capped by [`MAX_RETRY_WAIT`].
-fn retry_delay(resp: &reqwest::Response, attempt: u32) -> std::time::Duration {
+pub(crate) fn retry_delay(resp: &reqwest::Response, attempt: u32) -> std::time::Duration {
     let headers = resp.headers();
     if let Some(secs) = headers
         .get("retry-after")
@@ -263,12 +300,12 @@ pub enum AgentEvent {
 /// Accumulates streamed tool-call fragments (OpenAI streams `tool_calls` as
 /// several deltas across an `index`).
 #[derive(Default)]
-struct ToolCallAccumulator {
-    calls: Vec<ToolCall>,
+pub(crate) struct ToolCallAccumulator {
+    pub(crate) calls: Vec<ToolCall>,
 }
 
 impl ToolCallAccumulator {
-    fn ensure(&mut self, index: usize) -> &mut ToolCall {
+    pub(crate) fn ensure(&mut self, index: usize) -> &mut ToolCall {
         while self.calls.len() <= index {
             self.calls.push(ToolCall {
                 id: String::new(),
@@ -282,28 +319,31 @@ impl ToolCallAccumulator {
         &mut self.calls[index]
     }
 
-    fn set_id(&mut self, index: usize, id: &str) {
+    pub(crate) fn set_id(&mut self, index: usize, id: &str) {
         self.ensure(index).id = id.to_string();
     }
 
-    fn set_name(&mut self, index: usize, name: &str) {
+    pub(crate) fn set_name(&mut self, index: usize, name: &str) {
         self.ensure(index).function.name = name.to_string();
     }
 
-    fn append_args(&mut self, index: usize, args: &str) {
+    pub(crate) fn append_args(&mut self, index: usize, args: &str) {
         self.ensure(index).function.arguments.push_str(args);
     }
 }
 
 /// Result of a single streamed completion.
-struct StreamOutcome {
-    content: String,
-    reasoning: String,
-    tool_calls: Vec<ToolCall>,
+pub(crate) struct StreamOutcome {
+    pub(crate) content: String,
+    pub(crate) reasoning: String,
+    pub(crate) tool_calls: Vec<ToolCall>,
     /// Model that actually served the request, as reported by the endpoint.
     /// Meaningful with routers (`openrouter/auto`, `openrouter/free`) where
     /// the configured id does not identify the model that answered.
-    model: Option<String>,
+    pub(crate) model: Option<String>,
+    /// The stream was cut because the model started repeating itself, or
+    /// because the reply exceeded [`MAX_STREAM_CHARS`].
+    pub(crate) loop_cut: bool,
 }
 
 fn echo_reply(user: &str) -> String {
@@ -348,6 +388,7 @@ pub fn system_prompt(target: &PromptTarget) -> String {
     let mut ops: Vec<&str> = vec!["`analyze`", "`functions`", "`disasm`"];
     if capabilities.graph {
         ops.push("`graph`");
+        ops.push("`lift`");
     }
     if capabilities.decompile {
         ops.push("`decompile`");
@@ -361,12 +402,17 @@ pub fn system_prompt(target: &PromptTarget) -> String {
     } else {
         ""
     };
+    let lift_step = if capabilities.graph {
+        ", `lift` for a VTIL-style de-obfuscated view when the code looks like a VM dispatcher or opaque predicate"
+    } else {
+        ""
+    };
     let mut prompt = format!(
         "You are Recurse, an expert reverse-engineering agent. Crack the target: recover the serial/key.\n\
          Target: {path} arch={arch} bits={bits} type={kind} ({})\n\
          Tooling: use the `analyze` tool for ALL binary inspection — never shell out to a disassembler. Ops: {}. Use `bash` only to run scripts and the target itself (python, ./target). read/write/edit handle files.\n\
-         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG{decompile_step}. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
-         Efficiency (measured and expected of you): never repeat an identical analyze call; keep queries narrow (`disasm` a window, not a whole huge function). Keep prose under 4 lines.",
+         Workflow: 1) `analyze` once. 2) `functions` for the list, `disasm` with `addr` (and `count`) to read code, `xrefs` for references, `strings`/`imports` for I/O, `graph` for the CFG{decompile_step}{lift_step}. 3) Decide what the check is, then confirm it by running the target (bash) with a candidate key on stdin. 4) If a transform is involved (xor/hash/compare), write a short python keygen with bash and verify it.\n\
+         Efficiency (measured and expected of you): never repeat an identical analyze call; keep queries narrow (`disasm` a window, not a whole huge function). Keep prose under 4 lines. If a sentence starts repeating, stop and either call a different tool or answer.",
         if kind.contains("pe") || kind.contains("mach0") { "PE/Mach-O — static analysis on Linux" } else { "" },
         ops.join(", ")
     );
@@ -462,10 +508,13 @@ async fn stream_http(
 
     let key = config.api_key.as_deref().unwrap_or("");
     let send = || {
-        let request = http_client()
+        let mut request = http_client()
             .post(&config.endpoint)
             .header("X-Title", "Recurse")
             .json(&body);
+        for (name, value) in &config.extra_headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
         // A local or keyless endpoint must not receive an empty bearer token.
         let request = if key.is_empty() {
             request
@@ -524,6 +573,7 @@ async fn stream_http(
     let mut content = String::new();
     let mut reasoning = String::new();
     let mut served_model: Option<String> = None;
+    let mut loop_cut = false;
 
     loop {
         match resp.chunk().await {
@@ -542,6 +592,7 @@ async fn stream_http(
                 &mut content,
                 &mut reasoning,
                 &mut served_model,
+                &mut loop_cut,
                 emit,
             ) {
                 done = true;
@@ -560,20 +611,155 @@ async fn stream_http(
             &mut content,
             &mut reasoning,
             &mut served_model,
+            &mut loop_cut,
             emit,
         );
     }
 
+    if loop_cut {
+        acc.calls
+            .retain(|call| !call.id.is_empty() && !call.function.name.is_empty());
+    }
     Ok(StreamOutcome {
         content,
         reasoning,
         tool_calls: acc.calls,
         model: served_model,
+        loop_cut,
     })
 }
 
+/// Assistant text longer than this is cut. A stuck model otherwise streams
+/// the same sentence until the provider closes the connection.
+const MAX_STREAM_CHARS: usize = 12_000;
+/// Shortest phrase that can count as a repeated unit. Below this, ordinary
+/// words (`the the`) and opcode padding are not loops.
+const MIN_REPEAT_UNIT: usize = 32;
+/// Adjacent copies required before the stream is cut. Three is enough to be
+/// sure, and short enough that the chat never fills with the same line.
+const MIN_REPEAT_COPIES: usize = 3;
+
+/// If `text` ends in the same phrase repeated [`MIN_REPEAT_COPIES`] times,
+/// return the byte index that keeps a single copy.
+fn repetition_cut(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let max = (n / MIN_REPEAT_COPIES).min(512);
+    if max < MIN_REPEAT_UNIT {
+        return None;
+    }
+    for unit in MIN_REPEAT_UNIT..=max {
+        if !tail_repeats(bytes, unit, MIN_REPEAT_COPIES)
+            || !repeat_unit_is_prose(&bytes[n - unit..])
+        {
+            continue;
+        }
+        let mut copies = MIN_REPEAT_COPIES;
+        while n >= unit * (copies + 1) && tail_repeats(bytes, unit, copies + 1) {
+            copies += 1;
+        }
+        return Some(n - unit * (copies - 1));
+    }
+    None
+}
+
+fn tail_repeats(bytes: &[u8], unit: usize, copies: usize) -> bool {
+    let n = bytes.len();
+    if unit == 0 || n < unit * copies {
+        return false;
+    }
+    let start = n - unit * copies;
+    let first = &bytes[start..start + unit];
+    for i in 1..copies {
+        let off = start + unit * i;
+        if bytes[off..off + unit] != *first {
+            return false;
+        }
+    }
+    true
+}
+
+fn repeat_unit_is_prose(unit: &[u8]) -> bool {
+    let mut letters = 0usize;
+    let mut kinds = [false; 256];
+    let mut distinct = 0usize;
+    for &byte in unit {
+        if !kinds[usize::from(byte)] {
+            kinds[usize::from(byte)] = true;
+            distinct += 1;
+        }
+        if byte.is_ascii_alphabetic() {
+            letters += 1;
+        }
+    }
+    letters >= 12 && distinct >= 8
+}
+
+fn floor_char_boundary(text: &str, mut index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+pub(crate) enum StreamAppend {
+    Keep(String),
+    Stop(String),
+}
+
+/// Append `delta`, emitting only the part that is not a detected loop.
+pub(crate) fn append_stream(buf: &mut String, delta: &str) -> StreamAppend {
+    let before = buf.len();
+    buf.push_str(delta);
+    if let Some(cut) = repetition_cut(buf) {
+        let emit = if cut > before {
+            buf[before..cut].to_string()
+        } else {
+            String::new()
+        };
+        buf.truncate(cut);
+        return StreamAppend::Stop(emit);
+    }
+    if buf.len() > MAX_STREAM_CHARS {
+        let cut = floor_char_boundary(buf, MAX_STREAM_CHARS);
+        let emit = if cut > before {
+            buf[before..cut].to_string()
+        } else {
+            String::new()
+        };
+        buf.truncate(cut);
+        return StreamAppend::Stop(emit);
+    }
+    StreamAppend::Keep(delta.to_string())
+}
+
+pub(crate) fn emit_text(
+    kind: &str,
+    run_id: &str,
+    delta: String,
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
+) {
+    if delta.is_empty() {
+        return;
+    }
+    if kind == "reasoning" {
+        emit(AgentEvent::Reasoning {
+            run_id: run_id.to_string(),
+            delta,
+        });
+    } else {
+        emit(AgentEvent::Token {
+            run_id: run_id.to_string(),
+            delta,
+        });
+    }
+}
+
 /// Process one raw stream line. Returns true when the stream is complete
-/// (`[DONE]` or undecodable bytes, mirroring the old blocking reader).
+/// (`[DONE]`, undecodable bytes, or a detected repetition loop).
 fn handle_stream_line(
     raw: &[u8],
     run_id: &str,
@@ -581,6 +767,7 @@ fn handle_stream_line(
     content: &mut String,
     reasoning: &mut String,
     served_model: &mut Option<String>,
+    loop_cut: &mut bool,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> bool {
     let Ok(line) = std::str::from_utf8(raw) else {
@@ -604,20 +791,35 @@ fn handle_stream_line(
         }
     }
     for r in chunk.reasoning {
-        reasoning.push_str(&r);
-        emit(AgentEvent::Reasoning {
-            run_id: run_id.to_string(),
-            delta: r,
-        });
+        match append_stream(reasoning, &r) {
+            StreamAppend::Keep(delta) => emit_text("reasoning", run_id, delta, emit),
+            StreamAppend::Stop(delta) => {
+                emit_text("reasoning", run_id, delta, emit);
+                *loop_cut = true;
+                return true;
+            }
+        }
     }
     if !chunk.content.is_empty() {
-        emit(AgentEvent::Token {
-            run_id: run_id.to_string(),
-            delta: chunk.content.clone(),
-        });
-        content.push_str(&chunk.content);
+        match append_stream(content, &chunk.content) {
+            StreamAppend::Keep(delta) => emit_text("content", run_id, delta, emit),
+            StreamAppend::Stop(delta) => {
+                emit_text("content", run_id, delta, emit);
+                *loop_cut = true;
+                return true;
+            }
+        }
     }
     false
+}
+
+fn tool_batch_signature(calls: &[ToolCall]) -> String {
+    let mut parts: Vec<String> = calls
+        .iter()
+        .map(|call| format!("{} {}", call.function.name, call.function.arguments))
+        .collect();
+    parts.sort();
+    parts.join("\n")
 }
 
 /// Per-message wire budget for model context. Old tool results are the
@@ -1034,6 +1236,8 @@ impl Agent {
         let mut empty_final_retries = 0u8;
         let mut continuation_nudge: Option<ChatMessage> = None;
         let mut turn: usize = 0;
+        let mut last_tool_sig = String::new();
+        let mut repeated_tools = 0u8;
         loop {
             if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
                 self.cancel
@@ -1057,9 +1261,56 @@ impl Agent {
 
             let request_snapshot = self.debug.then(|| full.clone());
             let tools_len = tools.len();
-            let outcome = stream_http(run_id, config, &full, tools, emit).await?;
+            let outcome = match config.protocol {
+                Protocol::OpenAiCompatible => {
+                    stream_http(run_id, config, &full, tools, emit).await?
+                }
+                Protocol::AnthropicNative => {
+                    crate::anthropic::stream_http(run_id, config, &full, tools, emit).await?
+                }
+            };
 
             if !outcome.tool_calls.is_empty() {
+                let sig = tool_batch_signature(&outcome.tool_calls);
+                if sig == last_tool_sig {
+                    repeated_tools = repeated_tools.saturating_add(1);
+                } else {
+                    last_tool_sig = sig;
+                    repeated_tools = 1;
+                }
+                if repeated_tools >= 3 {
+                    let note = "stopped: this exact tool call already ran. Use a different address or answer from what you have.";
+                    self.messages.push(
+                        ChatMessage::assistant(
+                            if outcome.content.is_empty() {
+                                None
+                            } else {
+                                Some(outcome.content.clone())
+                            },
+                            Some(outcome.tool_calls.clone()),
+                        )
+                        .with_reasoning(Some(outcome.reasoning.clone())),
+                    );
+                    for tc in &outcome.tool_calls {
+                        emit(AgentEvent::ToolCall {
+                            run_id: run_id.to_string(),
+                            id: tc.id.clone(),
+                            name: tc.function.name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                        });
+                        emit(AgentEvent::ToolResult {
+                            run_id: run_id.to_string(),
+                            id: tc.id.clone(),
+                            name: tc.function.name.clone(),
+                            result: note.to_string(),
+                        });
+                        self.messages
+                            .push(ChatMessage::tool(tc.id.clone(), note.to_string()));
+                    }
+                    return Err(
+                        "stopped: the same tool call was repeated and the run was cut".into(),
+                    );
+                }
                 // Persist the assistant's tool request, then run each tool.
                 let content = if outcome.content.is_empty() {
                     None
@@ -1147,6 +1398,9 @@ impl Agent {
             // is not a valid completion for an action-oriented agent: keep the
             // turn alive and transiently ask for the next action instead of
             // persisting an empty answer and stopping.
+            if outcome.loop_cut && outcome.content.trim().is_empty() {
+                return Err("stopped: model output started repeating and the run was cut".into());
+            }
             if outcome.content.trim().is_empty() {
                 empty_final_retries += 1;
                 if empty_final_retries > 2 {
@@ -1236,5 +1490,27 @@ mod tests {
             cfg.endpoint,
             "https://openrouter.ai/api/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn repetition_cut_keeps_one_copy_of_a_looped_sentence() {
+        let sentence = "At entry0, call 0x14025d108 with no explicit args; first call likely `RtlInitUnicodeString`? ";
+        let mut text = String::from("Need inspect headers. ");
+        text.push_str(sentence);
+        assert!(repetition_cut(&text).is_none());
+        text.push_str(sentence);
+        assert!(repetition_cut(&text).is_none());
+        text.push_str(sentence);
+        text.push_str(sentence);
+        let cut = repetition_cut(&text).expect("loop");
+        let kept = &text[..cut];
+        assert_eq!(kept.matches("RtlInitUnicodeString").count(), 1);
+        assert!(kept.starts_with("Need inspect headers. "));
+    }
+
+    #[test]
+    fn repetition_cut_ignores_short_repeated_words() {
+        let text = "the the the the the the the the the the the the";
+        assert!(repetition_cut(text).is_none());
     }
 }

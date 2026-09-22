@@ -692,23 +692,30 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
     let env: serde_json::Value = serde_json::from_str(&out).expect("envelope");
     assert_eq!(env["op"], "functions");
     assert!(env["count"].as_u64().is_some());
-    // The native backend advertises no decompiler and says so precisely.
-    let err = execute_tool(&engine, &serde_json::json!({"op": "decompile", "addr": 0}))
-        .expect_err("native has no decompiler");
-    assert!(err.contains("no decompiler"), "got: {err}");
+    // The native backend now has a (partial, total-coverage) decompiler —
+    // see docs/vtil-lift.md — so this succeeds rather than erroring.
+    let funcs = engine.functions().expect("functions");
+    let entry_addr = funcs[0].addr;
+    let out = execute_tool(
+        &engine,
+        &serde_json::json!({"op": "decompile", "addr": entry_addr}),
+    )
+    .expect("native decompile");
+    let env: serde_json::Value = serde_json::from_str(&out).expect("envelope");
+    assert!(env["code"].as_str().is_some_and(|c| !c.is_empty()));
 
     // The schema and system prompt derived from those capabilities hide the
-    // ops the backend cannot serve, so the model is never tempted to call
-    // them (the log comparison showed 20 wasted native calls).
+    // ops the backend cannot serve (still true of `raw`, the console), and
+    // now advertise `decompile` too since native provides one.
     let caps = engine.capabilities();
-    assert!(!caps.decompile && !caps.raw);
+    assert!(caps.decompile && !caps.raw);
     let schema = recurse_agent::engine::tool_schema(caps);
     let ops = schema["function"]["parameters"]["properties"]["op"]["enum"]
         .as_array()
         .expect("op enum");
     assert!(
-        !ops.iter().any(|v| v == "decompile"),
-        "schema hides decompile"
+        ops.iter().any(|v| v == "decompile"),
+        "schema advertises decompile"
     );
     assert!(!ops.iter().any(|v| v == "raw"), "schema hides raw");
 
@@ -722,8 +729,8 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
     };
     let prompt = recurse_agent::agent::system_prompt(&target);
     assert!(
-        !prompt.contains("decompile"),
-        "prompt hides decompile: {prompt}"
+        prompt.contains("decompile"),
+        "prompt advertises decompile: {prompt}"
     );
     assert!(!prompt.contains("`raw`"), "prompt hides raw: {prompt}");
 
@@ -731,6 +738,37 @@ fn native_engine_serves_the_neutral_tool_end_to_end() {
     let err = execute_tool(&engine, &serde_json::json!({"op": "raw", "cmd": "afl"}))
         .expect_err("native has no console");
     assert!(err.contains("no console"), "got: {err}");
+}
+
+#[test]
+fn lift_op_raises_a_function_into_vtil_style_il() {
+    use recurse_agent::engine::{execute_tool, Engine};
+    let exe = std::env::current_exe().expect("test exe");
+    let engine = recurse_agent::native::NativeEngine::open(&exe).expect("open native engine");
+    engine.analyze().expect("analyze");
+    let functions = engine.functions().expect("functions");
+    let target = functions.first().expect("at least one function").addr;
+
+    let out =
+        execute_tool(&engine, &serde_json::json!({"op": "lift", "addr": target})).expect("lift op");
+    let env: serde_json::Value = serde_json::from_str(&out).expect("envelope");
+    assert_eq!(env["op"], "lift");
+    let vtil = env["vtil"].as_str().expect("vtil text field");
+    assert!(vtil.starts_with("begin_routine"), "got: {vtil}");
+    assert!(vtil.trim_end().ends_with("end_routine"), "got: {vtil}");
+    assert!(env["optimized"]["rounds"].as_u64().is_some());
+
+    // Advertised alongside `graph`, since the native backend can recover a
+    // CFG (`lift` is built on `function_graph`).
+    let caps = engine.capabilities();
+    let schema = recurse_agent::engine::tool_schema(caps);
+    let ops = schema["function"]["parameters"]["properties"]["op"]["enum"]
+        .as_array()
+        .expect("op enum");
+    assert!(
+        ops.iter().any(|v| v == "lift"),
+        "schema advertises lift: {ops:?}"
+    );
 }
 
 #[tokio::test]

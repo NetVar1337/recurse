@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
 	AgentEvent,
+	AnthropicLoginStart,
 	AsmInsn,
 	AsmResult,
 	Backend,
@@ -9,11 +10,13 @@ import type {
 	ChatMessage,
 	DebugSnapshot,
 	DecompileResult,
+	DeviceLoginInfo,
 	Function,
 	Import,
 	LlmStatus,
 	ModelInfo,
 	Project,
+	ProviderStatus,
 	R2String,
 	Recon,
 	FunctionGraph,
@@ -107,5 +110,28 @@ export const api = {
 			project,
 			query,
 			limit,
+		}),
+	providersList: () => invoke<ProviderStatus[]>("providers_list"),
+	providerSaveApiKey: (id: string, key: string) =>
+		invoke<void>("provider_save_api_key", { id, key }),
+	providerClearCredential: (id: string) =>
+		invoke<void>("provider_clear_credential", { id }),
+	providerSetActive: (id: string) =>
+		invoke<void>("provider_set_active", { id }),
+	anthropicOauthStart: () =>
+		invoke<AnthropicLoginStart>("anthropic_oauth_start"),
+	anthropicOauthFinish: (pastedCode: string, verifier: string) =>
+		invoke<void>("anthropic_oauth_finish", { pastedCode, verifier }),
+	githubCopilotDeviceStart: () =>
+		invoke<DeviceLoginInfo>("github_copilot_device_start"),
+	githubCopilotDeviceFinish: (
+		deviceCode: string,
+		intervalSecs: number,
+		expiresInSecs: number,
+	) =>
+		invoke<void>("github_copilot_device_finish", {
+			deviceCode,
+			intervalSecs,
+			expiresInSecs,
 		}),
 };

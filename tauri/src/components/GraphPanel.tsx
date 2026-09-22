@@ -36,11 +36,17 @@ type BlockOp = GraphOp & { target?: Function | null };
 type BlockData = { addr: string; ops: BlockOp[] };
 type BlockNode = Node<BlockData, "cfgnode">;
 
-// Columns are sized per node from its own content (see `blockColumns`) so the
-// bytes column is exactly as wide as the widest byte string and the instruction
-// column holds the longest line in full. The graph is pan/zoomable, so a node
+// Columns are sized per node from its own content (see `blockColumns`) so
+// both the addr and bytes columns are exactly as wide as their widest value
+// and the instruction column holds the longest line in full — a hardcoded
+// character width (the previous approach for the addr column) clips as soon
+// as an address is longer than assumed (e.g. `0x14000105f` on a driver
+// loaded above 4 GiB is 11 chars, not the 9 a 32-bit-shaped estimate
+// allows), and since grid tracks don't reflow their neighbors when content
+// overflows them, the clipped text visually bleeds into the next column
+// instead of wrapping or truncating. The graph is pan/zoomable, so a node
 // may be as wide as its content needs — nothing is trimmed.
-const ADDR_CH = 9;
+const MIN_ADDR_CH = 9;
 const MIN_BYTES_CH = 16;
 // px per character for the 10.5px monospace used in block nodes. Slightly
 // above the true advance (~0.6em) so the estimate errs wide and never clips.
@@ -49,6 +55,13 @@ const CHAR_W = 6.7;
 const NODE_CHROME_W = 2 * 8 + 2 * 6;
 // Slack so a rounding error can never clip the last glyph.
 const WIDTH_SLACK = 10;
+
+/** Widest addr column for a block, in characters (never below the header). */
+function addrColumns(ops: BlockOp[]): number {
+	let addr = MIN_ADDR_CH;
+	for (const op of ops) addr = Math.max(addr, fmtAddr(op.addr).length);
+	return addr;
+}
 
 /** Widest byte column for a block, in characters (never below the header). */
 function bytesColumns(ops: BlockOp[]): number {
@@ -59,14 +72,14 @@ function bytesColumns(ops: BlockOp[]): number {
 
 /** CSS grid template shared by the header row and every instruction row. */
 function blockColumns(ops: BlockOp[]): string {
-	return `${ADDR_CH}ch ${bytesColumns(ops)}ch max-content`;
+	return `${addrColumns(ops)}ch ${bytesColumns(ops)}ch max-content`;
 }
 
 /** Node width that fits the longest instruction line without trimming. */
 function blockWidth(ops: BlockOp[]): number {
 	let instr = "Instruction".length;
 	for (const op of ops) instr = Math.max(instr, (op.disasm ?? "").length);
-	const contentCh = ADDR_CH + bytesColumns(ops) + instr;
+	const contentCh = addrColumns(ops) + bytesColumns(ops) + instr;
 	return Math.max(
 		BLOCK_W,
 		Math.ceil(contentCh * CHAR_W + NODE_CHROME_W + WIDTH_SLACK),
@@ -124,13 +137,13 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 							}
 						>
 							<span
-								className="text-sky-600 dark:text-sky-400"
+								className="overflow-hidden text-sky-600 dark:text-sky-400"
 								title="Virtual address"
 							>
 								{fmtAddr(op.addr)}
 							</span>
 							<span
-								className="text-emerald-600 dark:text-emerald-400"
+								className="overflow-hidden text-emerald-600 dark:text-emerald-400"
 								title="Machine code bytes (hex)"
 							>
 								{op.bytes ?? ""}

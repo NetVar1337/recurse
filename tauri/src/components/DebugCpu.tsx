@@ -109,10 +109,10 @@ export function DebugCpu() {
 								<td className="text-primary w-3 text-center select-none">
 									{isPc ? "▶" : ""}
 								</td>
-								<td className="w-[9ch] px-1 whitespace-nowrap text-sky-600 dark:text-sky-400">
+								<td className="min-w-[9ch] px-1 whitespace-nowrap text-sky-600 dark:text-sky-400">
 									{fmtAddr(op.addr)}
 								</td>
-								<td className="w-[16ch] px-1 whitespace-nowrap text-emerald-600 dark:text-emerald-400">
+								<td className="min-w-[16ch] px-1 whitespace-nowrap text-emerald-600 dark:text-emerald-400">
 									{op.bytes}
 								</td>
 								<td className="px-1 whitespace-nowrap">

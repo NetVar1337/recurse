@@ -4,6 +4,9 @@
 #   tauri/src-tauri    desktop app (Tauri + pluggable analysis backends)
 #   crates/recurse-agent  agent framework (LLM loop, tools, SQLite memory)
 #   crates/recurse-static static analysis (native engine, r2 backend, disassembly)
+#   crates/recurse-vtil VTIL-inspired de-obfuscation/de-virtualization IL
+#   crates/recurse-mcp  standalone headless MCP server (stdio) over the engine
+#   crates/recurse-py   Python bindings for the engine (pyo3) -- idalib-equivalent
 #   crates/recurse-debug  cross-platform debugger
 #   crates/recurse-eval headless eval harness
 #
@@ -15,6 +18,9 @@ resolver = "2"
 members = [
     "crates/recurse-agent",
     "crates/recurse-static",
+    "crates/recurse-vtil",
+    "crates/recurse-mcp",
+    "crates/recurse-py",
     "crates/recurse-debug",
     "crates/recurse-eval",
     "tauri/src-tauri",
@@ -25,3 +31,4 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Aayush Khanna"]
+repository = "https://github.com/Recurse-Labs/recurse"

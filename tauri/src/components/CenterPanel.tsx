@@ -112,13 +112,13 @@ function OpRow({
 			}
 		>
 			<span
-				className="w-[9ch] shrink-0 text-sky-600 dark:text-sky-400"
+				className="min-w-[9ch] shrink-0 text-sky-600 dark:text-sky-400"
 				title="Virtual address"
 			>
 				{fmtAddr(op.addr)}
 			</span>
 			<span
-				className="w-[16ch] shrink-0 overflow-hidden text-emerald-600 dark:text-emerald-400"
+				className="min-w-[16ch] shrink-0 text-emerald-600 dark:text-emerald-400"
 				title="Machine code bytes (hex)"
 			>
 				{op.bytes ?? ""}

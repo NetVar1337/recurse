@@ -1,0 +1,29 @@
+[package]
+name = "recurse-vtil"
+description = "VTIL-inspired intermediate language: lift backend-neutral disassembly into a de-obfuscation/de-virtualization IL, run optimizer passes, and render VTIL-style text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords = ["reverse-engineering", "deobfuscation", "devirtualization", "vtil", "decompiler"]
+categories = ["development-tools::debugging", "compilers"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicorn-engine = { version = "2.1.5", optional = true }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[features]
+unicorn-engine = ["dep:unicorn-engine"]

@@ -21,6 +21,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Static binary analysis (native engine, r2 backend, shared architecture and
 # disassembly). Systems code lives there, not in the agent.
 recurse-static = { path = "../recurse-static" }
+sha2 = "0.11.0"
+rand = "0.10.3"
+base64 = "0.23.1"
 
 [dev-dependencies]
 # Async runtime + macros for the local-endpoint integration test.

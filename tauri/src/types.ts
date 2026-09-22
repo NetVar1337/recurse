@@ -149,6 +149,29 @@ export interface LlmStatus {
 	/** True for a custom/local OpenAI-compatible endpoint (no key required). */
 	custom: boolean;
 }
+export interface ProviderStatus {
+	id: string;
+	name: string;
+	/** "api_key" | "oauth_anthropic" | "oauth_github_copilot" | "local" */
+	auth_kind: "api_key" | "oauth_anthropic" | "oauth_github_copilot" | "local";
+	docs_url: string;
+	configured: boolean;
+	oauth_expires_at: number | null;
+	is_active: boolean;
+}
+
+export interface AnthropicLoginStart {
+	authorize_url: string;
+	verifier: string;
+}
+
+export interface DeviceLoginInfo {
+	device_code: string;
+	user_code: string;
+	verification_uri: string;
+	interval_secs: number;
+	expires_in_secs: number;
+}
 
 /** Analysis backend implementations selectable at runtime. */
 export type Backend = "r2" | "native";

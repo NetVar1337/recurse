@@ -61,12 +61,21 @@ fn native_backend_parses_discovers_and_disassembles() {
 }
 
 #[test]
-fn native_backend_reports_missing_decompiler_clearly() {
+fn native_backend_decompiles_a_real_function() {
     let exe = std::env::current_exe().expect("test executable path");
     let engine = recurse_agent::native::NativeEngine::open(&exe).expect("open native engine");
-    assert!(!engine.capabilities().decompile);
-    let err = engine.decompile(0).expect_err("no decompiler");
-    assert!(err.contains("no decompiler"));
+    engine.analyze().expect("analyze");
+
+    // The native backend now renders pseudocode via recurse-vtil's
+    // lift -> optimize -> structure pipeline (see docs/vtil-lift.md) rather
+    // than reporting "no decompiler".
+    assert!(engine.capabilities().decompile);
+
+    let funcs = engine.functions().expect("functions");
+    let entry = funcs[0].addr;
+    let dec = engine.decompile(entry).expect("decompile");
+    assert!(dec.code.contains("void "), "got:\n{}", dec.code);
+    assert!(dec.code.trim_end().ends_with('}'), "got:\n{}", dec.code);
 }
 
 #[test]

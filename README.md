@@ -23,6 +23,8 @@ crates/
   recurse-agent/              agent framework: LLM loop, tool runtime, SQLite memory
   recurse-static/          static analysis: ELF/PE/Mach-O parsing, multi-arch disassembly,
                            CFG and cross-reference recovery, the engine seam
+  recurse-vtil/            VTIL-inspired de-obfuscation/de-virtualization IL, lifter, optimizer
+  recurse-mcp/             standalone headless MCP server (stdio) over the engine — no Tauri, no IDA
   recurse-debug/           cross-platform debugger (ptrace/Mach/Win32, breakpoints, stepping)
   recurse-eval/            headless eval harness (YAML-configured tiers)
 justfile                 single entry point for both halves
@@ -53,6 +55,16 @@ not use. No crate depends on Tauri, and each builds/tests standalone;
 - LLM agent backed by an OpenAI-compatible endpoint (OpenRouter by default) with a
   model picker; drives the session directly (disasm, xrefs, strings, imports, decompile)
 - Dark-first UI built with Tailwind CSS v4 + shadcn/ui
+- `lift` op: raises a function into a VTIL-style de-obfuscation IL and runs
+  whole-routine propagation/folding/dead-code-elimination/branch-resolution
+  passes over it — useful when disassembly looks like a VM dispatcher or
+  opaque-predicate chain (see [docs/vtil-lift.md](docs/vtil-lift.md))
+- Native decompiler: `decompile` renders C-like pseudocode (`if`/`while`
+  structuring, total instruction coverage) from the same `recurse-vtil`
+  pipeline — no external tool, no r2 required
+- Standalone `recurse-mcp` server: the same `Engine` over MCP stdio for any
+  MCP-capable agent (Claude Code, Cursor, Claude Desktop, …) — no Tauri, no
+  IDA seat, no Python bridge (see [docs/recurse-mcp.md](docs/recurse-mcp.md))
 
 ## Analysis backends
 
@@ -61,16 +73,18 @@ engine is a choice, not a hard dependency:
 
 - **`native`** (default) — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly
   (`object` + `capstone`): x86/x86-64, ARM, AArch64, MIPS, PowerPC, RISC-V, SPARC, SystemZ,
-  M68K, BPF. No child process, no external tool, no LGPL in the build.
-- **r2** (radare2) — supported as an **opt-in** alternative for installs that want its full
-  feature set (including decompilation). Install r2 and select it as the engine; it runs as
-  a separate process and is never linked or bundled with Recurse.
+  M68K, BPF. No child process, no external tool, no LGPL in the build. Includes a decompiler
+  (`recurse-vtil`'s lift → optimize → structure pipeline — see
+  [docs/vtil-lift.md](docs/vtil-lift.md)) and a `lift` op for VTIL-style de-obfuscation.
+- **r2** (radare2) — supported as an **opt-in** alternative for installs that want its own,
+  more complete decompiler or a raw console. Install r2 and select it as the engine; it runs
+  as a separate process and is never linked or bundled with Recurse.
 
 Pick with the settings menu, the `RECURSE_BACKEND` environment variable, or the stored
 config. The agent gets one backend-neutral `analyze` tool (`functions`, `disasm`, `graph`,
-`decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw` for the engine console) —
-filtered to the ops the active engine actually supports, so `decompile`/`raw` are only
-advertised when available. The UI consumes canonical result types, not any engine's JSON.
+`lift`, `decompile`, `xrefs`, `strings`, `imports`, `info`, plus `raw` for the engine console) —
+filtered to the ops the active engine actually supports, so `raw` (native has no console) is
+only advertised when available. The UI consumes canonical result types, not any engine's JSON.
 See [docs/backends.md](docs/backends.md) for the trait, the crate choices, and the licensing
 rationale. Opening a large binary is fast because analysis is **lazy** — discovery indexes
 functions cheaply and basic blocks decode only when a function is viewed; see
@@ -133,11 +147,12 @@ sudo apt install -y libwebkit2gtk-4.1-dev build-essential \
 Other distros: follow the official
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
-### 4. Optional decompiler
+### 4. Decompiler
 
-The native engine has no decompiler. The **r2** engine can provide one when its decompiler
-plugin is installed; without it, the Decompile tab surfaces a graceful error and everything
-else works.
+Both engines provide one: `native` renders pseudocode via `recurse-vtil`
+(lift → optimize → structure — see [docs/vtil-lift.md](docs/vtil-lift.md)),
+nothing to install; **r2** can provide its own, more complete decompiler
+when its plugin is installed.
 
 ## Build
 

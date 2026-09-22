@@ -1,26 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import {
-	Dialog,
-	DialogContent,
-	DialogHeader,
-	DialogTitle,
-	DialogTrigger,
-} from "@/components/ui/dialog";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuLabel,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { api } from "@/api";
 import { Markdown } from "@/components/Markdown";
+import { ModelPicker } from "@/components/ModelPicker";
 import { useLlmStore } from "@/store/llmStore";
 import {
 	useAgentStore,
@@ -29,9 +15,6 @@ import {
 } from "@/store/agentStore";
 import { useContextStore } from "@/store/contextStore";
 import { useSessionStore } from "@/store/sessionStore";
-import type { ModelInfo } from "@/types";
-
-type SortMode = "default" | "price-asc" | "price-desc";
 
 function fmtDate(secs: number): string {
 	const d = new Date(secs * 1000);
@@ -41,15 +24,6 @@ function fmtDate(secs: number): string {
 				month: "short",
 				day: "numeric",
 			});
-}
-
-function priceOf(m: ModelInfo): number {
-	const p = parseFloat(m.prompt_price);
-	return Number.isFinite(p) ? p : 0;
-}
-
-function fmtPrice(m: ModelInfo): string {
-	return `$${(priceOf(m) * 1_000_000).toFixed(2)}/M`;
 }
 
 interface Props {
@@ -348,7 +322,7 @@ export function AgentChat({ inputRef }: Props) {
 							)}
 						</div>
 					</div>
-					<ModelSelector />
+					<ModelPicker />
 				</div>
 			</div>
 		</div>
@@ -420,299 +394,3 @@ function AssistantMessage({
 	);
 }
 
-function ModelSelector() {
-	const model = useLlmStore((s) => s.model);
-	const models = useLlmStore((s) => s.models);
-	const loading = useLlmStore((s) => s.modelsLoading);
-	const error = useLlmStore((s) => s.modelsError);
-	const refresh = useLlmStore((s) => s.refresh);
-	const selectModel = useLlmStore((s) => s.selectModel);
-	const configured = useLlmStore((s) => s.configured);
-	const saveApiKey = useLlmStore((s) => s.saveApiKey);
-	const provider = useLlmStore((s) => s.provider);
-	const custom = useLlmStore((s) => s.custom);
-	const endpoint = useLlmStore((s) => s.endpoint);
-	const setEndpoint = useLlmStore((s) => s.setEndpoint);
-	const endpointSaved = useLlmStore((s) => s.endpointSaved);
-	const endpointError = useLlmStore((s) => s.endpointError);
-	const [open, setOpen] = useState(false);
-	const [query, setQuery] = useState("");
-	const [key, setKey] = useState("");
-	const [show, setShow] = useState(false);
-	const [saving, setSaving] = useState(false);
-	const [sort, setSort] = useState<SortMode>("default");
-	const [endpointInput, setEndpointInput] = useState("");
-	const [endpointSaving, setEndpointSaving] = useState(false);
-	const [customModel, setCustomModel] = useState("");
-
-	const filtered = useMemo(() => {
-		const list = models.filter(
-			(m) =>
-				m.id.toLowerCase().includes(query.toLowerCase()) ||
-				m.name.toLowerCase().includes(query.toLowerCase()),
-		);
-		if (sort === "price-asc") {
-			return [...list].sort((a, b) => priceOf(a) - priceOf(b));
-		}
-		if (sort === "price-desc") {
-			return [...list].sort((a, b) => priceOf(b) - priceOf(a));
-		}
-		return list;
-	}, [models, query, sort]);
-
-	const onSaveKey = async () => {
-		setSaving(true);
-		await saveApiKey(key);
-		setSaving(false);
-		if (useLlmStore.getState().keyError === null) setKey("");
-	};
-
-	const onSaveEndpoint = async () => {
-		setEndpointSaving(true);
-		await setEndpoint(endpointInput);
-		setEndpointSaving(false);
-		if (useLlmStore.getState().endpointError === null) setEndpointInput("");
-	};
-
-	return (
-		<Dialog open={open} onOpenChange={setOpen}>
-			<DialogTrigger asChild>
-				<Button
-					variant="ghost"
-					size="sm"
-					className="h-7 max-w-[150px] truncate px-1.5 text-[11px]"
-				>
-					{model || "select model"} ▾
-				</Button>
-			</DialogTrigger>
-			<DialogContent className="max-h-[90vh] w-[95vw] max-w-2xl overflow-hidden p-5 sm:max-w-2xl">
-				<DialogHeader>
-					<DialogTitle>Model & Provider</DialogTitle>
-				</DialogHeader>
-
-				<div className="space-y-2">
-					<label className="text-muted-foreground text-xs">
-						{provider === "openrouter"
-							? "OpenRouter API key"
-							: "API key (optional for local endpoints)"}
-					</label>
-					<div className="flex gap-1.5">
-						<Input
-							type={show ? "text" : "password"}
-							placeholder={
-								configured
-									? "•••••• (saved) — replace?"
-									: custom
-										? "optional"
-										: "sk-or-…"
-							}
-							value={key}
-							onChange={(e) => setKey(e.target.value)}
-							className="min-w-0 flex-1"
-						/>
-						<Button
-							variant="toolbar"
-							size="sm"
-							onClick={() => setShow((s) => !s)}
-						>
-							{show ? "Hide" : "Show"}
-						</Button>
-						<Button
-							onClick={onSaveKey}
-							disabled={saving || !key.trim()}
-						>
-							{saving ? "…" : "Save"}
-						</Button>
-					</div>
-					{useLlmStore.getState().keySaved &&
-						!useLlmStore.getState().keyError && (
-							<div className="text-primary text-[11px]">
-								saved to ~/.recurse/config.json
-							</div>
-						)}
-					{useLlmStore.getState().keyError && (
-						<div className="text-destructive text-[11px]">
-							{useLlmStore.getState().keyError}
-						</div>
-					)}
-				</div>
-
-				<div className="space-y-2">
-					<label className="text-muted-foreground text-xs">
-						Base URL (OpenAI-compatible)
-					</label>
-					<div className="flex gap-1.5">
-						<Input
-							placeholder={
-								endpoint || "https://openrouter.ai/api/v1"
-							}
-							value={endpointInput}
-							onChange={(e) => setEndpointInput(e.target.value)}
-							className="min-w-0 flex-1"
-						/>
-						<Button
-							onClick={onSaveEndpoint}
-							disabled={endpointSaving || !endpointInput.trim()}
-						>
-							{endpointSaving ? "…" : "Save"}
-						</Button>
-						{custom && (
-							<Button
-								variant="outline"
-								onClick={() => void setEndpoint("")}
-								title="Back to OpenRouter"
-							>
-								Reset
-							</Button>
-						)}
-					</div>
-					<div className="text-muted-foreground text-[10px]">
-						Point at a local server (Ollama, LM Studio, llama.cpp,
-						vLLM) or any OpenAI-compatible endpoint; leave blank for
-						OpenRouter. Local endpoints need no API key.
-					</div>
-					{endpointSaved && !endpointError && (
-						<div className="text-primary text-[11px]">
-							endpoint saved
-						</div>
-					)}
-					{endpointError && (
-						<div className="text-destructive text-[11px]">
-							{endpointError}
-						</div>
-					)}
-				</div>
-
-				<div className="flex min-h-0 flex-1 flex-col gap-2">
-					<div className="flex gap-1.5">
-						<Input
-							placeholder="or type a model id, e.g. llama3.1:8b"
-							value={customModel}
-							onChange={(e) => setCustomModel(e.target.value)}
-							className="min-w-0 flex-1"
-						/>
-						<Button
-							variant="outline"
-							disabled={!customModel.trim()}
-							onClick={() => {
-								selectModel(customModel.trim());
-								setCustomModel("");
-								setOpen(false);
-							}}
-						>
-							Use
-						</Button>
-					</div>
-					<div className="flex items-center gap-1.5">
-						<Input
-							placeholder={`Search ${models.length} models…`}
-							value={query}
-							onChange={(e) => setQuery(e.target.value)}
-							autoFocus
-							className="min-w-0 flex-1"
-						/>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button variant="toolbar" size="sm">
-									Sort
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								<DropdownMenuLabel>
-									Sort by price
-								</DropdownMenuLabel>
-								<DropdownMenuItem
-									onClick={() => setSort("price-asc")}
-								>
-									Low to high
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									onClick={() => setSort("price-desc")}
-								>
-									High to low
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									onClick={() => setSort("default")}
-								>
-									Default
-								</DropdownMenuItem>
-							</DropdownMenuContent>
-						</DropdownMenu>
-						<Button
-							variant="toolbar"
-							size="sm"
-							onClick={refresh}
-							disabled={loading}
-						>
-							{loading ? "Loading" : "Refresh"}
-						</Button>
-					</div>
-					{error && (
-						<div className="bg-destructive/10 text-destructive rounded-md p-2 text-[11px]">
-							{error}
-						</div>
-					)}
-					<div className="bg-muted/20 max-h-[55vh] min-h-0 overflow-x-hidden overflow-y-auto rounded-md">
-						{filtered.map((m) => {
-							const active = m.id === model;
-							return (
-								<button
-									key={m.id}
-									className={cn(
-										"flex w-full min-w-0 items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs",
-										active
-											? "ui-selected"
-											: "hover:bg-accent",
-									)}
-									onClick={() => {
-										selectModel(m.id);
-										setOpen(false);
-									}}
-									title={m.id}
-								>
-									<span className="min-w-0 flex-1 font-mono break-all">
-										{m.id}
-									</span>
-									<span className="flex shrink-0 gap-1">
-										{m.free && (
-											<Badge
-												variant="secondary"
-												className="px-1.5 py-0 text-[9px]"
-											>
-												free
-											</Badge>
-										)}
-										{!m.free && priceOf(m) > 0 && (
-											<Badge
-												variant="outline"
-												className="px-1.5 py-0 text-[9px]"
-											>
-												{fmtPrice(m)}
-											</Badge>
-										)}
-										{m.context_length > 0 && (
-											<Badge
-												variant="outline"
-												className="px-1.5 py-0 text-[9px]"
-											>
-												{Math.round(
-													m.context_length / 1000,
-												)}
-												k
-											</Badge>
-										)}
-									</span>
-								</button>
-							);
-						})}
-						{filtered.length === 0 && !loading && (
-							<div className="text-muted-foreground px-3 py-3 text-center text-xs">
-								no models
-							</div>
-						)}
-					</div>
-				</div>
-			</DialogContent>
-		</Dialog>
-	);
-}

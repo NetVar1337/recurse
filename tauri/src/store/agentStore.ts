@@ -203,8 +203,19 @@ function applyEvent(m: UiMessage, ev: AgentEvent): UiMessage {
 			);
 			return { ...m, blocks };
 		}
-		case "done":
-			return { ...m, pending: false };
+		case "done": {
+			const content = ev.content ?? "";
+			const blocks = m.blocks.map((b, i, arr): UiBlock => {
+				if (b.kind !== "content" || !content) return b;
+				const later = arr.slice(i + 1).some((x) => x.kind === "content");
+				if (later) return b;
+				if (b.text.startsWith(content) && b.text.length > content.length) {
+					return { kind: "content", text: content };
+				}
+				return b;
+			});
+			return { ...m, pending: false, blocks };
+		}
 		case "error":
 			return { ...m, pending: false, error: ev.message ?? "" };
 		default:

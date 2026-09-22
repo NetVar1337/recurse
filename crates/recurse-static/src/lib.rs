@@ -15,11 +15,22 @@
 //! * [`signals`] — best-effort process signals for the r2 engine.
 
 pub mod arch;
+pub mod capa;
+pub mod cpp;
+pub mod decompose;
+pub mod diff;
+pub mod driver;
+pub mod dwarf;
 pub mod engine;
+pub mod firmware;
 pub mod native;
 pub mod r2;
 pub mod r2_backend;
+pub mod semantic_memory;
+pub mod sig;
 pub mod signals;
+pub mod types;
 pub mod unwind;
+pub mod winpdb;
 
 pub use engine::{BackendKind, Capabilities, Engine};

@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+keywords = ["reverse-engineering", "disassembler", "binary-analysis", "elf", "pe"]
+categories = ["development-tools::debugging", "parser-implementations"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -16,11 +19,22 @@ object = "0.36"
 capstone = "0.14"
 # Unwind-table (.eh_frame) parsing for exact function bounds.
 gimli = "0.31"
+# Windows PDB (CodeView) debug info: public symbol names + RVAs from a
+# .pdb file, for a binary shipped without its own debug info but with a
+# matching PDB available (from the build, or a symbol server download).
+pdb = "0.8"
 rustc-demangle = "0.1"
 cpp_demangle = "0.4"
 # Managed-bytecode decoders: WebAssembly modules.
 wasmparser = "0.239"
 wasmprinter = "0.239"
+# VTIL-inspired de-obfuscation/de-virtualization IL backing `Engine::lift` /
+# `analyze op:"lift"`. Zero-dependency on this crate in the other direction
+# (see crates/recurse-vtil/src/input.rs) so it stays usable standalone.
+# `version` alongside `path` so this manifest packages/publishes cleanly
+# (crates.io resolves a workspace path dependency by version, not path).
+recurse-vtil = { path = "../recurse-vtil", version = "0.1.0" }
+sha2 = "0.11.0"
 
 [target.'cfg(unix)'.dependencies]
 # Safe signal wrappers for Engine::interrupt / force_kill (r2 engine only).
