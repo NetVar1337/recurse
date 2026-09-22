@@ -1,5 +1,3 @@
-import { ChevronRight, FolderOpen, Plus, Trash2 } from "lucide-react";
-
 import { Button } from "@/components/ui/button";
 import { Logo, LogoMark } from "@/components/Logo";
 import { useProjectStore } from "@/store/projectStore";
@@ -46,7 +44,7 @@ export function ProjectScreen() {
 					className="h-11 px-10 text-sm tracking-wide"
 					onClick={() => setNewProjectOpen(true)}
 				>
-					<Plus /> New Project
+					New Project
 				</Button>
 				<span className="text-muted-foreground text-[11px]">
 					projects live in{" "}
@@ -91,16 +89,14 @@ export function ProjectScreen() {
 										<span className="text-muted-foreground shrink-0 text-[11px]">
 											{fmtDate(p.updated_at)}
 										</span>
-										<ChevronRight className="text-muted-foreground h-4 w-4 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
 									</button>
 									<Button
-										variant="ghost"
-										size="icon"
-										className="h-7 w-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+										variant="toolbar"
+										size="sm"
+										className="shrink-0 opacity-0 group-hover:opacity-100"
 										onClick={() => deleteProject(p.name)}
-										title={`Delete ${p.name}`}
 									>
-										<Trash2 className="h-3.5 w-3.5" />
+										Delete
 									</Button>
 								</div>
 							</li>
@@ -111,7 +107,6 @@ export function ProjectScreen() {
 
 			{!loading && projects.length === 0 && (
 				<div className="mt-12 flex flex-col items-center gap-2 text-center">
-					<FolderOpen className="text-primary h-6 w-6" />
 					<p className="text-muted-foreground text-xs">
 						No projects yet. Create one to get started.
 					</p>

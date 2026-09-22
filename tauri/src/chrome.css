@@ -1,0 +1,159 @@
+/*
+ * Chrome tokens. Reuse these instead of one-off radii, control heights, and
+ * selection fills. Class names are also exported from src/lib/chrome.ts.
+ *
+ * --selection          quiet selected/pressed fill (not an inverted slab)
+ * --control-h          toolbar control height
+ * --chrome-h           bar / tab-strip height
+ * --radius-control     shared corner radius
+ * --space-1/2/3        4 / 8 / 12px rhythm
+ * --kbd                shortcut text
+ * --warning            non-destructive notice
+ */
+
+:root {
+	--selection: oklab(0.92 0 0);
+	--selection-foreground: oklab(0.18 0 0);
+	--warning: oklab(0.72 0.1 0.08);
+	--warning-foreground: oklab(0.38 0.08 0.04);
+	--kbd: oklab(0.45 0 0);
+	--control-h: 1.75rem;
+	--chrome-h: 2.25rem;
+	--radius-control: 0.25rem;
+	--space-1: 0.25rem;
+	--space-2: 0.5rem;
+	--space-3: 0.75rem;
+}
+
+.dark {
+	--selection: oklab(0.3 0 0);
+	--selection-foreground: oklab(0.96 0 0);
+	--warning: oklab(0.78 0.09 0.04);
+	--warning-foreground: oklab(0.9 0.05 0.02);
+	--kbd: oklab(0.64 0 0);
+}
+
+@theme inline {
+	--color-selection: var(--selection);
+	--color-selection-foreground: var(--selection-foreground);
+	--color-warning: var(--warning);
+	--color-warning-foreground: var(--warning-foreground);
+}
+
+.ui-bar {
+	display: flex;
+	align-items: center;
+	gap: var(--space-1);
+	min-height: var(--chrome-h);
+}
+
+.ui-sep {
+	width: 1px;
+	height: 1rem;
+	margin-inline: var(--space-1);
+	flex: none;
+	background: var(--border);
+}
+
+.ui-seg {
+	display: inline-flex;
+	align-items: stretch;
+	height: var(--control-h);
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-control);
+	background: transparent;
+}
+
+.ui-seg > button {
+	padding-inline: var(--space-2);
+	font-size: 11px;
+	line-height: 1;
+	color: var(--muted-foreground);
+	background: transparent;
+}
+
+.ui-seg > button:hover {
+	background: var(--accent);
+	color: var(--accent-foreground);
+}
+
+.ui-seg > button[aria-pressed="true"] {
+	background: var(--selection);
+	color: var(--selection-foreground);
+}
+
+.ui-seg > button + button {
+	border-left: 1px solid var(--border);
+}
+
+.ui-press[aria-pressed="true"] {
+	background: var(--selection);
+	color: var(--selection-foreground);
+}
+
+.ui-selected {
+	background: var(--selection);
+	color: var(--selection-foreground);
+}
+
+.ui-composer {
+	display: flex;
+	width: 100%;
+	flex-direction: column;
+	gap: var(--space-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-control);
+	background: var(--background);
+	padding: var(--space-1);
+}
+
+.ui-composer textarea {
+	min-height: var(--control-h);
+	flex: 1 1 auto;
+	resize: none;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+	outline: none;
+}
+
+.ui-composer textarea:focus,
+.ui-composer textarea:focus-visible {
+	outline: none;
+	box-shadow: none;
+}
+
+.ui-menu-label {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--space-3);
+	padding: 0.375rem 0.5rem 0.125rem;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.ui-kbd {
+	margin-left: auto;
+	padding-left: var(--space-3);
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 10px;
+	font-weight: 400;
+	letter-spacing: 0;
+	text-transform: none;
+	font-variant-numeric: tabular-nums;
+	color: var(--kbd);
+}
+
+.ui-panel-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	font-weight: 500;
+}

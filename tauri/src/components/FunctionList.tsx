@@ -1,4 +1,4 @@
-import { Loader2, Pencil } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
@@ -145,7 +145,7 @@ export function FunctionList() {
 										className={cn(
 											"group flex items-center border-l-2 pr-1 text-xs",
 											active
-												? "border-primary bg-primary text-primary-foreground"
+												? "border-foreground ui-selected"
 												: "hover:bg-accent border-transparent",
 										)}
 									>
@@ -185,13 +185,13 @@ export function FunctionList() {
 															name,
 														)
 													}
-													title={`${name}\n${fmtAddr(f.addr)} · size ${f.size ?? "?"}\ndouble-click or ✎ to rename`}
+													title={`${name}\n${fmtAddr(f.addr)} · size ${f.size ?? "?"}\ndouble-click to rename`}
 												>
 													<span
 														className={cn(
 															"font-mono",
 															active
-																? "text-primary-foreground"
+																? "opacity-80"
 																: "text-primary",
 														)}
 													>
@@ -202,13 +202,7 @@ export function FunctionList() {
 													</span>
 												</button>
 												<button
-													className={cn(
-														"hidden shrink-0 rounded p-1 group-hover:block",
-														active
-															? "hover:bg-primary-foreground/20"
-															: "text-muted-foreground hover:bg-accent hover:text-foreground",
-													)}
-													title="Rename function"
+													className="text-muted-foreground hover:text-foreground hidden shrink-0 px-1 text-[10px] group-hover:block"
 													onClick={(e) => {
 														e.stopPropagation();
 														startRename(
@@ -217,7 +211,7 @@ export function FunctionList() {
 														);
 													}}
 												>
-													<Pencil className="h-3 w-3" />
+													Rename
 												</button>
 											</>
 										)}

@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { ArrowRight, Binary } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -77,10 +76,6 @@ export function NewProjectDialog() {
 								: "border-border hover:border-primary bg-card/50 hover:bg-accent border-dashed",
 						)}
 					>
-						<Binary
-							className="text-primary h-8 w-8 shrink-0"
-							strokeWidth={1.5}
-						/>
 						<div className="min-w-0 flex-1">
 							{binaryPath ? (
 								<>
@@ -140,7 +135,6 @@ export function NewProjectDialog() {
 						}
 					>
 						{creating ? "Creating…" : "Create & Open"}
-						{!creating && <ArrowRight className="h-4 w-4" />}
 					</Button>
 				</div>
 			</DialogContent>

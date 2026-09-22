@@ -1,4 +1,4 @@
-import { Link2, Loader2, RefreshCw, X } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import {
 	lazy,
 	Suspense,
@@ -310,9 +310,9 @@ export function CenterPanel() {
 
 	return (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
-			<div className="border-border bg-card flex items-center gap-1 border-b px-1">
+			<div className="border-border bg-card ui-bar border-b px-1">
 				<Tabs value={tab} onValueChange={setTabSafe} className="flex-1">
-					<TabsList className="h-9 bg-transparent p-1">
+					<TabsList>
 						<TabsTrigger value="recon">Recon</TabsTrigger>
 						<TabsTrigger value="debug">Debug</TabsTrigger>
 						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
@@ -324,27 +324,19 @@ export function CenterPanel() {
 					</TabsList>
 				</Tabs>
 				{tab === "disasm" && (
-					<div className="flex items-center gap-1 pr-2">
-						<div className="border-border flex overflow-hidden rounded-md border">
+					<div className="flex items-center pr-1">
+						<div className="ui-seg" role="group" aria-label="View">
 							<button
-								className={cn(
-									"px-2 py-1 text-[11px]",
-									viewMode === "linear"
-										? "bg-primary text-primary-foreground"
-										: "hover:bg-accent",
-								)}
+								type="button"
+								aria-pressed={viewMode === "linear"}
 								onClick={() => setViewMode("linear")}
 								title="Linear disassembly"
 							>
 								Linear
 							</button>
 							<button
-								className={cn(
-									"px-2 py-1 text-[11px]",
-									viewMode === "graph"
-										? "bg-primary text-primary-foreground"
-										: "hover:bg-accent",
-								)}
+								type="button"
+								aria-pressed={viewMode === "graph"}
 								onClick={() => setViewMode("graph")}
 								title="Control-flow graph (pan/zoom)"
 							>
@@ -353,7 +345,7 @@ export function CenterPanel() {
 						</div>
 						{capabilities?.decompile !== false && (
 							<Button
-								variant="ghost"
+								variant="toolbar"
 								size="sm"
 								onClick={decompile}
 								disabled={decompiling || !selected}
@@ -362,25 +354,24 @@ export function CenterPanel() {
 							</Button>
 						)}
 						<Button
-							variant={xrefsOpen ? "secondary" : "ghost"}
+							variant="toolbar"
 							size="sm"
+							className="ui-press"
+							aria-pressed={xrefsOpen}
 							onClick={toggleXrefs}
 							disabled={!selected}
 							title="Show incoming cross-references"
 						>
-							<Link2 className="mr-1 h-3.5 w-3.5" />
 							Xrefs
 						</Button>
 						<Button
-							variant="ghost"
-							size="icon"
+							variant="toolbar"
+							size="sm"
 							onClick={refreshDisasm}
 							disabled={asmLoading}
 							title="Reload"
 						>
-							<RefreshCw
-								className={asmLoading ? "animate-spin" : ""}
-							/>
+							{asmLoading ? "Loading" : "Reload"}
 						</Button>
 					</div>
 				)}
@@ -411,21 +402,19 @@ export function CenterPanel() {
 							{pending && (
 								<div className="absolute top-2 right-2 z-20 flex items-center gap-1">
 									<Button
+										variant="toolbar"
 										size="sm"
 										onClick={commitPending}
-										className="shadow"
 										title="Add selection to agent context (Ctrl+L)"
 									>
-										+ Add to agent context
+										Add to context
 									</Button>
 									<Button
-										variant="ghost"
-										size="icon"
-										className="shadow"
+										variant="toolbar"
+										size="sm"
 										onClick={() => setPending(null)}
-										title="Dismiss"
 									>
-										<X className="h-3.5 w-3.5" />
+										Dismiss
 									</Button>
 								</div>
 							)}
@@ -664,13 +653,12 @@ export function CenterPanel() {
 									)}
 								</pre>
 								<Button
-									variant="ghost"
-									size="icon"
-									className="bg-card/80 absolute top-1 right-1 h-6 w-6"
+									variant="toolbar"
+									size="sm"
+									className="absolute top-1 right-1"
 									onClick={clearDecompiled}
-									title="Close decompiled view"
 								>
-									<X className="h-3.5 w-3.5" />
+									Close
 								</Button>
 							</div>
 						)}
