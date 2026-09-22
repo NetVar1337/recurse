@@ -10,7 +10,7 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/librecurse", "crates/recurse-eval", "tauri/src-tauri"]
+members = ["crates/librecurse", "crates/recurse-debug", "crates/recurse-eval", "tauri/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

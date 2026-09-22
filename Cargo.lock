@@ -3335,6 +3335,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "recurse-debug"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nix",
+ "object",
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "recurse-eval"
 version = "0.1.0"
 dependencies = [
