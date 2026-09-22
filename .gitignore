@@ -29,5 +29,13 @@ dist-ssr
 *.sw?
 .gitnexus
 
-target
+/target
+
+# Python (crates/recurse-py: pyo3 bindings built/tested locally)
+__pycache__/
+*.pyc
+.pytest_cache/
+*.pyd
+*.so
+.venv/
 corpus
