@@ -20,12 +20,17 @@ interface DebugState {
 	registers: DebugRegisters | null;
 	breakpoints: DebugBreakpoint[];
 	frames: DebugFrame[];
+	output: string;
 	log: string[];
 	busy: boolean;
 	error: string | null;
 
 	/** Run one debugger op and fold its result into the store. */
 	run: (op: string, args?: Record<string, unknown>) => Promise<unknown>;
+	/** Send text to the debuggee's stdin. */
+	sendStdin: (text: string) => Promise<void>;
+	/** Drain the debuggee's captured output into `output`. */
+	pollOutput: () => Promise<void>;
 	launch: (path: string) => Promise<void>;
 	attach: (pid: number) => Promise<void>;
 	detach: () => Promise<void>;
@@ -41,6 +46,7 @@ const initial = {
 	registers: null as DebugRegisters | null,
 	breakpoints: [] as DebugBreakpoint[],
 	frames: [] as DebugFrame[],
+	output: "",
 	log: [] as string[],
 	busy: false,
 	error: null as string | null,
@@ -125,6 +131,28 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 
 	launch: async (path) => {
 		await get().run("launch", { path });
+	},
+
+	sendStdin: async (text) => {
+		try {
+			await api.debugCommand("stdin", { data: text });
+		} catch (e) {
+			set({ error: String(e) });
+		}
+	},
+
+	pollOutput: async () => {
+		try {
+			const out = (await api.debugCommand("output")) as {
+				text?: string;
+			};
+			const text = out?.text ?? "";
+			if (text) {
+				set((s) => ({ output: (s.output + text).slice(-20000) }));
+			}
+		} catch {
+			/* the worker may be busy; try again next tick */
+		}
 	},
 
 	attach: async (pid) => {

@@ -36,10 +36,84 @@ const MAX_FRAMES: usize = 64;
 /// A reply channel for one command.
 type Reply<T> = Sender<Result<T>>;
 
+/// Cap on captured output, so a chatty debuggee cannot grow the buffer without
+/// bound. Older bytes are dropped first.
+const MAX_OUTPUT: usize = 1 << 20;
+
+/// Shared debuggee stdio.
+///
+/// This is deliberately *outside* the worker thread: the analyst must be able
+/// to type at the debuggee's prompts while a `continue` is blocked waiting for
+/// a stop, so writing stdin and draining output never queue behind it.
+pub struct DebugIo {
+    stdin: Mutex<Option<Box<dyn std::io::Write + Send>>>,
+    output: Mutex<Vec<u8>>,
+}
+
+impl DebugIo {
+    /// An empty io pair.
+    pub fn new() -> Self {
+        Self {
+            stdin: Mutex::new(None),
+            output: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Install the stdin sink. Called by the backend at launch.
+    pub fn set_stdin(&self, sink: Box<dyn std::io::Write + Send>) {
+        if let Ok(mut s) = self.stdin.lock() {
+            *s = Some(sink);
+        }
+    }
+
+    /// Append captured stdout/stderr. Called by the backend's reader threads.
+    pub fn push_output(&self, bytes: &[u8]) {
+        if let Ok(mut v) = self.output.lock() {
+            v.extend_from_slice(bytes);
+            if v.len() > MAX_OUTPUT {
+                let drop = v.len() - MAX_OUTPUT;
+                v.drain(..drop);
+            }
+        }
+    }
+
+    /// Write `bytes` to the debuggee's stdin.
+    ///
+    /// # Errors
+    /// A message when stdin is not piped (e.g. after an attach).
+    pub fn write_stdin(&self, bytes: &[u8]) -> Result<()> {
+        let mut guard = self
+            .stdin
+            .lock()
+            .map_err(|_| Error::msg("stdin lock poisoned"))?;
+        let sink = guard
+            .as_mut()
+            .ok_or_else(|| Error::msg("stdin is not piped (was the target attached?)"))?;
+        sink.write_all(bytes)?;
+        sink.flush()?;
+        Ok(())
+    }
+
+    /// Drain captured output since the last call.
+    pub fn take_output(&self) -> Vec<u8> {
+        self.output
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+}
+
+impl Default for DebugIo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A debug session handle. Cheap to clone-share behind an `Arc`.
 pub struct Debugger {
     tx: Option<Sender<Command>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    io: Arc<DebugIo>,
 }
 
 /// One operation for the worker thread.
@@ -92,7 +166,8 @@ impl Debugger {
     /// # Errors
     /// Returns [`Error::Unsupported`] on a platform with no backend.
     pub fn with_symbols(symbols: Arc<dyn Symbols>) -> Result<Self> {
-        let inner = Inner::new(symbols)?;
+        let io = Arc::new(DebugIo::new());
+        let inner = Inner::new(symbols, io.clone())?;
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("recurse-debug".to_string())
@@ -101,6 +176,7 @@ impl Debugger {
         Ok(Self {
             tx: Some(tx),
             worker: Mutex::new(Some(worker)),
+            io,
         })
     }
 
@@ -239,6 +315,20 @@ impl Debugger {
         self.call(Command::Kill)
     }
 
+    /// Write `bytes` to the debuggee's stdin. Works even while the debuggee is
+    /// running (it does not go through the worker thread).
+    ///
+    /// # Errors
+    /// A message when stdin is not piped.
+    pub fn write_stdin(&self, bytes: &[u8]) -> Result<()> {
+        self.io.write_stdin(bytes)
+    }
+
+    /// Drain the debuggee's captured stdout/stderr.
+    pub fn output(&self) -> Vec<u8> {
+        self.io.take_output()
+    }
+
     /// Send one command and block for its reply.
     fn call<T>(&self, build: impl FnOnce(Reply<T>) -> Command) -> Result<T> {
         let (tx, rx) = mpsc::channel();
@@ -342,9 +432,9 @@ struct Inner {
 
 impl Inner {
     /// Build the target and initial state on the worker thread.
-    fn new(symbols: Arc<dyn Symbols>) -> Result<Self> {
+    fn new(symbols: Arc<dyn Symbols>, io: Arc<DebugIo>) -> Result<Self> {
         Ok(Self {
-            target: target::native()?,
+            target: target::native(io)?,
             symbols,
             pid: None,
             state: ProcessState::Idle,
@@ -480,12 +570,20 @@ impl Inner {
                 let regs = self.target.get_regs(thread)?;
                 let bytes = self.target.read(regs.pc, 16).unwrap_or_default();
                 // A call is run to completion; anything else is a plain step.
-                // `Out` always runs to the return address.
-                if kind == StepKind::Out || arch::is_call(&bytes) {
-                    let ret = self.read_word(regs.sp)?;
-                    self.run_to(thread, ret)
+                // `Out` always runs to the return address. The "return address"
+                // is only trustworthy when it is actually readable: at `_start`
+                // the top of the stack is `argc`, not a return address.
+                let wants_run = kind == StepKind::Out || arch::is_call(&bytes);
+                let ret = if wants_run {
+                    self.read_word(regs.sp)
+                        .ok()
+                        .filter(|ret| self.readable(*ret))
                 } else {
-                    self.single_step(thread)
+                    None
+                };
+                match ret {
+                    Some(ret) => self.run_to(thread, ret),
+                    None => self.single_step(thread),
                 }
             }
         };
@@ -674,7 +772,11 @@ impl Inner {
     /// the pc so the instruction there executes next.
     fn run_to(&mut self, thread: ThreadId, addr: u64) -> Result<Stop> {
         let trap = arch::breakpoint_bytes();
-        let original = self.target.read(addr, trap.len())?;
+        // If the address is not readable we cannot place a temporary
+        // breakpoint; fall back to a plain single-step.
+        let Ok(original) = self.target.read(addr, trap.len()) else {
+            return self.single_step(thread);
+        };
         self.target.write(addr, trap)?;
         self.stepping = true;
         self.state = ProcessState::Running;
@@ -737,6 +839,13 @@ impl Inner {
             .try_into()
             .map_err(|_| Error::msg("short memory read"))?;
         Ok(u64::from_ne_bytes(arr))
+    }
+
+    /// True when `addr` can be read (a breakpoint byte fits there).
+    fn readable(&mut self, addr: u64) -> bool {
+        self.target
+            .read(addr, arch::breakpoint_bytes().len())
+            .is_ok()
     }
 }
 

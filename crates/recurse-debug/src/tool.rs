@@ -27,6 +27,8 @@ pub const OPS: &[&str] = &[
     "write",
     "backtrace",
     "threads",
+    "stdin",
+    "output",
     "status",
     "detach",
     "kill",
@@ -88,6 +90,10 @@ pub fn tool_schema() -> Value {
                     "thread": { "type": "integer", "description": "Optional thread id." },
                     "len": { "type": "integer", "description": "For `read`: byte count." },
                     "bytes": { "type": "string", "description": "For `write`: hex bytes." },
+                    "data": {
+                        "type": "string",
+                        "description": "For `stdin`: text to write to the debuggee's stdin."
+                    },
                     "format": {
                         "type": "string",
                         "enum": ["hex", "ascii", "u64"],
@@ -189,6 +195,18 @@ pub fn execute_tool(dbg: &Debugger, op: &str, args: &Value) -> Result<String> {
         }
         "backtrace" => to_json(&dbg.backtrace(args.get("thread").and_then(Value::as_u64))?)?,
         "threads" => to_json(&dbg.threads()?)?,
+        "stdin" => {
+            let data = args
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::msg("stdin: `data` is required"))?;
+            dbg.write_stdin(data.as_bytes())?;
+            json!({ "written": data.len() })
+        }
+        "output" => {
+            let bytes = dbg.output();
+            json!({ "text": String::from_utf8_lossy(&bytes) })
+        }
         "status" => to_json(&dbg.status()?)?,
         "detach" => {
             dbg.detach()?;

@@ -4,10 +4,11 @@ import {
 	CornerUpRight,
 	Loader2,
 	Play,
+	Send,
 	StepForward,
 	X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { pickBinary } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -79,12 +80,30 @@ export function DebugPanel() {
 	const registers = useDebugStore((s) => s.registers);
 	const breakpoints = useDebugStore((s) => s.breakpoints);
 	const frames = useDebugStore((s) => s.frames);
+	const output = useDebugStore((s) => s.output);
 	const log = useDebugStore((s) => s.log);
 	const busy = useDebugStore((s) => s.busy);
 	const error = useDebugStore((s) => s.error);
 	const run = useDebugStore((s) => s.run);
+	const sendStdin = useDebugStore((s) => s.sendStdin);
+	const pollOutput = useDebugStore((s) => s.pollOutput);
 	const [attachPid, setAttachPid] = useState("");
 	const [breakAt, setBreakAt] = useState("");
+	const [stdin, setStdin] = useState("");
+
+	// Poll the debuggee's output while it is alive, so prompts appear even when
+	// a `continue` is still blocked waiting for a stop.
+	useEffect(() => {
+		if (!active) return;
+		const id = setInterval(() => void pollOutput(), 400);
+		return () => clearInterval(id);
+	}, [active, pollOutput]);
+
+	const onSendStdin = async () => {
+		const text = stdin;
+		setStdin("");
+		await sendStdin(`${text}\n`);
+	};
 
 	const onBreak = async () => {
 		const spec = breakAt.trim();
@@ -339,8 +358,35 @@ export function DebugPanel() {
 				</Section>
 			</div>
 
-			<div className="border-border min-h-0 border-t">
-				<ScrollArea className="h-40">
+			<div className="border-border border-t">
+				<div className="text-muted-foreground px-3 py-1 text-[11px] font-semibold tracking-wider uppercase">
+					Program output
+				</div>
+				<ScrollArea className="h-32">
+					<pre className="scroll-host p-2 font-mono text-[10.5px] whitespace-pre-wrap">
+						{output}
+					</pre>
+				</ScrollArea>
+				<div className="flex items-center gap-1.5 border-t px-2 py-1.5">
+					<Input
+						value={stdin}
+						onChange={(e) => setStdin(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") void onSendStdin();
+						}}
+						placeholder="type input for the target — Enter sends"
+						className="h-7 flex-1 text-xs"
+						disabled={!active}
+					/>
+					<Button
+						size="sm"
+						onClick={onSendStdin}
+						disabled={!active || !stdin.trim()}
+					>
+						<Send className="h-3.5 w-3.5" />
+					</Button>
+				</div>
+				<ScrollArea className="h-24 border-t">
 					<pre className="scroll-host text-muted-foreground p-2 font-mono text-[10.5px] whitespace-pre-wrap">
 						{log.join("\n")}
 					</pre>
