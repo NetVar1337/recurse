@@ -60,6 +60,7 @@ pub mod liveness;
 pub mod opt;
 pub mod regalias;
 pub mod symex;
+pub mod taint;
 pub mod text;
 
 pub use il::{Block, Cond, Instr, Op, Operand, Register, Routine};
