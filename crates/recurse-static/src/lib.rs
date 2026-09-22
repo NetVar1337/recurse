@@ -17,6 +17,7 @@
 pub mod arch;
 pub mod capa;
 pub mod cpp;
+pub mod decompose;
 pub mod diff;
 pub mod dwarf;
 pub mod engine;
