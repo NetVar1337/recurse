@@ -19,6 +19,7 @@ pub mod engine;
 pub mod native;
 pub mod r2;
 pub mod r2_backend;
+pub mod sig;
 pub mod signals;
 pub mod types;
 pub mod unwind;
