@@ -19,6 +19,7 @@ pub mod capa;
 pub mod cpp;
 pub mod decompose;
 pub mod diff;
+pub mod driver;
 pub mod dwarf;
 pub mod engine;
 pub mod native;

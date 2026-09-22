@@ -34,6 +34,7 @@ wasmprinter = "0.239"
 # `version` alongside `path` so this manifest packages/publishes cleanly
 # (crates.io resolves a workspace path dependency by version, not path).
 recurse-vtil = { path = "../recurse-vtil", version = "0.1.0" }
+sha2 = "0.11.0"
 
 [target.'cfg(unix)'.dependencies]
 # Safe signal wrappers for Engine::interrupt / force_kill (r2 engine only).
