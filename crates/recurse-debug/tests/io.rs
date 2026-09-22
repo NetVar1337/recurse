@@ -106,3 +106,25 @@ fn snapshot_is_live_while_running() {
     let _ = cont.join();
     assert_eq!(dbg.snapshot().state, ProcessState::Exited);
 }
+
+#[test]
+fn disassembles_live_memory() {
+    let dbg = match Debugger::new() {
+        Ok(d) => Arc::new(d),
+        Err(_) => return,
+    };
+    let stop = match dbg.launch(&LaunchOptions {
+        path: "/bin/true".into(),
+        ..Default::default()
+    }) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    // The instruction at the entry point must decode from the live process.
+    let insns = dbg.disasm(stop.registers.pc, 4).expect("disasm");
+    assert_eq!(insns.len(), 4);
+    assert_eq!(insns[0].addr, stop.registers.pc);
+    assert!(!insns[0].text.is_empty());
+    assert!(!insns[0].bytes.is_empty());
+    let _ = dbg.kill();
+}

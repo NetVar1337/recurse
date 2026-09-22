@@ -294,6 +294,13 @@ export interface DebugSnapshot {
 	bias: number;
 }
 
+/** One instruction decoded from the debuggee's live memory. */
+export interface DebugInsn {
+	addr: number;
+	bytes: string;
+	text: string;
+}
+
 /** A rendered memory read. */
 export interface DebugMemory {
 	addr: number;

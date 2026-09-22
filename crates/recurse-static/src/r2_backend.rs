@@ -31,8 +31,8 @@ impl R2Engine {
     /// command holds the session lock.
     ///
     /// ```no_run
-    /// use librecurse::r2_backend::R2Engine;
-    /// use librecurse::engine::Engine;
+    /// use recurse_static::r2_backend::R2Engine;
+    /// use recurse_static::engine::Engine;
     /// let e = R2Engine::open(std::path::Path::new("/bin/true")).unwrap();
     /// assert!(e.pid() > 0);
     /// ```

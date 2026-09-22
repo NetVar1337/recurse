@@ -14,7 +14,7 @@ use nix::unistd::Pid;
 /// signal could not be delivered.
 ///
 /// ```no_run
-/// use librecurse::signals::interrupt;
+/// use recurse_static::signals::interrupt;
 /// assert!(!interrupt(0));
 /// ```
 #[cfg(unix)]
@@ -27,7 +27,7 @@ pub fn interrupt(pid: u32) -> bool {
 /// ```
 /// # #[cfg(not(unix))]
 /// # {
-/// use librecurse::signals::interrupt;
+/// use recurse_static::signals::interrupt;
 /// assert!(!interrupt(1234));
 /// # }
 /// ```
@@ -40,7 +40,7 @@ pub fn interrupt(_pid: u32) -> bool {
 /// ignored [`interrupt`]. Returns false when `pid` is 0 or delivery failed.
 ///
 /// ```no_run
-/// use librecurse::signals::terminate;
+/// use recurse_static::signals::terminate;
 /// assert!(!terminate(0));
 /// ```
 #[cfg(unix)]
@@ -53,7 +53,7 @@ pub fn terminate(pid: u32) -> bool {
 /// ```
 /// # #[cfg(not(unix))]
 /// # {
-/// use librecurse::signals::terminate;
+/// use recurse_static::signals::terminate;
 /// assert!(!terminate(1234));
 /// # }
 /// ```

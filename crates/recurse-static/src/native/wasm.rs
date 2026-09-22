@@ -49,8 +49,8 @@ impl WasmEngine {
     /// malformed.
     ///
     /// ```no_run
-    /// use librecurse::native::wasm::WasmEngine;
-    /// use librecurse::engine::Engine;
+    /// use recurse_static::native::wasm::WasmEngine;
+    /// use recurse_static::engine::Engine;
     /// let e = WasmEngine::open(std::path::Path::new("module.wasm")).unwrap();
     /// assert!(e.summary().unwrap()["function_count"].as_u64().unwrap() > 0);
     /// ```
@@ -66,7 +66,7 @@ impl WasmEngine {
     /// True when `bytes` starts with the WebAssembly magic.
     ///
     /// ```
-    /// use librecurse::native::wasm::is_wasm;
+    /// use recurse_static::native::wasm::is_wasm;
     /// assert!(is_wasm(b"\0asm\x01\0\0\0"));
     /// assert!(!is_wasm(b"\x7fELF"));
     /// ```

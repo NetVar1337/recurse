@@ -27,6 +27,7 @@ pub const OPS: &[&str] = &[
     "write",
     "backtrace",
     "threads",
+    "disasm",
     "stdin",
     "output",
     "status",
@@ -41,7 +42,7 @@ const MAX_READ: usize = 4096;
 ///
 /// ```
 /// assert!(recurse_debug::tool::is_op("break"));
-/// assert!(!recurse_debug::tool::is_op("disasm"));
+/// assert!(!recurse_debug::tool::is_op("not_an_op"));
 /// ```
 pub fn is_op(name: &str) -> bool {
     OPS.contains(&name)
@@ -89,6 +90,10 @@ pub fn tool_schema() -> Value {
                     "id": { "type": "integer", "description": "For `unbreak`: breakpoint id." },
                     "thread": { "type": "integer", "description": "Optional thread id." },
                     "len": { "type": "integer", "description": "For `read`: byte count." },
+                    "count": {
+                        "type": "integer",
+                        "description": "For `disasm`: number of instructions (default 24)."
+                    },
                     "bytes": { "type": "string", "description": "For `write`: hex bytes." },
                     "data": {
                         "type": "string",
@@ -195,6 +200,18 @@ pub fn execute_tool(dbg: &Debugger, op: &str, args: &Value) -> Result<String> {
         }
         "backtrace" => to_json(&dbg.backtrace(args.get("thread").and_then(Value::as_u64))?)?,
         "threads" => to_json(&dbg.threads()?)?,
+        "disasm" => {
+            let addr = args
+                .get("addr")
+                .and_then(parse_addr)
+                .ok_or_else(|| Error::msg("disasm: `addr` is required"))?;
+            let count = args
+                .get("count")
+                .and_then(Value::as_u64)
+                .unwrap_or(24)
+                .min(256) as usize;
+            to_json(&dbg.disasm(addr, count)?)?
+        }
         "stdin" => {
             let data = args
                 .get("data")

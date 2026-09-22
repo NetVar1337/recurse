@@ -3,6 +3,8 @@
 # Members:
 #   tauri/src-tauri    desktop app (Tauri + pluggable analysis backends)
 #   crates/librecurse  agent framework (LLM loop, tools, SQLite memory)
+#   crates/recurse-static static analysis (native engine, r2 backend, disassembly)
+#   crates/recurse-debug  cross-platform debugger
 #   crates/recurse-eval headless eval harness
 #
 # The frontend lives in `tauri/` (its own package.json); `just` at the repo
@@ -10,7 +12,13 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/librecurse", "crates/recurse-debug", "crates/recurse-eval", "tauri/src-tauri"]
+members = [
+    "crates/librecurse",
+    "crates/recurse-static",
+    "crates/recurse-debug",
+    "crates/recurse-eval",
+    "tauri/src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"

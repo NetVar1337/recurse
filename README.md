@@ -21,13 +21,18 @@ tauri/                   desktop app (Tauri + React)
   package.json             app scripts (Vite, Vitest, Tauri CLI)
 crates/
   librecurse/              agent framework: LLM loop, tool runtime, SQLite memory
+  recurse-static/          static analysis: ELF/PE/Mach-O parsing, multi-arch disassembly,
+                           CFG and cross-reference recovery, the engine seam
+  recurse-debug/           cross-platform debugger (ptrace/Mach/Win32, breakpoints, stepping)
   recurse-eval/            headless eval harness (YAML-configured tiers)
 justfile                 single entry point for both halves
 ```
 
-`librecurse` has no Tauri dependency and builds/tests standalone; `recurse-eval`
-drives it headlessly. All three are workspace members, so one `Cargo.lock` and one
-`target/` cover the whole repo.
+`librecurse` is only the agent; static analysis lives in `recurse-static` and the
+debugger in `recurse-debug`, so the agent pulls in neither systems code it does
+not use. No crate depends on Tauri, and each builds/tests standalone;
+`recurse-eval` drives the agent headlessly. All are workspace members, so one
+`Cargo.lock` and one `target/` cover the whole repo.
 
 ## Features
 
@@ -51,7 +56,7 @@ drives it headlessly. All three are workspace members, so one `Cargo.lock` and o
 
 ## Analysis backends
 
-Analysis goes through a single `Engine` trait (`crates/librecurse/src/engine.rs`), so the
+Analysis goes through a single `Engine` trait (`crates/recurse-static/src/engine.rs`), so the
 engine is a choice, not a hard dependency:
 
 - **`native`** (default) — pure-Rust ELF/PE/Mach-O parsing and multi-architecture disassembly

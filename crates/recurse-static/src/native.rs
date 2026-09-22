@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use capstone::prelude::*;
-use capstone::{Endian, InsnGroupType};
+use capstone::InsnGroupType;
 use gimli::{BaseAddresses, CieOrFde, EhFrame, RunTimeEndian, UnwindSection};
 use object::{
     Architecture, BinaryFormat, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionKind,
@@ -140,127 +140,10 @@ impl NativeState {
 
 /// Build a Capstone disassembler configured for the object file's CPU, mode
 /// and endianness. Capstone handles every architecture it supports uniformly,
-/// so this is the only place that switches on the architecture.
+/// Build a Capstone disassembler for the object's architecture (the single
+/// switch on architecture lives in [`crate::arch`]).
 fn build_capstone(file: &object::File<'_>) -> Result<Capstone, String> {
-    let endian = if file.is_little_endian() {
-        Endian::Little
-    } else {
-        Endian::Big
-    };
-    let built = match file.architecture() {
-        Architecture::X86_64 | Architecture::X86_64_X32 => Capstone::new()
-            .x86()
-            .mode(arch::x86::ArchMode::Mode64)
-            .detail(true)
-            .build(),
-        Architecture::I386 => Capstone::new()
-            .x86()
-            .mode(arch::x86::ArchMode::Mode32)
-            .detail(true)
-            .build(),
-        Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => Capstone::new()
-            .arm64()
-            .mode(arch::arm64::ArchMode::Arm)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::Arm => Capstone::new()
-            .arm()
-            .mode(if is_thumb(file) {
-                arch::arm::ArchMode::Thumb
-            } else {
-                arch::arm::ArchMode::Arm
-            })
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::Mips => Capstone::new()
-            .mips()
-            .mode(arch::mips::ArchMode::Mips32)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::Mips64 | Architecture::Mips64_N32 => Capstone::new()
-            .mips()
-            .mode(arch::mips::ArchMode::Mips64)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::PowerPc => Capstone::new()
-            .ppc()
-            .mode(arch::ppc::ArchMode::Mode32)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::PowerPc64 => Capstone::new()
-            .ppc()
-            .mode(arch::ppc::ArchMode::Mode64)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::Riscv32 => Capstone::new()
-            .riscv()
-            .mode(arch::riscv::ArchMode::RiscV32)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::Riscv64 => Capstone::new()
-            .riscv()
-            .mode(arch::riscv::ArchMode::RiscV64)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        Architecture::Sparc | Architecture::Sparc32Plus => Capstone::new()
-            .sparc()
-            .mode(arch::sparc::ArchMode::Default)
-            .detail(true)
-            .build(),
-        Architecture::Sparc64 => Capstone::new()
-            .sparc()
-            .mode(arch::sparc::ArchMode::V9)
-            .detail(true)
-            .build(),
-        Architecture::S390x => Capstone::new()
-            .sysz()
-            .mode(arch::sysz::ArchMode::Default)
-            .detail(true)
-            .build(),
-        Architecture::M68k => Capstone::new()
-            .m68k()
-            .mode(arch::m68k::ArchMode::M68k000)
-            .detail(true)
-            .build(),
-        Architecture::Bpf => Capstone::new()
-            .bpf()
-            .mode(arch::bpf::ArchMode::Cbpf)
-            .endian(endian)
-            .detail(true)
-            .build(),
-        other => {
-            return Err(format!(
-                "native backend cannot disassemble {} (unsupported architecture)",
-                arch_name(other)
-            ))
-        }
-    };
-    built.map_err(|e| format!("capstone initialisation failed: {e}"))
-}
-
-/// Best-effort Thumb detection for 32-bit ARM: the low bit of the entry point
-/// (and of Thumb function symbols) is set, or Thumb mapping symbols (`$t`)
-/// appear in the symbol table. Mixed Arm/Thumb images pick the dominant mode.
-fn is_thumb(file: &object::File<'_>) -> bool {
-    if file.entry() & 1 == 1 {
-        return true;
-    }
-    file.symbols().chain(file.dynamic_symbols()).any(|s| {
-        if let Ok(name) = s.name() {
-            if name.starts_with("$t") {
-                return true;
-            }
-        }
-        s.kind() == SymbolKind::Text && s.address() & 1 == 1
-    })
+    crate::arch::Arch::from_file(file).capstone()
 }
 
 /// 32-bit ARM code addresses carry the Thumb bit in bit 0; clear it before
@@ -278,7 +161,7 @@ fn code_addr(file: &object::File<'_>, addr: u64) -> u64 {
 /// [`NativeEngine`]; structured bytecodes route to their own decoders.
 ///
 /// ```no_run
-/// use librecurse::native::open;
+/// use recurse_static::native::open;
 /// let engine = open(std::path::Path::new("/bin/true")).unwrap();
 /// let _ = engine.summary().unwrap();
 /// ```
@@ -341,8 +224,8 @@ impl NativeEngine {
     /// each query, so opening a large binary is a single read.
     ///
     /// ```
-    /// use librecurse::native::NativeEngine;
-    /// use librecurse::engine::Engine;
+    /// use recurse_static::native::NativeEngine;
+    /// use recurse_static::engine::Engine;
     /// let path = std::env::current_exe().unwrap();
     /// let e = NativeEngine::open(&path).unwrap();
     /// assert!(e.summary().unwrap()["function_count"].as_u64().unwrap() >= 0);
@@ -1863,7 +1746,7 @@ fn parse_number(token: &str) -> Option<u64> {
 /// mangled `_Z9readInputv` once demangled.
 ///
 /// ```
-/// use librecurse::native::name_matches;
+/// use recurse_static::native::name_matches;
 /// assert!(name_matches("readInput", "readInput()"));
 /// assert!(name_matches("success", "success()"));
 /// assert!(name_matches("main", "sym.main__"));
@@ -1922,7 +1805,7 @@ fn strip_templates(s: &str) -> String {
 /// model's context for no benefit.
 ///
 /// ```
-/// use librecurse::native::shorten_name;
+/// use recurse_static::native::shorten_name;
 /// assert_eq!(shorten_name("_Z9readInputv"), "readInput");
 /// assert_eq!(shorten_name("main"), "main");
 /// assert!(shorten_name("void std::iter_swap<char*, std::string>(char*, std::string)").len() <= 66);
@@ -1999,7 +1882,7 @@ fn classify(
 /// bare immediate. Memory (`[...]`) and register operands yield `None`.
 ///
 /// ```
-/// use librecurse::native::parse_branch_target;
+/// use recurse_static::native::parse_branch_target;
 /// assert_eq!(parse_branch_target("0x401000"), Some(0x401000));
 /// assert_eq!(parse_branch_target("#0x1234"), Some(0x1234));
 /// assert_eq!(parse_branch_target("ra, 0x1234"), Some(0x1234));
@@ -2037,7 +1920,7 @@ pub fn parse_branch_target(operands: &str) -> Option<u64> {
 /// fall-through edge rather than dropping real control flow.
 ///
 /// ```
-/// use librecurse::native::is_unconditional_branch;
+/// use recurse_static::native::is_unconditional_branch;
 /// assert!(is_unconditional_branch("jmp"));
 /// assert!(is_unconditional_branch("b"));
 /// assert!(is_unconditional_branch("b.w"));

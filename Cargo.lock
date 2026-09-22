@@ -2377,19 +2377,12 @@ dependencies = [
 name = "librecurse"
 version = "0.1.0"
 dependencies = [
- "capstone",
- "cpp_demangle",
- "gimli",
- "nix",
- "object",
+ "recurse-static",
  "reqwest 0.12.28",
  "rusqlite",
- "rustc-demangle",
  "serde",
  "serde_json",
  "tokio",
- "wasmparser",
- "wasmprinter",
 ]
 
 [[package]]
@@ -3342,6 +3335,7 @@ dependencies = [
  "libc",
  "nix",
  "object",
+ "recurse-static",
  "serde",
  "serde_json",
  "windows-sys 0.59.0",
@@ -3362,6 +3356,22 @@ dependencies = [
  "tar",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "recurse-static"
+version = "0.1.0"
+dependencies = [
+ "capstone",
+ "cpp_demangle",
+ "gimli",
+ "nix",
+ "object",
+ "rustc-demangle",
+ "serde",
+ "serde_json",
+ "wasmparser",
+ "wasmprinter",
 ]
 
 [[package]]

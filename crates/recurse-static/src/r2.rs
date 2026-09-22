@@ -54,7 +54,7 @@ const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// engine vocabulary it already knows.
 ///
 /// ```
-/// use librecurse::r2::tool_schema;
+/// use recurse_static::r2::tool_schema;
 /// let schema = tool_schema();
 /// assert_eq!(schema["function"]["name"], "r2");
 /// assert!(schema["function"]["description"]
@@ -100,7 +100,7 @@ pub fn tool_schema() -> Value {
 /// 48% of all tool output before this existed.
 ///
 /// ```
-/// use librecurse::r2::strip_ansi;
+/// use recurse_static::r2::strip_ansi;
 /// let coloured = "\u{1b}[38;2;193;156;0m0x1149\u{1b}[0m  mov eax, 1";
 /// assert_eq!(strip_ansi(coloured), "0x1149  mov eax, 1");
 /// assert_eq!(strip_ansi("\u{1b}]0;title\u{7}ok"), "ok");
@@ -151,7 +151,7 @@ pub fn strip_ansi(input: &str) -> String {
 /// how the model learns a command failed.
 ///
 /// ```
-/// use librecurse::r2::is_noise;
+/// use recurse_static::r2::is_noise;
 /// assert!(is_noise("INFO: Analyze all flags starting with sym. and entry0 (aa)"));
 /// assert!(is_noise("WARN: Relocs has not been applied"));
 /// assert!(!is_noise("ERROR: Cannot find function at 0x401000"));
@@ -168,7 +168,7 @@ pub fn is_noise(line: &str) -> bool {
 /// Strip colour, drop progress chatter, and trim trailing blank lines.
 ///
 /// ```
-/// use librecurse::r2::tidy;
+/// use recurse_static::r2::tidy;
 /// let raw = "INFO: analyzing\n\u{1b}[32m0x1149\u{1b}[0m  push rbp\n\n";
 /// assert_eq!(tidy(raw), "0x1149  push rbp");
 /// ```
@@ -207,7 +207,7 @@ pub enum Family {
 /// stripped from the command token, which sits before its arguments.
 ///
 /// ```
-/// use librecurse::r2::{family, Family};
+/// use recurse_static::r2::{family, Family};
 /// assert_eq!(family("aflj"), Family::Functions);
 /// assert_eq!(family("aaa; aflj"), Family::Functions);
 /// assert_eq!(family("pdfj @ 0x1149"), Family::Disasm);
@@ -237,7 +237,7 @@ pub fn family(cmd: &str) -> Family {
 /// model: `esil`, `family`, `type_num`, `paddr`, `ordinal`, checksums, and so on.
 ///
 /// ```
-/// use librecurse::r2::{family, keep_fields};
+/// use recurse_static::r2::{family, keep_fields};
 /// assert!(keep_fields(family("aflj")).contains(&"signature"));
 /// assert!(!keep_fields(family("aflj")).contains(&"esil"));
 /// ```
@@ -261,7 +261,7 @@ pub fn keep_fields(f: Family) -> &'static [&'static str] {
 /// whether anything was left out.
 ///
 /// ```
-/// use librecurse::r2::take_items;
+/// use recurse_static::r2::take_items;
 /// use serde_json::json;
 /// let items = vec![json!({"addr": 1, "junk": "x"}), json!({"addr": 2, "junk": "y"})];
 /// let (kept, dropped, truncated) = take_items(items.iter(), &["addr"], 10);
@@ -302,7 +302,7 @@ where
 /// commands are handled.
 ///
 /// ```
-/// use librecurse::r2::project_item;
+/// use recurse_static::r2::project_item;
 /// use serde_json::json;
 /// let item = json!({"addr": 4144, "name": "main", "esil": "junk"});
 /// let projected = project_item(&item, &["addr", "name"]);
@@ -336,7 +336,7 @@ pub fn project_item(item: &Value, fields: &[&str]) -> Value {
 /// table still gets projected correctly.
 ///
 /// ```
-/// use librecurse::r2::project_object;
+/// use recurse_static::r2::project_object;
 /// use serde_json::{json, Map};
 /// let raw = json!({"name": "main", "ops": [{"addr": 4550, "disasm": "push rbp", "esil": "junk"}]});
 /// let map: Map<String, serde_json::Value> = raw.as_object().unwrap().clone();
@@ -423,7 +423,7 @@ pub fn project_object(cmd: &str, map: &Map<String, Value>, fields: &[&str], limi
 /// and shape-stable so the model reads structure rather than prose.
 ///
 /// ```
-/// use librecurse::r2::normalize;
+/// use recurse_static::r2::normalize;
 /// use serde_json::Value;
 /// let raw = r#"[{"addr":4224,"name":"main","esil":"","nlocals":2}]"#;
 /// let env: Value = serde_json::from_str(&normalize("afl", raw, 60)).unwrap();
@@ -528,7 +528,7 @@ pub fn normalize(cmd: &str, raw: &str, limit: usize) -> String {
 /// later turn.
 ///
 /// ```
-/// use librecurse::r2::compact;
+/// use recurse_static::r2::compact;
 /// use serde_json::json;
 /// assert_eq!(compact(json!({"a": 1})), r#"{"a":1}"#);
 /// ```
@@ -543,7 +543,7 @@ pub fn compact(value: Value) -> String {
 /// through untouched.
 ///
 /// ```
-/// use librecurse::r2::normalize_bash;
+/// use recurse_static::r2::normalize_bash;
 /// assert_eq!(normalize_bash("\u{1b}[1mbold\u{1b}[0m"), "bold");
 /// let big = "x".repeat(9_000);
 /// let capped = normalize_bash(&big);
@@ -585,7 +585,7 @@ const JSON_TWINS: &[&str] = &[
 /// was asked for.
 ///
 /// ```
-/// use librecurse::r2::jsonify;
+/// use recurse_static::r2::jsonify;
 /// assert_eq!(jsonify("pdf @ main").as_deref(), Some("pdfj @ main"));
 /// assert_eq!(jsonify("izz").as_deref(), Some("izzj"));
 /// assert_eq!(jsonify("pdfj @ main"), None);
@@ -620,7 +620,7 @@ pub fn jsonify(part: &str) -> Option<String> {
 /// instead of several JSON arrays concatenated into one unparseable blob.
 ///
 /// ```
-/// use librecurse::r2::split_parts;
+/// use recurse_static::r2::split_parts;
 /// assert_eq!(split_parts("aaa; afl; izz"), vec!["aaa", "afl", "izz"]);
 /// assert_eq!(split_parts("afl;"), vec!["afl"]);
 /// assert!(split_parts("   ").is_empty());
@@ -636,7 +636,7 @@ pub fn split_parts(cmd: &str) -> Vec<String> {
 /// nothing is detected so the original command can be retried.
 ///
 /// ```
-/// use librecurse::r2::{is_empty_env, normalize};
+/// use recurse_static::r2::{is_empty_env, normalize};
 /// assert!(is_empty_env(&normalize("afl", "INFO: nothing\n", 60)));
 /// assert!(!is_empty_env(&normalize("afl", r#"[{"addr":1,"name":"main"}]"#, 60)));
 /// ```
@@ -658,7 +658,7 @@ pub fn is_empty_env(env: &str) -> bool {
 /// guards against repeating an identical call.
 ///
 /// ```
-/// use librecurse::r2::result_key;
+/// use recurse_static::r2::result_key;
 /// assert_eq!(result_key("afl", 60), result_key("afl", 60));
 /// assert_ne!(result_key("afl", 60), result_key("afl", 10));
 /// ```
@@ -689,7 +689,7 @@ impl Session {
     /// chatter there: piping it without reading risks stalling the child.
     ///
     /// ```no_run
-    /// use librecurse::r2::Session;
+    /// use recurse_static::r2::Session;
     /// let session = Session::open(std::path::Path::new("/bin/true")).unwrap();
     /// assert!(session.pid() > 0);
     /// ```
@@ -737,7 +737,7 @@ impl Session {
     /// Run one command and return its raw output, escapes and all.
     ///
     /// ```no_run
-    /// use librecurse::r2::Session;
+    /// use recurse_static::r2::Session;
     /// let mut session = Session::open(std::path::Path::new("/bin/true")).unwrap();
     /// let raw = session.run("ij").unwrap();
     /// assert!(raw.contains("bintype"));
@@ -776,7 +776,7 @@ impl Session {
     /// second copy.
     ///
     /// ```no_run
-    /// use librecurse::r2::Session;
+    /// use recurse_static::r2::Session;
     /// let mut session = Session::open(std::path::Path::new("/bin/true")).unwrap();
     /// let first = session.call("ij", None).unwrap();
     /// let again = session.call("ij", None).unwrap();
@@ -824,7 +824,7 @@ impl Session {
     /// the model wrote if the twin yields nothing.
     ///
     /// ```no_run
-    /// use librecurse::r2::Session;
+    /// use recurse_static::r2::Session;
     /// let mut session = Session::open(std::path::Path::new("/bin/true")).unwrap();
     /// let env = session.run_part("pdf @ main", 60).unwrap();
     /// assert!(env.starts_with('{'));
@@ -845,7 +845,7 @@ impl Session {
     /// queries. Output is discarded: it is progress chatter, not an answer.
     ///
     /// ```no_run
-    /// use librecurse::r2::Session;
+    /// use recurse_static::r2::Session;
     /// let mut session = Session::open(std::path::Path::new("/bin/true")).unwrap();
     /// session.warm_up().unwrap();
     /// let funcs = session.call("afl", None).unwrap();
@@ -858,7 +858,7 @@ impl Session {
     /// Process id of the engine child, for host-side interrupt or teardown.
     ///
     /// ```no_run
-    /// use librecurse::r2::Session;
+    /// use recurse_static::r2::Session;
     /// let session = Session::open(std::path::Path::new("/bin/true")).unwrap();
     /// assert_ne!(session.pid(), 0);
     /// ```
@@ -874,7 +874,7 @@ impl Drop for Session {
     /// never leaves a zombie process behind.
     ///
     /// ```no_run
-    /// use librecurse::r2::Session;
+    /// use recurse_static::r2::Session;
     /// let session = Session::open(std::path::Path::new("/bin/true")).unwrap();
     /// drop(session); // child is quit and reaped here
     /// ```

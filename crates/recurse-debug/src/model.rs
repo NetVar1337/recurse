@@ -154,6 +154,17 @@ pub struct Frame {
     pub name: Option<String>,
 }
 
+/// One instruction decoded from the debuggee's live memory.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Insn {
+    /// Runtime address.
+    pub addr: u64,
+    /// Instruction bytes, hex.
+    pub bytes: String,
+    /// Disassembly text (mnemonic + operands).
+    pub text: String,
+}
+
 /// Snapshot of the session, for `status`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status {

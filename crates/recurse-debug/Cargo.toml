@@ -9,6 +9,9 @@ authors.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Architecture detection and disassembly (shared with the static engine, so
+# Capstone is configured in exactly one place).
+recurse-static = { path = "../recurse-static" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # ptrace + waitpid + signals for the Linux backend. All permissive.

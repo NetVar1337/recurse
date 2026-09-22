@@ -49,7 +49,7 @@ impl Default for BackendKind {
     /// The native backend: in-process, permissive, no external tool.
     ///
     /// ```
-    /// use librecurse::engine::BackendKind;
+    /// use recurse_static::engine::BackendKind;
     /// assert_eq!(BackendKind::default(), BackendKind::Native);
     /// std::env::remove_var("RECURSE_BACKEND");
     /// assert_eq!(BackendKind::from_env(), BackendKind::Native);
@@ -63,7 +63,7 @@ impl BackendKind {
     /// Parse a backend name. Accepts `native` and r2's names.
     ///
     /// ```
-    /// use librecurse::engine::BackendKind;
+    /// use recurse_static::engine::BackendKind;
     /// assert_eq!(BackendKind::parse("r2"), Some(BackendKind::R2));
     /// assert_eq!(BackendKind::parse("radare2"), Some(BackendKind::R2));
     /// assert_eq!(BackendKind::parse("Native"), Some(BackendKind::Native));
@@ -82,7 +82,7 @@ impl BackendKind {
     /// ignored rather than fatal: a typo must never make the app unusable.
     ///
     /// ```
-    /// use librecurse::engine::BackendKind;
+    /// use recurse_static::engine::BackendKind;
     /// std::env::remove_var("RECURSE_BACKEND");
     /// assert_eq!(BackendKind::from_env(), BackendKind::default());
     /// std::env::set_var("RECURSE_BACKEND", "r2");
@@ -99,7 +99,7 @@ impl BackendKind {
     /// Stable lowercase label for logs, the UI, and the database.
     ///
     /// ```
-    /// use librecurse::engine::BackendKind;
+    /// use recurse_static::engine::BackendKind;
     /// assert_eq!(BackendKind::R2.as_str(), "r2");
     /// assert_eq!(BackendKind::Native.as_str(), "native");
     /// ```
@@ -131,7 +131,7 @@ impl Capabilities {
     /// Conservative default: no optional features at all.
     ///
     /// ```
-    /// use librecurse::engine::Capabilities;
+    /// use recurse_static::engine::Capabilities;
     /// let c = Capabilities::none();
     /// assert!(!c.decompile);
     /// assert!(!c.raw);
@@ -150,7 +150,7 @@ impl Capabilities {
     /// yet (e.g. schema previews and tests).
     ///
     /// ```
-    /// use librecurse::engine::Capabilities;
+    /// use recurse_static::engine::Capabilities;
     /// let c = Capabilities::all();
     /// assert!(c.decompile && c.raw && c.graph && c.xrefs_from);
     /// ```
@@ -179,7 +179,7 @@ impl Target {
     /// string, or a symbol name. `null`/missing yields `None`.
     ///
     /// ```
-    /// use librecurse::engine::Target;
+    /// use recurse_static::engine::Target;
     /// use serde_json::json;
     /// assert_eq!(Target::from_json(&json!(4198400)), Some(Target::Addr(0x401000)));
     /// assert_eq!(Target::from_json(&json!("0x401000")), Some(Target::Addr(0x401000)));
@@ -208,7 +208,7 @@ impl Target {
     /// The concrete address when this target is already numeric.
     ///
     /// ```
-    /// use librecurse::engine::Target;
+    /// use recurse_static::engine::Target;
     /// assert_eq!(Target::Addr(7).to_u64(), Some(7));
     /// assert_eq!(Target::Symbol("main".into()).to_u64(), None);
     /// ```
@@ -462,7 +462,7 @@ pub trait Engine: Send + Sync {
 /// waste turns on `decompile`/`raw` against the native backend.
 ///
 /// ```
-/// use librecurse::engine::{tool_schema, Capabilities};
+/// use recurse_static::engine::{tool_schema, Capabilities};
 /// let schema = tool_schema(Capabilities::all());
 /// assert_eq!(schema["function"]["name"], "analyze");
 ///
@@ -566,7 +566,7 @@ pub const OPS: &[&str] = &[
 /// True when `name` is one of the [`TOOL_NAME`] tool's `op` values.
 ///
 /// ```
-/// use librecurse::engine::{is_op, TOOL_NAME};
+/// use recurse_static::engine::{is_op, TOOL_NAME};
 /// assert!(is_op("disasm"));
 /// assert!(is_op(TOOL_NAME));
 /// assert!(!is_op("bash"));
@@ -580,7 +580,7 @@ pub fn is_op(name: &str) -> bool {
 /// neither. This lets a host serve a call the model named after the op.
 ///
 /// ```
-/// use librecurse::engine::op_args;
+/// use recurse_static::engine::op_args;
 /// use serde_json::json;
 /// assert_eq!(
 ///     op_args("disasm", &json!({"addr": "main"})),
@@ -612,9 +612,9 @@ pub fn op_args(name: &str, args: &Value) -> Option<Value> {
 /// matching on [`TOOL_NAME`] alone.
 ///
 /// ```
-/// use librecurse::engine::{execute_call, BackendKind, Capabilities, Engine};
-/// use librecurse::engine::{Decompilation, Disassembly, FunctionGraph, FunctionInfo};
-/// use librecurse::engine::{Import, StringRef, Target, Xref, XrefDirection};
+/// use recurse_static::engine::{execute_call, BackendKind, Capabilities, Engine};
+/// use recurse_static::engine::{Decompilation, Disassembly, FunctionGraph, FunctionInfo};
+/// use recurse_static::engine::{Import, StringRef, Target, Xref, XrefDirection};
 /// use serde_json::{json, Value};
 /// use std::path::Path;
 ///
@@ -664,7 +664,7 @@ pub const DEFAULT_LIMIT: usize = 60;
 /// 60-item envelope is paid for on every later turn.
 ///
 /// ```
-/// use librecurse::engine::compact;
+/// use recurse_static::engine::compact;
 /// use serde_json::json;
 /// assert_eq!(compact(json!({"a": 1})), r#"{"a":1}"#);
 /// ```
@@ -695,7 +695,7 @@ fn strip_bytes(value: &mut Value) {
 /// Keep at most `limit` items, reporting how many were dropped.
 ///
 /// ```
-/// use librecurse::engine::take;
+/// use recurse_static::engine::take;
 /// let v = vec![1, 2, 3, 4];
 /// let (kept, dropped) = take(&v, 2);
 /// assert_eq!(kept, vec![&1, &2]);
@@ -741,9 +741,9 @@ fn list_envelope(op: &str, total: usize, showing: usize, items: Value) -> Value 
 /// engine-specific specifics in its own logic.
 ///
 /// ```
-/// use librecurse::engine::{execute_tool, BackendKind, Capabilities};
-/// use librecurse::engine::{Disassembly, Engine, FunctionGraph, FunctionInfo};
-/// use librecurse::engine::{Import, StringRef, Target, Xref, XrefDirection};
+/// use recurse_static::engine::{execute_tool, BackendKind, Capabilities};
+/// use recurse_static::engine::{Disassembly, Engine, FunctionGraph, FunctionInfo};
+/// use recurse_static::engine::{Import, StringRef, Target, Xref, XrefDirection};
 /// use serde_json::{json, Value};
 /// use std::path::Path;
 ///
@@ -771,7 +771,7 @@ fn list_envelope(op: &str, total: usize, showing: usize, items: Value) -> Value 
 ///     fn strings(&self) -> Result<Vec<StringRef>, String> { Ok(vec![]) }
 ///     fn imports(&self) -> Result<Vec<Import>, String> { Ok(vec![]) }
 ///     fn xrefs(&self, _t: &Target, _d: XrefDirection) -> Result<Vec<Xref>, String> { Ok(vec![]) }
-///     fn decompile(&self, _a: u64) -> Result<librecurse::engine::Decompilation, String> {
+///     fn decompile(&self, _a: u64) -> Result<recurse_static::engine::Decompilation, String> {
 ///         Err("unsupported".into())
 ///     }
 ///     fn raw(&self, _c: &str) -> Result<Value, String> { Err("unsupported".into()) }

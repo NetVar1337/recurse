@@ -17,7 +17,7 @@ lives here.
 ## Why a separate crate
 
 - **Separation of concerns.** `librecurse` is the agent. The analysis seam
-  (`librecurse::engine`) and the debugger are *systems* code; neither belongs in
+  (`recurse_static::engine`) and the debugger are *systems* code; neither belongs in
   the agent crate's dependency graph. A consumer that only wants the agent must
   not pull in `ptrace`/`windows-sys`/`mach2`.
 - **Platform code is `unsafe`-heavy.** Isolating it keeps the unsafe surface in
@@ -100,7 +100,7 @@ impl Debugger {
 ```
 
 `Symbols` keeps the debugger independent of the analysis engine; the host
-implements it over `librecurse::engine::Engine`:
+implements it over `recurse_static::engine::Engine`:
 
 ```rust
 pub trait Symbols: Send + Sync {

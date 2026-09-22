@@ -23,11 +23,12 @@ use serde::Serialize;
 use crate::arch;
 use crate::error::{Error, Result};
 use crate::model::{
-    BreakAt, Breakpoint, Frame, LaunchOptions, ProcessState, Registers, Status, StepKind, Stop,
-    StopReason, ThreadId,
+    BreakAt, Breakpoint, Frame, Insn, LaunchOptions, ProcessState, Registers, Status, StepKind,
+    Stop, StopReason, ThreadId,
 };
 use crate::symbols::{NoSymbols, Symbols};
 use crate::target::{self, Target, WaitEvent};
+use recurse_static::arch::Arch;
 
 /// `SIGTRAP` — the stop signal for traps (breakpoints and single-steps).
 const SIGTRAP: i32 = 5;
@@ -168,6 +169,8 @@ enum Command {
     Threads(Reply<Vec<ThreadId>>),
     /// Walk the backtrace.
     Backtrace(Option<ThreadId>, Reply<Vec<Frame>>),
+    /// Disassemble live memory.
+    Disasm(u64, usize, Reply<Vec<Insn>>),
     /// Snapshot the session.
     Status(Reply<Status>),
     /// Load bias.
@@ -365,6 +368,18 @@ impl Debugger {
         self.io.take_output()
     }
 
+    /// Disassemble `count` instructions at runtime address `addr`, reading the
+    /// bytes from the debuggee's live memory. Works at any address — the
+    /// loader, a JIT page, or the main binary — because it decodes what is
+    /// actually mapped.
+    ///
+    /// # Errors
+    /// [`Error::NotRunning`] with no debuggee, or when the architecture is
+    /// unknown.
+    pub fn disasm(&self, addr: u64, count: usize) -> Result<Vec<Insn>> {
+        self.call(move |tx| Command::Disasm(addr, count, tx))
+    }
+
     /// Send one command and block for its reply.
     fn call<T>(&self, build: impl FnOnce(Reply<T>) -> Command) -> Result<T> {
         let (tx, rx) = mpsc::channel();
@@ -433,6 +448,9 @@ fn run_worker(mut inner: Inner, rx: Receiver<Command>) {
             Command::Backtrace(thread, tx) => {
                 let _ = tx.send(inner.backtrace(thread));
             }
+            Command::Disasm(addr, count, tx) => {
+                let _ = tx.send(inner.disasm(addr, count));
+            }
             Command::Status(tx) => {
                 let _ = tx.send(Ok(inner.status()));
             }
@@ -470,6 +488,8 @@ struct Inner {
     stopped_at_bp: Option<u64>,
     /// Shared live view, published after each operation.
     snapshot: Arc<Mutex<Snapshot>>,
+    /// The debuggee's architecture, for disassembling its memory.
+    arch: Option<Arch>,
 }
 
 impl Inner {
@@ -492,6 +512,7 @@ impl Inner {
             stepping: false,
             stopped_at_bp: None,
             snapshot,
+            arch: None,
         })
     }
 
@@ -540,6 +561,7 @@ impl Inner {
     /// Launch a debuggee.
     fn launch(&mut self, opts: &LaunchOptions) -> Result<Stop> {
         let pid = self.target.launch(opts)?;
+        self.arch = Arch::detect(std::path::Path::new(&opts.path));
         self.pid = Some(pid);
         let thread = pid as ThreadId;
         let registers = self.target.get_regs(thread)?;
@@ -562,6 +584,7 @@ impl Inner {
     /// Attach to a running process.
     fn attach(&mut self, pid: u32) -> Result<Stop> {
         self.target.attach(pid)?;
+        self.arch = Arch::detect(std::path::Path::new(&format!("/proc/{pid}/exe")));
         self.pid = Some(pid);
         self.bias = self.symbols.load_bias(pid, None).unwrap_or(0);
         self.state = ProcessState::Stopped;
@@ -689,6 +712,38 @@ impl Inner {
     fn threads(&mut self) -> Result<Vec<ThreadId>> {
         self.pid()?;
         self.target.threads()
+    }
+
+    /// Disassemble live memory at `addr`.
+    fn disasm(&mut self, addr: u64, count: usize) -> Result<Vec<Insn>> {
+        self.pid()?;
+        let arch = self
+            .arch
+            .ok_or_else(|| Error::msg("architecture unknown; cannot disassemble"))?;
+        // x86 instructions are at most 16 bytes, so this always covers `count`.
+        let want = count.max(1).saturating_mul(16);
+        // Shrink the read until it fits mapped memory: the pc can sit near the
+        // end of a page or region.
+        let mut bytes = Vec::new();
+        let mut len = want;
+        while len > 0 {
+            match self.target.read(addr, len) {
+                Ok(b) => {
+                    bytes = b;
+                    break;
+                }
+                Err(_) => len /= 2,
+            }
+        }
+        let raw = recurse_static::arch::disasm(arch, &bytes, addr, count).map_err(Error::msg)?;
+        Ok(raw
+            .into_iter()
+            .map(|i| Insn {
+                addr: i.addr,
+                bytes: i.bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                text: i.text,
+            })
+            .collect())
     }
 
     /// Walk the frame-pointer chain.

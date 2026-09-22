@@ -65,10 +65,11 @@ function reasonLabel(r?: DebugStopReason): string {
 	}
 }
 
-/** Jump to the function containing a backtrace frame. */
+/** Jump to the function containing a backtrace frame (a runtime address). */
 function gotoFrame(addr: number): void {
+	const bias = useDebugStore.getState().bias;
 	const funcs = useAnalysisStore.getState().funcs;
-	const f = funcs.find((x) => x.addr === addr);
+	const f = funcs.find((x) => x.addr === addr - bias);
 	if (f) useAnalysisStore.getState().selectFn(f);
 }
 

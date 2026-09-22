@@ -1,8 +1,12 @@
-//! librecurse: independent agent framework — the LLM run loop ([agent]),
-//! its tool runtime ([tools]), the backend-agnostic analysis seam ([engine])
-//! with its pure-Rust ([native]) backend and an opt-in r2 ([r2], [r2_backend])
-//! backend,
-//! and the agent's SQLite-backed memory ([memory] with FTS5/BM25 retrieval).
+//! librecurse: the agent framework — the LLM run loop ([agent]), its tool
+//! runtime ([tools]), and the agent's SQLite-backed memory ([memory] with
+//! FTS5/BM25 retrieval).
+//!
+//! `librecurse` is *only the agent*. Static binary analysis lives in
+//! [`recurse_static`] (re-exported here as [`engine`], [`native`], [`r2`],
+//! [`r2_backend`], [`signals`] for convenience) and the debugger lives in
+//! `recurse-debug`; neither is a reason for the agent to depend on systems
+//! code it does not use.
 //!
 //! The library is storage-agnostic: it never resolves project paths or reads
 //! configuration storage itself. Hosts pass everything in through plain
@@ -13,10 +17,9 @@
 //! runtime — the library never creates one.
 
 pub mod agent;
-pub mod engine;
 pub mod memory;
-pub mod native;
-pub mod r2;
-pub mod r2_backend;
-pub mod signals;
 pub mod tools;
+
+// Static analysis, re-exported so `librecurse::engine` and friends keep
+// working for hosts and the eval harness.
+pub use recurse_static::{engine, native, r2, r2_backend, signals};

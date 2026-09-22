@@ -2,13 +2,13 @@
 
 Recurse does not depend on any single reverse-engineering engine. The binary
 world-model (functions, disassembly, xrefs, strings, imports, CFG) is defined
-once in `librecurse::engine`, and each backend is an implementation of that
+once in `recurse_static::engine`, and each backend is an implementation of that
 trait. The agent tool and every UI command go through the seam, so swapping the
 engine never touches the agent loop, the storefront, or the eval harness.
 
 ## The seam
 
-`crates/librecurse/src/engine.rs` defines:
+`crates/recurse-static/src/engine.rs` defines:
 
 - `trait Engine` — one method per operation: `analyze`, `summary`, `info`,
   `functions`, `function_at`, `disassemble`, `function_disasm`,
@@ -38,7 +38,7 @@ process) and box it as `Box<dyn Engine>` (see
 
 ### `native` — pure Rust (default)
 
-`librecurse::native::NativeEngine` parses and disassembles in-process. No child
+`recurse_static::native::NativeEngine` parses and disassembles in-process. No child
 process, no external tool, and no copyleft dependency anywhere in the chain.
 Scope, stated honestly:
 

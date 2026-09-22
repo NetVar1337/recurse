@@ -1,0 +1,38 @@
+[package]
+name = "recurse-static"
+description = "Static binary analysis for Recurse: ELF/PE/Mach-O parsing, multi-architecture disassembly, control-flow and cross-reference recovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# ELF/PE/Mach-O parsing.
+object = "0.36"
+# Multi-architecture disassembly (x86, x86-64, ARM, AArch64, MIPS, PowerPC,
+# RISC-V, SPARC, SystemZ, M68K, …) behind one API.
+capstone = "0.14"
+# Unwind-table (.eh_frame) parsing for exact function bounds.
+gimli = "0.31"
+rustc-demangle = "0.1"
+cpp_demangle = "0.4"
+# Managed-bytecode decoders: WebAssembly modules.
+wasmparser = "0.239"
+wasmprinter = "0.239"
+
+[target.'cfg(unix)'.dependencies]
+# Safe signal wrappers for Engine::interrupt / force_kill (r2 engine only).
+nix = { version = "0.31", features = ["signal", "process"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"

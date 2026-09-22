@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+
 import { api } from "@/api";
-import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
+import { DisasmInstr } from "@/lib/disasm";
 import { cn } from "@/lib/utils";
 import { useDebugStore } from "@/store/debugStore";
-import type { AsmInsn } from "@/types";
+import type { DebugInsn } from "@/types";
 
 /** How many instructions to show around the program counter. */
 const WINDOW = 48;
@@ -13,32 +14,31 @@ function fmtAddr(a?: number | null): string {
 }
 
 /**
- * The CPU view: disassembly around the current program counter.
+ * The CPU view: the instructions at the current program counter, decoded from
+ * the debuggee's live memory.
  *
- * Each row has a breakpoint gutter (click to toggle) and the current
- * instruction is highlighted with a `▶`. Disassembly addresses are static, so
- * the runtime pc is mapped back by subtracting the session's load bias.
+ * Addresses here are *runtime* addresses (the loader, a JIT page, or the main
+ * binary), so the disassembly is what is actually mapped and needs no static
+ * mapping. Each row has a breakpoint gutter (click to toggle) and the current
+ * instruction is highlighted with a `▶`.
  */
 export function DebugCpu() {
 	const pc = useDebugStore((s) => s.registers?.pc ?? null);
-	const bias = useDebugStore((s) => s.bias);
 	const breakpoints = useDebugStore((s) => s.breakpoints);
 	const active = useDebugStore((s) => s.active);
 	const run = useDebugStore((s) => s.run);
-	const [data, setData] = useState<{ pc: number; ops: AsmInsn[] } | null>(
+	const [data, setData] = useState<{ pc: number; ops: DebugInsn[] } | null>(
 		null,
 	);
 	const [err, setErr] = useState<string | null>(null);
 
-	const staticPc = pc != null ? pc - bias : null;
-
 	useEffect(() => {
-		if (staticPc == null) return;
+		if (pc == null || !active) return;
 		let cancelled = false;
-		api.disassemble(staticPc, WINDOW)
+		api.debugCommand("disasm", { addr: pc, count: WINDOW })
 			.then((d) => {
 				if (!cancelled) {
-					setData({ pc: staticPc, ops: d ?? [] });
+					setData({ pc, ops: (d as DebugInsn[]) ?? [] });
 					setErr(null);
 				}
 			})
@@ -48,22 +48,22 @@ export function DebugCpu() {
 		return () => {
 			cancelled = true;
 		};
-	}, [staticPc]);
+	}, [pc, active]);
 
-	// Only show disassembly fetched for the current pc, so it never goes stale.
-	const ops = data && data.pc === staticPc ? data.ops : [];
+	// Only show disassembly decoded for the current pc, so it never goes stale.
+	const ops = data && data.pc === pc ? data.ops : [];
 
-	// Static address -> breakpoint id, for the gutter.
+	// Breakpoints are runtime addresses, matching these rows directly.
 	const bpAt = useMemo(() => {
 		const m = new Map<number, number>();
-		for (const b of breakpoints) m.set(b.addr - bias, b.id);
+		for (const b of breakpoints) m.set(b.addr, b.id);
 		return m;
-	}, [breakpoints, bias]);
+	}, [breakpoints]);
 
-	const toggle = (staticAddr: number) => {
-		const id = bpAt.get(staticAddr);
+	const toggle = (addr: number) => {
+		const id = bpAt.get(addr);
 		if (id != null) void run("unbreak", { id });
-		else void run("break", { addr: staticAddr + bias });
+		else void run("break", { addr });
 	};
 
 	if (!active) {
@@ -82,10 +82,7 @@ export function DebugCpu() {
 			<table className="w-full border-collapse">
 				<tbody>
 					{ops.map((op) => {
-						const { instr, comment } = splitComment(
-							op.text ?? op.disasm ?? "",
-						);
-						const isPc = op.addr === staticPc;
+						const isPc = op.addr === pc;
 						const hasBp = bpAt.has(op.addr);
 						return (
 							<tr
@@ -116,11 +113,10 @@ export function DebugCpu() {
 									{fmtAddr(op.addr)}
 								</td>
 								<td className="w-[16ch] px-1 whitespace-nowrap text-emerald-600 dark:text-emerald-400">
-									{op.bytes ?? ""}
+									{op.bytes}
 								</td>
 								<td className="px-1 whitespace-nowrap">
-									<DisasmInstr text={instr} />
-									<DisasmComment comment={comment} />
+									<DisasmInstr text={op.text} />
 								</td>
 							</tr>
 						);
