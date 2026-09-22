@@ -1,3 +1,4 @@
+pub mod analysis_extra;
 pub mod commands;
 pub mod config;
 pub mod db;
@@ -154,6 +155,14 @@ pub fn run() {
             commands::project_read_file,
             commands::project_write_file,
             commands::project_list_files,
+            commands::read_bytes,
+            commands::write_bytes,
+            crate::analysis_extra::findings,
+            crate::analysis_extra::diff_with,
+            crate::analysis_extra::generate_signature,
+            crate::analysis_extra::semantic_index,
+            crate::analysis_extra::semantic_similar,
+            crate::analysis_extra::call_graph,
         ]);
 
     die_on_failure(builder.run(tauri::generate_context!()));

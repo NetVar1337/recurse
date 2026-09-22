@@ -455,6 +455,22 @@ pub fn raw(cmd: String, state: State<'_, AppState>) -> Result<Value, String> {
     with_sess(&guard)?.raw(&cmd)
 }
 
+/// Read raw bytes at a virtual address — the hex view's data source.
+#[tauri::command]
+pub fn read_bytes(addr: u64, len: usize, state: State<'_, AppState>) -> Result<Vec<u8>, String> {
+    let guard = session(&state)?;
+    with_sess(&guard)?.read_bytes(addr, len)
+}
+
+/// Patch raw bytes at a virtual address directly into the file on disk.
+/// The active session's cached analysis does not reflect the patch until
+/// the binary is reopened (see [`recurse_agent::engine::Engine::write_bytes`]).
+#[tauri::command]
+pub fn write_bytes(addr: u64, bytes: Vec<u8>, state: State<'_, AppState>) -> Result<(), String> {
+    let guard = session(&state)?;
+    with_sess(&guard)?.write_bytes(addr, &bytes)
+}
+
 #[derive(Serialize)]
 pub struct BackendStatus {
     pub backend: String,
