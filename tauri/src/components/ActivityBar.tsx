@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-import { LogoMark } from "@/components/Logo";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useUiStore } from "@/store/uiStore";
 import type { CenterTab } from "@/types";
@@ -56,10 +55,6 @@ export function ActivityBar() {
 			className="ui-activity flex min-h-0 flex-col items-center"
 			aria-label="Views"
 		>
-			<div className="flex h-[var(--chrome-h)] items-center justify-center">
-				<LogoMark className="h-4 w-auto" />
-			</div>
-
 			<div className="flex w-full flex-col">
 				{views.map((v) => (
 					<button
