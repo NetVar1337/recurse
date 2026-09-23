@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { ArrowRight, Binary } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -77,17 +76,13 @@ export function NewProjectDialog() {
 								: "border-border hover:border-primary bg-card/50 hover:bg-accent border-dashed",
 						)}
 					>
-						<Binary
-							className="text-primary h-8 w-8 shrink-0"
-							strokeWidth={1.5}
-						/>
 						<div className="min-w-0 flex-1">
 							{binaryPath ? (
 								<>
 									<div className="text-foreground truncate font-mono text-sm">
 										{baseName(binaryPath)}
 									</div>
-									<div className="text-muted-foreground truncate text-[11px]">
+									<div className="text-muted-foreground truncate text-xs">
 										{binaryPath}
 									</div>
 								</>
@@ -96,19 +91,19 @@ export function NewProjectDialog() {
 									<div className="text-foreground text-sm font-medium">
 										Select target binary
 									</div>
-									<div className="text-muted-foreground text-[11px]">
+									<div className="text-muted-foreground text-xs">
 										ELF · PE · Mach-O · any executable
 									</div>
 								</>
 							)}
 						</div>
-						<span className="text-muted-foreground group-hover:text-foreground text-[11px] transition-colors">
+						<span className="text-muted-foreground group-hover:text-foreground text-xs transition-colors">
 							{binaryPath ? "change" : "browse"}
 						</span>
 					</button>
 
 					<div>
-						<label className="text-muted-foreground text-[11px] font-semibold tracking-wider uppercase">
+						<label className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
 							Project name
 						</label>
 						<div className="border-border bg-card focus-within:border-primary mt-1.5 flex items-center overflow-hidden rounded-md border font-mono text-sm transition-colors">
@@ -126,7 +121,7 @@ export function NewProjectDialog() {
 					</div>
 
 					{error && (
-						<div className="border-destructive bg-destructive/10 text-destructive rounded-md border p-2.5 text-[11px]">
+						<div className="border-destructive bg-destructive/10 text-destructive rounded-md border p-2.5 text-xs">
 							{error}
 						</div>
 					)}
@@ -140,7 +135,6 @@ export function NewProjectDialog() {
 						}
 					>
 						{creating ? "Creating…" : "Create & Open"}
-						{!creating && <ArrowRight className="h-4 w-4" />}
 					</Button>
 				</div>
 			</DialogContent>

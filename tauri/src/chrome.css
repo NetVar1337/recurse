@@ -1,0 +1,262 @@
+/*
+ * Chrome tokens. Reuse these instead of one-off radii, control heights, and
+ * selection fills. Class names are also exported from src/lib/chrome.ts.
+ *
+ * --selection          quiet selected/pressed fill (not an inverted slab)
+ * --control-h          toolbar control height
+ * --chrome-h           bar / tab-strip height
+ * --radius-control     shared corner radius
+ * --space-1/2/3        4 / 8 / 12px rhythm
+ * --kbd                shortcut text
+ * --warning            non-destructive notice
+ */
+
+:root {
+	--selection: rgba(0, 122, 204, 0.14);
+	--selection-foreground: #0b0d12;
+	--warning: #9a6a00;
+	--warning-foreground: #6b4a00;
+	--kbd: #6b7280;
+	--brand: #1f7fd0;
+	--control-h: 1.75rem;
+	--chrome-h: 2.25rem;
+	--status-h: 1.375rem;
+	--activity-w: 3rem;
+	--radius-control: 0.25rem;
+	--space-1: 0.25rem;
+	--space-2: 0.5rem;
+	--space-3: 0.75rem;
+	/* One row height for every data list, so columns line up across panes. */
+	--row-h: 1.125rem;
+
+	--activity-bg: #f3f3f3;
+
+	/* Disassembly palette: colour carries meaning, nothing else. */
+	--asm-addr: #6b7280;
+	--asm-bytes: #9ca3af;
+	--asm-mnemonic: #1f7fd0;
+	--asm-register: #0b4a80;
+	--asm-number: #9a6a00;
+	--asm-string: #9a6a00;
+	--asm-symbol: #0f766e;
+	--asm-jump: #7c3aed;
+}
+
+.dark {
+	--selection: rgba(126, 200, 255, 0.14);
+	--selection-foreground: #e9edf3;
+	--warning: #e5c07b;
+	--warning-foreground: #e5c07b;
+	--kbd: #69727f;
+	--brand: #7ec8ff;
+
+	--activity-bg: #0e1117;
+
+	--asm-addr: #7d8794;
+	--asm-bytes: #5c6673;
+	--asm-mnemonic: #7fb4e0;
+	--asm-register: #bfe3ff;
+	--asm-number: #e5c07b;
+	--asm-string: #e5c07b;
+	--asm-symbol: #9ad4c0;
+	--asm-jump: #c9a2e0;
+}
+
+@theme inline {
+	--color-selection: var(--selection);
+	--color-selection-foreground: var(--selection-foreground);
+	--color-warning: var(--warning);
+	--color-warning-foreground: var(--warning-foreground);
+	--color-kbd: var(--kbd);
+	--color-brand: var(--brand);
+	--color-asm-addr: var(--asm-addr);
+	--color-asm-bytes: var(--asm-bytes);
+	--color-asm-mnemonic: var(--asm-mnemonic);
+	--color-asm-register: var(--asm-register);
+	--color-asm-number: var(--asm-number);
+	--color-asm-string: var(--asm-string);
+	--color-asm-symbol: var(--asm-symbol);
+	--color-asm-jump: var(--asm-jump);
+}
+
+/* A row in any data list: one height, one hover, so panes align. */
+.data-row {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	height: var(--row-h);
+	white-space: nowrap;
+	padding-inline: var(--space-2);
+}
+
+/* Numbers in a column must line up: addresses, sizes, offsets, registers. */
+.nums {
+	font-variant-numeric: tabular-nums;
+}
+
+/* Uppercase micro-heading used by every pane title. */
+.label {
+	font-size: var(--text-2xs);
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.ui-bar {
+	display: flex;
+	align-items: center;
+	gap: var(--space-1);
+	min-height: var(--chrome-h);
+}
+
+.ui-sep {
+	width: 1px;
+	height: 1rem;
+	margin-inline: var(--space-1);
+	flex: none;
+	background: var(--border);
+}
+
+.ui-seg {
+	display: inline-flex;
+	align-items: stretch;
+	height: var(--control-h);
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-control);
+	background: transparent;
+}
+
+.ui-seg > button {
+	padding-inline: var(--space-2);
+	font-size: 11px;
+	line-height: 1;
+	color: var(--muted-foreground);
+	background: transparent;
+}
+
+.ui-seg > button:hover {
+	background: var(--accent);
+	color: var(--accent-foreground);
+}
+
+.ui-seg > button[aria-pressed="true"] {
+	background: var(--selection);
+	color: var(--selection-foreground);
+}
+
+.ui-seg > button + button {
+	border-left: 1px solid var(--border);
+}
+
+.ui-press[aria-pressed="true"] {
+	background: var(--selection);
+	color: var(--selection-foreground);
+}
+
+.ui-selected {
+	background: var(--selection);
+	color: var(--selection-foreground);
+}
+
+.ui-composer {
+	display: flex;
+	width: 100%;
+	flex-direction: column;
+	gap: var(--space-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-control);
+	background: var(--background);
+	padding: var(--space-1);
+}
+
+.ui-composer textarea {
+	min-height: var(--control-h);
+	flex: 1 1 auto;
+	resize: none;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+	outline: none;
+}
+
+.ui-composer textarea:focus,
+.ui-composer textarea:focus-visible {
+	outline: none;
+	box-shadow: none;
+}
+
+.ui-menu-label {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--space-3);
+	padding: 0.375rem 0.5rem 0.125rem;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.ui-kbd {
+	margin-left: auto;
+	padding-left: var(--space-3);
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 10px;
+	font-weight: 400;
+	letter-spacing: 0;
+	text-transform: none;
+	font-variant-numeric: tabular-nums;
+	color: var(--kbd);
+}
+
+.ui-panel-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	font-weight: 500;
+}
+
+/*
+ * Activity rail: the far-left icon strip. Each view is one square button; the
+ * current one carries a 2px accent bar on the leading edge, the way an editor
+ * marks the active view.
+ */
+.ui-activity {
+	width: var(--activity-w);
+	flex: none;
+	background: var(--activity-bg);
+	border-right: 1px solid var(--border);
+}
+
+.ui-activity button {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	height: var(--activity-w);
+	color: var(--muted-foreground);
+	transition: color 0.12s ease;
+}
+
+.ui-activity button:hover {
+	color: var(--foreground);
+}
+
+.ui-activity button[aria-pressed="true"] {
+	color: var(--foreground);
+}
+
+.ui-activity button[aria-pressed="true"]::before {
+	content: "";
+	position: absolute;
+	inset-block: 0;
+	inset-inline-start: 0;
+	width: 2px;
+	background: var(--brand);
+}

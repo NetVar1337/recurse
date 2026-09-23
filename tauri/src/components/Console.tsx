@@ -1,9 +1,7 @@
 import { useState } from "react";
-import { ChevronRight, Terminal } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 import { api } from "@/api";
 import { useBinaryStore } from "@/store/binaryStore";
 
@@ -39,21 +37,15 @@ export function Console() {
 		<div className="border-border bg-card border-t">
 			<div className="flex items-center gap-2 px-3 py-1">
 				<Button
-					variant="ghost"
+					variant="toolbar"
 					size="sm"
-					className="gap-1.5"
 					onClick={() => setOpen((o) => !o)}
+					aria-pressed={open}
+					className="ui-press"
 				>
-					<Terminal className="h-3.5 w-3.5" />
-					Console
-					<ChevronRight
-						className={cn(
-							"h-3.5 w-3.5 transition-transform",
-							open && "rotate-90",
-						)}
-					/>
+					{open ? "Hide console" : "Console"}
 				</Button>
-				<span className="text-muted-foreground text-[11px]">
+				<span className="text-muted-foreground text-xs">
 					raw analysis commands
 				</span>
 				{open && (
@@ -82,7 +74,7 @@ export function Console() {
 				)}
 			</div>
 			{open && (
-				<pre className="border-border text-muted-foreground max-h-44 overflow-auto border-t px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">
+				<pre className="border-border text-muted-foreground max-h-44 overflow-auto border-t px-3 py-2 font-mono text-xs whitespace-pre-wrap">
 					{lines.length === 0 ? "—" : lines.join("\n")}
 				</pre>
 			)}

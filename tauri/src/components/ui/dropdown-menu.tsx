@@ -16,7 +16,7 @@ const DropdownMenuContent = React.forwardRef<
 			ref={ref}
 			sideOffset={sideOffset}
 			className={cn(
-				"bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-50 min-w-[8rem] overflow-hidden rounded-md border p-1 shadow-md",
+				"bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-50 min-w-48 overflow-hidden rounded-[var(--radius-control)] border p-1 shadow-none",
 				className,
 			)}
 			{...props}
@@ -34,7 +34,7 @@ const DropdownMenuItem = React.forwardRef<
 	<DropdownMenuPrimitive.Item
 		ref={ref}
 		className={cn(
-			"focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-xs transition-colors outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:size-4",
+			"focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-xs transition-colors outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
 			inset && "pl-8",
 			className,
 		)}
@@ -51,11 +51,7 @@ const DropdownMenuLabel = React.forwardRef<
 >(({ className, inset, ...props }, ref) => (
 	<DropdownMenuPrimitive.Label
 		ref={ref}
-		className={cn(
-			"px-2 py-1.5 text-xs font-semibold",
-			inset && "pl-8",
-			className,
-		)}
+		className={cn("ui-menu-label", inset && "pl-8", className)}
 		{...props}
 	/>
 ));
@@ -67,11 +63,18 @@ const DropdownMenuSeparator = React.forwardRef<
 >(({ className, ...props }, ref) => (
 	<DropdownMenuPrimitive.Separator
 		ref={ref}
-		className={cn("bg-muted -mx-1 my-1 h-px", className)}
+		className={cn("bg-border -mx-1 my-1 h-px", className)}
 		{...props}
 	/>
 ));
 DropdownMenuSeparator.displayName = DropdownMenuPrimitive.Separator.displayName;
+
+function DropdownMenuShortcut({
+	className,
+	...props
+}: React.HTMLAttributes<HTMLSpanElement>) {
+	return <span className={cn("ui-kbd", className)} {...props} />;
+}
 
 export {
 	DropdownMenu,
@@ -81,4 +84,5 @@ export {
 	DropdownMenuItem,
 	DropdownMenuLabel,
 	DropdownMenuSeparator,
+	DropdownMenuShortcut,
 };

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ActivityBar } from "@/components/ActivityBar";
 import { AgentChat } from "@/components/AgentChat";
 import { CenterPanel } from "@/components/CenterPanel";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -8,7 +9,9 @@ import { FunctionList } from "@/components/FunctionList";
 import { Header } from "@/components/Header";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { ProjectScreen } from "@/components/ProjectScreen";
+import { StatusBar } from "@/components/StatusBar";
 import { useBinaryStore } from "@/store/binaryStore";
+import { useDebugStore } from "@/store/debugStore";
 import { useLlmStore } from "@/store/llmStore";
 import { useContextStore } from "@/store/contextStore";
 import { useProjectStore } from "@/store/projectStore";
@@ -56,6 +59,25 @@ function App() {
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
+			const dbg = useDebugStore.getState();
+			if (!dbg.active) return;
+			if (e.key === "F7") {
+				e.preventDefault();
+				void dbg.run("step", { kind: "into" });
+			} else if (e.key === "F8") {
+				e.preventDefault();
+				void dbg.run("step", { kind: "over" });
+			} else if (e.key === "F9") {
+				e.preventDefault();
+				void dbg.run("continue");
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, []);
+
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
 			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
 				e.preventDefault();
 				useContextStore.getState().commitPending();
@@ -87,28 +109,33 @@ function App() {
 			{!binary ? (
 				<ProjectScreen />
 			) : (
-				<div
-					className="grid min-h-0 flex-1 overflow-hidden"
-					style={{
-						gridTemplateColumns: chatOpen
-							? "260px 1fr 340px"
-							: "260px 1fr",
-					}}
-				>
-					<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-r">
-						<FunctionList />
-					</aside>
-
-					<CenterPanel />
-
-					{chatOpen && (
-						<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
-							<AgentChat inputRef={chatInputRef} />
+				<div className="flex min-h-0 flex-1 overflow-hidden">
+					<ActivityBar />
+					<div
+						className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
+						style={{
+							gridTemplateColumns: chatOpen
+								? "260px 1fr 340px"
+								: "260px 1fr",
+						}}
+					>
+						<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-r">
+							<FunctionList />
 						</aside>
-					)}
+
+						<CenterPanel />
+
+						{chatOpen && (
+							<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
+								<AgentChat inputRef={chatInputRef} />
+							</aside>
+						)}
+					</div>
 				</div>
 			)}
 
+			{binary && <StatusBar />}
+			<CommandPalette />
 			<NewProjectDialog />
 			<CommandPalette />
 		</div>

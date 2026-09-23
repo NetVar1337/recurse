@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -44,7 +43,7 @@ export function SessionMenu() {
 				<DropdownMenuLabel>Recent sessions</DropdownMenuLabel>
 
 				{sessions.length === 0 && (
-					<div className="text-muted-foreground px-2 py-1 text-[11px]">
+					<div className="text-muted-foreground px-2 py-1 text-xs">
 						No sessions yet
 					</div>
 				)}
@@ -55,7 +54,7 @@ export function SessionMenu() {
 						className={cn(
 							"flex items-center gap-1.5 rounded-sm px-2 py-1 text-xs",
 							current?.id === s.id
-								? "bg-primary text-primary-foreground"
+								? "ui-selected"
 								: "hover:bg-accent",
 						)}
 					>
@@ -71,14 +70,13 @@ export function SessionMenu() {
 						</button>
 						<button
 							type="button"
-							className="shrink-0 p-0.5 opacity-40 hover:opacity-100"
+							className="text-2xs shrink-0 opacity-60 hover:opacity-100"
 							onClick={(e) => {
 								e.stopPropagation();
 								remove(s.id);
 							}}
-							title="Delete session"
 						>
-							<Trash2 className="h-3 w-3" />
+							Delete
 						</button>
 					</div>
 				))}

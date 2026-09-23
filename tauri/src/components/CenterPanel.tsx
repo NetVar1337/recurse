@@ -1,4 +1,4 @@
-import { Link2, Loader2, RefreshCw, X } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import {
 	lazy,
 	Suspense,
@@ -10,11 +10,12 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { DebugPanel } from "@/components/DebugPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { chrome } from "@/lib/chrome";
 import { callTarget } from "@/lib/calls";
 import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
 import { api } from "@/api";
@@ -22,7 +23,7 @@ import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
 import { useUiStore } from "@/store/uiStore";
-import type { CenterTab, DecompileAnnotation, Function, Xref } from "@/types";
+import type { DecompileAnnotation, Function, Xref } from "@/types";
 
 const R2Console = lazy(() =>
 	import("@/components/R2Console").then((m) => ({ default: m.R2Console })),
@@ -52,14 +53,29 @@ function fmtAddr(a?: number | null) {
 	return typeof a === "number" ? `0x${a.toString(16)}` : "";
 }
 
+/**
+ * The last segment of a path, for either separator.
+ *
+ * ```
+ * baseName("/usr/bin/youki") // => "youki"
+ * baseName("C:\\tools\\youki.exe") // => "youki.exe"
+ * baseName(undefined) // => "binary"
+ * ```
+ */
+function baseName(path: string | undefined): string {
+	if (!path) return "binary";
+	const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+	return path.slice(i + 1);
+}
+
 const HL_COLORS: Record<string, string> = {
-	keyword: "text-pink-400",
+	keyword: "text-asm-mnemonic",
 	comment: "text-muted-foreground italic",
-	datatype: "text-sky-400",
-	function_name: "text-yellow-400",
-	function_parameter: "text-orange-300",
-	local_variable: "text-purple-300",
-	constant_variable: "text-emerald-400",
+	datatype: "text-asm-addr",
+	function_name: "text-asm-jump",
+	function_parameter: "text-asm-string",
+	local_variable: "text-asm-register",
+	constant_variable: "text-asm-number",
 };
 
 function highlight(
@@ -117,7 +133,8 @@ function OpRow({
 	return (
 		<div
 			className={cn(
-				"flex gap-3 px-3 py-px whitespace-nowrap",
+				chrome.row,
+				"gap-3 pl-3",
 				clickable && "hover:bg-accent/70 cursor-pointer",
 			)}
 			onClick={clickable && onGoTo ? () => onGoTo(target) : undefined}
@@ -128,13 +145,13 @@ function OpRow({
 			}
 		>
 			<span
-				className="min-w-[9ch] shrink-0 text-sky-600 dark:text-sky-400"
+				className="nums text-asm-addr min-w-[9ch] shrink-0 font-mono"
 				title="Virtual address"
 			>
 				{fmtAddr(op.addr)}
 			</span>
 			<span
-				className="min-w-[16ch] shrink-0 text-emerald-600 dark:text-emerald-400"
+				className="text-asm-bytes min-w-[16ch] shrink-0 font-mono"
 				title="Machine code bytes (hex)"
 			>
 				{op.bytes ?? ""}
@@ -150,13 +167,10 @@ function OpRow({
 				{instr && <DisasmInstr text={instr} />}
 				<DisasmComment comment={comment} />
 				{typeof op.jump === "number" && (
-					<span className="text-violet-500 dark:text-violet-400">
-						{" "}
-						→ {fmtAddr(op.jump)}
-					</span>
+					<span className="text-asm-jump"> → {fmtAddr(op.jump)}</span>
 				)}
 				{typeof op.ptr === "number" && (
-					<span className="text-violet-500 dark:text-violet-400">
+					<span className="text-asm-jump">
 						{" "}
 						; [{fmtAddr(op.ptr)}]
 					</span>
@@ -168,7 +182,6 @@ function OpRow({
 
 export function CenterPanel() {
 	const tab = useUiStore((s) => s.tab);
-	const setTab = useUiStore((s) => s.setTab);
 	const selected = useAnalysisStore((s) => s.selected);
 	const funcs = useAnalysisStore((s) => s.funcs);
 	const selectFn = useAnalysisStore((s) => s.selectFn);
@@ -264,9 +277,6 @@ export function CenterPanel() {
 			setToolBusy(false);
 		}
 	};
-
-	const setTabSafe = (t: string) => setTab(t as CenterTab);
-
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
 	const [consoleMounted, setConsoleMounted] = useState(false);
@@ -277,6 +287,7 @@ export function CenterPanel() {
 	const [xrefsLoading, setXrefsLoading] = useState(false);
 	const [xrefsError, setXrefsError] = useState<string | null>(null);
 	const [stringQuery, setStringQuery] = useState("");
+	const [importQuery, setImportQuery] = useState("");
 
 	// Large Rust binaries can carry 100k+ strings (youki: 113k). Rendering
 	// them all freezes the webview, so filter first and cap the row count.
@@ -298,6 +309,14 @@ export function CenterPanel() {
 			capped: matched.length > CAP,
 		};
 	}, [strings, stringQuery]);
+
+	const visibleImports = useMemo(() => {
+		const q = importQuery.trim().toLowerCase();
+		if (!q) return imports;
+		return imports.filter((imp) =>
+			(imp.name ?? "").toLowerCase().includes(q),
+		);
+	}, [imports, importQuery]);
 
 	// Address → function lookup so call instructions can resolve to their target.
 	const funcByAddr = useMemo(() => {
@@ -397,44 +416,38 @@ export function CenterPanel() {
 
 	return (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
-			<div className="border-border bg-card flex items-center gap-1 border-b px-1">
-				<Tabs value={tab} onValueChange={setTabSafe} className="flex-1">
-					<TabsList className="h-9 bg-transparent p-1">
-						<TabsTrigger value="recon">Recon</TabsTrigger>
-						<TabsTrigger value="debug">Debug</TabsTrigger>
-						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
-						<TabsTrigger value="callgraph">Call Graph</TabsTrigger>
-						<TabsTrigger value="strings">Strings</TabsTrigger>
-						<TabsTrigger value="imports">Imports</TabsTrigger>
-						<TabsTrigger value="findings">Findings</TabsTrigger>
-						<TabsTrigger value="hex">Hex</TabsTrigger>
-						{capabilities?.raw !== false && (
-							<TabsTrigger value="console">Console</TabsTrigger>
-						)}
-					</TabsList>
-				</Tabs>
-				{tab === "disasm" && (
-					<div className="flex items-center gap-1 pr-2">
-						<div className="border-border flex overflow-hidden rounded-md border">
+			{tab === "disasm" && (
+				<div className="border-border bg-card ui-bar shrink-0 gap-2 border-b px-3">
+					{selected && (
+						<>
+							<span className="text-muted-foreground truncate text-xs">
+								{baseName(binaryPath)}
+							</span>
+							<ChevronRight className="text-muted-foreground/50 h-3 w-3 shrink-0" />
+							<span className="text-foreground truncate text-xs font-medium">
+								{selected.name ??
+									selected.signature ??
+									"unknown"}
+							</span>
+							<span className="text-muted-foreground nums shrink-0 font-mono text-xs">
+								{fmtAddr(selected.addr)} ·{" "}
+								{asm?.size ?? selected.size ?? "?"} bytes
+							</span>
+						</>
+					)}
+					<div className="ml-auto flex items-center gap-1">
+						<div className="ui-seg" role="group" aria-label="View">
 							<button
-								className={cn(
-									"px-2 py-1 text-[11px]",
-									viewMode === "linear"
-										? "bg-primary text-primary-foreground"
-										: "hover:bg-accent",
-								)}
+								type="button"
+								aria-pressed={viewMode === "linear"}
 								onClick={() => setViewMode("linear")}
 								title="Linear disassembly"
 							>
 								Linear
 							</button>
 							<button
-								className={cn(
-									"px-2 py-1 text-[11px]",
-									viewMode === "graph"
-										? "bg-primary text-primary-foreground"
-										: "hover:bg-accent",
-								)}
+								type="button"
+								aria-pressed={viewMode === "graph"}
 								onClick={() => setViewMode("graph")}
 								title="Control-flow graph (pan/zoom)"
 							>
@@ -443,7 +456,7 @@ export function CenterPanel() {
 						</div>
 						{capabilities?.decompile !== false && (
 							<Button
-								variant="ghost"
+								variant="toolbar"
 								size="sm"
 								onClick={decompile}
 								disabled={decompiling || !selected}
@@ -452,17 +465,18 @@ export function CenterPanel() {
 							</Button>
 						)}
 						<Button
-							variant={xrefsOpen ? "secondary" : "ghost"}
+							variant="toolbar"
 							size="sm"
+							className="ui-press"
+							aria-pressed={xrefsOpen}
 							onClick={toggleXrefs}
 							disabled={!selected}
 							title="Show incoming cross-references"
 						>
-							<Link2 className="mr-1 h-3.5 w-3.5" />
 							Xrefs
 						</Button>
 						<Button
-							variant="ghost"
+							variant="toolbar"
 							size="sm"
 							onClick={() => void runGenerateSignature()}
 							disabled={!selected || toolBusy}
@@ -471,7 +485,7 @@ export function CenterPanel() {
 							Sig
 						</Button>
 						<Button
-							variant="ghost"
+							variant="toolbar"
 							size="sm"
 							onClick={() => void runShowSimilar()}
 							disabled={!selected || toolBusy}
@@ -480,7 +494,7 @@ export function CenterPanel() {
 							Similar
 						</Button>
 						<Button
-							variant="ghost"
+							variant="toolbar"
 							size="sm"
 							onClick={() => void runIndexBinary()}
 							disabled={toolBusy}
@@ -489,19 +503,17 @@ export function CenterPanel() {
 							Index
 						</Button>
 						<Button
-							variant="ghost"
-							size="icon"
+							variant="toolbar"
+							size="sm"
 							onClick={refreshDisasm}
 							disabled={asmLoading}
 							title="Reload"
 						>
-							<RefreshCw
-								className={asmLoading ? "animate-spin" : ""}
-							/>
+							{asmLoading ? "Loading" : "Reload"}
 						</Button>
 					</div>
+				</div>
 				)}
-			</div>
 			{toolResult && (
 				<div className="border-border bg-muted/30 flex items-start justify-between gap-3 border-b px-3 py-2">
 					<div className="min-w-0 flex-1">
@@ -519,12 +531,12 @@ export function CenterPanel() {
 						))}
 					</div>
 					<Button
-						variant="ghost"
-						size="icon"
+						variant="toolbar"
+						size="sm"
 						onClick={() => setToolResult(null)}
 						title="Dismiss"
 					>
-						<X className="h-3.5 w-3.5" />
+						Dismiss
 					</Button>
 				</div>
 			)}
@@ -584,47 +596,29 @@ export function CenterPanel() {
 							{pending && (
 								<div className="absolute top-2 right-2 z-20 flex items-center gap-1">
 									<Button
+										variant="toolbar"
 										size="sm"
 										onClick={commitPending}
-										className="shadow"
 										title="Add selection to agent context (Ctrl+L)"
 									>
-										+ Add to agent context
+										Add to context
 									</Button>
 									<Button
-										variant="ghost"
-										size="icon"
-										className="shadow"
+										variant="toolbar"
+										size="sm"
 										onClick={() => setPending(null)}
-										title="Dismiss"
 									>
-										<X className="h-3.5 w-3.5" />
+										Dismiss
 									</Button>
 								</div>
 							)}
 							{tab === "disasm" && (
 								<>
-									{selected && (
-										<div className="border-border bg-card sticky top-0 z-10 flex items-baseline gap-3 border-b px-3 py-1.5">
-											<span className="font-semibold">
-												{selected.name ??
-													selected.signature ??
-													"unknown"}
-											</span>
-											<span className="text-muted-foreground font-mono text-[11px]">
-												{fmtAddr(selected.addr)} ·{" "}
-												{asm?.size ??
-													selected.size ??
-													"?"}{" "}
-												bytes
-											</span>
-										</div>
-									)}
 									{xrefsOpen &&
 										selected &&
 										xrefsAddress === selectedAddr && (
 											<div className="border-border bg-card mx-3 my-2 max-h-44 overflow-auto rounded-md border">
-												<div className="text-muted-foreground flex items-center justify-between px-2.5 py-1.5 text-[11px]">
+												<div className="text-muted-foreground flex items-center justify-between px-2.5 py-1.5 text-xs">
 													<span>
 														Incoming references
 													</span>
@@ -665,7 +659,7 @@ export function CenterPanel() {
 																selectFn(source)
 															}
 															className={cn(
-																"hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-[11px] disabled:cursor-default",
+																"hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs disabled:cursor-default",
 																source &&
 																	"text-primary",
 															)}
@@ -718,14 +712,16 @@ export function CenterPanel() {
 										{selected &&
 											!asmLoading &&
 											(asm?.ops?.length ?? 0) > 0 && (
-												<div className="border-border text-muted-foreground bg-card flex gap-3 border-b px-3 py-1 text-[10px] font-semibold tracking-wider uppercase">
-													<span className="w-[9ch] shrink-0 text-sky-600 dark:text-sky-400">
+												<div className="border-border bg-card text-2xs flex gap-3 border-b px-3 py-1 font-semibold tracking-wider uppercase">
+													<span className="text-asm-addr w-[9ch] shrink-0">
 														Address
 													</span>
-													<span className="w-[16ch] shrink-0 text-emerald-600 dark:text-emerald-400">
+													<span className="text-asm-bytes w-[16ch] shrink-0">
 														Bytes
 													</span>
-													<span>Instruction</span>
+													<span className="text-muted-foreground">
+														Instruction
+													</span>
 												</div>
 											)}
 										{asm?.ops?.map((op) => (
@@ -746,15 +742,15 @@ export function CenterPanel() {
 							{tab === "strings" && (
 								<div className="flex min-h-0 flex-1 flex-col">
 									<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5">
-										<input
+										<Input
 											value={stringQuery}
 											onChange={(e) =>
 												setStringQuery(e.target.value)
 											}
 											placeholder={`Filter ${strings.length.toLocaleString()} strings…`}
-											className="bg-background border-border w-64 rounded-md border px-2 py-1 font-mono text-xs outline-none"
+											className="w-64 font-mono"
 										/>
-										<span className="text-muted-foreground text-[11px]">
+										<span className="text-muted-foreground text-xs">
 											showing{" "}
 											{visibleStrings.rows.length.toLocaleString()}{" "}
 											of{" "}
@@ -766,7 +762,7 @@ export function CenterPanel() {
 									</div>
 									<table className="w-full font-mono text-xs">
 										<thead className="bg-card sticky top-0">
-											<tr className="text-muted-foreground text-left text-[11px]">
+											<tr className="text-muted-foreground text-left text-xs">
 												<th className="px-3 py-1.5">
 													Offset
 												</th>
@@ -798,33 +794,73 @@ export function CenterPanel() {
 													</td>
 												</tr>
 											))}
+											{visibleStrings.rows.length ===
+												0 && (
+												<tr>
+													<td
+														colSpan={3}
+														className="text-muted-foreground px-3 py-3 text-center"
+													>
+														{stringQuery.trim()
+															? `no strings match "${stringQuery.trim()}"`
+															: "no strings"}
+													</td>
+												</tr>
+											)}
 										</tbody>
 									</table>
 								</div>
 							)}
 
 							{tab === "imports" && (
-								<table className="w-full font-mono text-xs">
-									<thead className="bg-card sticky top-0">
-										<tr className="text-muted-foreground text-left text-[11px]">
-											<th className="px-3 py-1.5">
-												Import
-											</th>
-										</tr>
-									</thead>
-									<tbody>
-										{imports.map((imp, i) => (
-											<tr
-												key={i}
-												className="hover:bg-accent"
-											>
-												<td className="px-3 py-px">
-													{imp.name ?? "(unnamed)"}
-												</td>
+								<div className="flex min-h-0 flex-1 flex-col">
+									<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5">
+										<Input
+											value={importQuery}
+											onChange={(e) =>
+												setImportQuery(e.target.value)
+											}
+											placeholder={`Filter ${imports.length.toLocaleString()} imports…`}
+											className="w-64 font-mono"
+										/>
+										<span className="text-muted-foreground text-xs">
+											showing{" "}
+											{visibleImports.length.toLocaleString()}{" "}
+											of {imports.length.toLocaleString()}
+										</span>
+									</div>
+									<table className="w-full font-mono text-xs">
+										<thead className="bg-card sticky top-0">
+											<tr className="text-muted-foreground text-left text-xs">
+												<th className="px-3 py-1.5">
+													Import
+												</th>
 											</tr>
-										))}
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											{visibleImports.map((imp, i) => (
+												<tr
+													key={i}
+													className="hover:bg-accent"
+												>
+													<td className="px-3 py-px">
+														{imp.name ??
+															"(unnamed)"}
+													</td>
+												</tr>
+											))}
+											{visibleImports.length === 0 && (
+												<tr>
+													<td className="text-muted-foreground px-3 py-3 text-center">
+														{importQuery.trim()
+															? `no imports match "${importQuery.trim()}"`
+															: "no imports"}
+													</td>
+												</tr>
+											)}
+										</tbody>
+									</table>
+								</div>
 							)}
 						</div>
 
@@ -837,19 +873,18 @@ export function CenterPanel() {
 									)}
 								</pre>
 								<Button
-									variant="ghost"
-									size="icon"
-									className="bg-card/80 absolute top-1 right-1 h-6 w-6"
+									variant="toolbar"
+									size="sm"
+									className="absolute top-1 right-1"
 									onClick={clearDecompiled}
-									title="Close decompiled view"
 								>
-									<X className="h-3.5 w-3.5" />
+									Close
 								</Button>
 							</div>
 						)}
 
 						{tab === "disasm" && decompileError && (
-							<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 font-mono text-[11px] whitespace-pre-wrap">
+							<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 font-mono text-xs whitespace-pre-wrap">
 								{decompileError}
 							</div>
 						)}

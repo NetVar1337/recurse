@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { MessageSquare, Moon, Settings, Sun, X } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,12 +10,16 @@ import {
 	DropdownMenuItem,
 	DropdownMenuLabel,
 	DropdownMenuSeparator,
+	DropdownMenuShortcut,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { chrome } from "@/lib/chrome";
+import { cn } from "@/lib/utils";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useProjectStore } from "@/store/projectStore";
 import { useUiStore } from "@/store/uiStore";
 import { useSettingsStore } from "@/store/settingsStore";
+
 export function Header() {
 	const binary = useBinaryStore((s) => s.binary);
 	const busy = useBinaryStore((s) => s.busy);
@@ -40,42 +44,46 @@ export function Header() {
 	const zoomPct = Math.round(Math.pow(1.2, zoomLevel) * 100);
 
 	return (
-		<header className="border-border bg-card flex items-center gap-3 border-b px-3 py-2">
-			<div className="flex items-center gap-2">
-				<LogoMark className="h-9 w-auto" />
-				<span className="text-sm font-bold tracking-wide">Recurse</span>
-				<span className="text-muted-foreground text-[11px]">
+		<header className="border-border bg-card ui-bar border-b px-3">
+			<div className="flex min-w-0 items-center gap-2">
+				<LogoMark className="h-5 w-auto" />
+				<span className="text-sm font-semibold tracking-wide">
+					Recurse
+				</span>
+				<span className="text-muted-foreground text-xs">
 					agentic reverse engineering
 				</span>
 			</div>
 
 			{binary && project && (
-				<div className="flex flex-1 items-center gap-1.5 overflow-hidden">
-					<Badge variant="outline" className="text-primary font-mono">
+				<div className="flex min-w-0 flex-1 items-center overflow-hidden px-3">
+					<Badge variant="outline" className="font-mono">
 						{project.name}
 					</Badge>
 				</div>
 			)}
 
-			<div className="ml-auto flex items-center gap-2">
+			<div className="ml-auto flex items-center">
 				{binary && (
 					<Button
-						variant={chatOpen ? "secondary" : "ghost"}
+						variant="toolbar"
 						size="sm"
+						className={chrome.press}
+						aria-pressed={chatOpen}
 						onClick={toggleChat}
 						title="Toggle agent chat (Ctrl+L)"
 					>
-						<MessageSquare /> Chat
+						Chat
 					</Button>
 				)}
 				{binary && (
 					<Button
-						variant="outline"
+						variant="toolbar"
 						size="sm"
 						onClick={close}
 						disabled={busy}
 					>
-						<X /> Close
+						Close
 					</Button>
 				)}
 				<Button
@@ -92,40 +100,44 @@ export function Header() {
 				</Button>
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
-						<Button variant="ghost" size="icon" title="Settings">
-							<Settings />
+						<Button variant="toolbar" size="sm">
+							Settings
 						</Button>
 					</DropdownMenuTrigger>
-					<DropdownMenuContent align="end">
-						<DropdownMenuLabel>Zoom · {zoomPct}%</DropdownMenuLabel>
+					<DropdownMenuContent align="end" className="min-w-56">
+						<DropdownMenuLabel>
+							Zoom
+							<span className={chrome.kbd}>{zoomPct}%</span>
+						</DropdownMenuLabel>
 						<DropdownMenuItem onClick={zoomIn}>
-							Zoom in (Ctrl +)
+							Zoom in
+							<DropdownMenuShortcut>Ctrl +</DropdownMenuShortcut>
 						</DropdownMenuItem>
 						<DropdownMenuItem onClick={zoomOut}>
-							Zoom out (Ctrl −)
+							Zoom out
+							<DropdownMenuShortcut>Ctrl −</DropdownMenuShortcut>
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={resetZoom}>
+							Reset zoom
+							<DropdownMenuShortcut>Ctrl 0</DropdownMenuShortcut>
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
-						<DropdownMenuLabel>
-							Analysis engine · {backend}
-						</DropdownMenuLabel>
+						<DropdownMenuLabel>Analysis engine</DropdownMenuLabel>
 						<DropdownMenuItem
+							className={cn(
+								backend === "native" && chrome.selected,
+							)}
 							onClick={() => void setBackend("native")}
 						>
-							{backend === "native" ? "● " : "○ "}Native — pure
-							Rust (default)
+							<span className="flex-1">Native</span>
+							<span className="text-2xs opacity-70">default</span>
 						</DropdownMenuItem>
-						<DropdownMenuItem onClick={() => void setBackend("r2")}>
-							{backend === "r2" ? "● " : "○ "}r2 — radare2
-							(opt-in)
-						</DropdownMenuItem>
-						<DropdownMenuSeparator />
-						<DropdownMenuLabel>Theme · {theme}</DropdownMenuLabel>
-						<DropdownMenuItem onClick={toggleTheme}>
-							Toggle light / dark
-						</DropdownMenuItem>
-						<DropdownMenuSeparator />
-						<DropdownMenuItem onClick={resetZoom}>
-							Reset zoom (Ctrl 0)
+						<DropdownMenuItem
+							className={cn(backend === "r2" && chrome.selected)}
+							onClick={() => void setBackend("r2")}
+						>
+							<span className="flex-1">radare2</span>
+							<span className="text-2xs opacity-70">opt-in</span>
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>

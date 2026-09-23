@@ -41,7 +41,7 @@ export class PanelErrorBoundary extends Component<Props, State> {
 					<div className="text-destructive text-xs font-semibold">
 						{this.props.label} crashed
 					</div>
-					<pre className="text-destructive/80 max-h-32 overflow-auto font-mono text-[11px] whitespace-pre-wrap">
+					<pre className="text-destructive/80 max-h-32 overflow-auto font-mono text-xs whitespace-pre-wrap">
 						{error.message}
 					</pre>
 					<Button

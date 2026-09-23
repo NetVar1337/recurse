@@ -1,16 +1,4 @@
-import {
-	Bug,
-	CornerDownRight,
-	CornerUpRight,
-	Eye,
-	EyeOff,
-	Loader2,
-	Pause,
-	Play,
-	Send,
-	StepForward,
-	X,
-} from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api, pickBinary } from "@/api";
@@ -77,13 +65,13 @@ function gotoFrame(addr: number): void {
 }
 
 function Empty({ label }: { label: string }) {
-	return <div className="text-muted-foreground p-3 text-[11px]">{label}</div>;
+	return <div className="text-muted-foreground p-3 text-xs">{label}</div>;
 }
 
 /** A small uppercase title bar for a docked pane. */
 function PaneHeader({ children }: { children: ReactNode }) {
 	return (
-		<div className="text-muted-foreground border-border shrink-0 border-b px-3 py-1 text-[11px] font-semibold tracking-wider uppercase">
+		<div className="label border-border flex h-[var(--chrome-h)] shrink-0 items-center border-b px-3">
 			{children}
 		</div>
 	);
@@ -156,7 +144,7 @@ function RegistersPane() {
 			{!regs ? (
 				<Empty label="no registers" />
 			) : (
-				<div className="scroll-host max-h-72 overflow-auto p-2 font-mono text-[11px]">
+				<div className="scroll-host max-h-72 overflow-auto p-2 font-mono text-xs">
 					<RegisterRow name="rip" value={regs.pc} emphasis />
 					<RegisterRow name="rsp" value={regs.sp} />
 					<RegisterRow name="rbp" value={regs.fp} />
@@ -247,7 +235,7 @@ function StackPane() {
 			{sp == null ? (
 				<Empty label="no stack" />
 			) : (
-				<div className="scroll-host min-h-0 flex-1 overflow-auto py-1 font-mono text-[11px]">
+				<div className="scroll-host min-h-0 flex-1 overflow-auto py-1 font-mono text-xs">
 					{words.map((w, i) => {
 						const top = i === 0;
 						return (
@@ -264,7 +252,7 @@ function StackPane() {
 								<span className="text-foreground w-[18ch] shrink-0">
 									{fmtAddr(w)}
 								</span>
-								<span className="truncate text-amber-600 dark:text-amber-500/80">
+								<span className="text-asm-string truncate">
 									{top ? "◀ rsp " : ""}
 									{hint(w)}
 								</span>
@@ -330,7 +318,7 @@ function BottomTabs() {
 	const tabButton = (id: typeof tab, label: string, count?: number) => (
 		<button
 			className={cn(
-				"px-2 py-1 text-[11px]",
+				"px-2 py-1 text-xs",
 				tab === id
 					? "text-foreground border-primary border-b-2"
 					: "text-muted-foreground hover:text-foreground",
@@ -355,7 +343,7 @@ function BottomTabs() {
 					frames.map((f, i) => (
 						<button
 							key={`${f.addr}-${i}`}
-							className="hover:bg-accent flex w-full items-center gap-2 px-2 py-0.5 text-left font-mono text-[11px]"
+							className="hover:bg-accent flex w-full items-center gap-2 px-2 py-0.5 text-left font-mono text-xs"
 							onClick={() => gotoFrame(f.addr)}
 							title="Go to function"
 						>
@@ -372,7 +360,7 @@ function BottomTabs() {
 					breakpoints.map((b) => (
 						<div
 							key={b.id}
-							className="group hover:bg-accent flex items-center gap-2 px-2 py-0.5 font-mono text-[11px]"
+							className="group hover:bg-accent flex items-center gap-2 px-2 py-0.5 font-mono text-xs"
 						>
 							<span className="text-destructive">●</span>
 							<span className="text-primary">
@@ -382,22 +370,18 @@ function BottomTabs() {
 								#{b.id}
 							</span>
 							<button
-								className="text-muted-foreground hover:text-foreground ml-auto hidden group-hover:block"
-								title="Remove breakpoint"
+								className="text-muted-foreground hover:text-foreground text-2xs ml-auto hidden group-hover:block"
 								onClick={() =>
 									void run("unbreak", { id: b.id })
 								}
 							>
-								<X className="h-3 w-3" />
+								Remove
 							</button>
 						</div>
 					))}
 				{tab === "threads" &&
 					threadIds.map((t) => (
-						<div
-							key={t}
-							className="px-2 py-0.5 font-mono text-[11px]"
-						>
+						<div key={t} className="px-2 py-0.5 font-mono text-xs">
 							{t === pid ? "▶ " : "  "}
 							{fmtAddr(t)}
 						</div>
@@ -515,78 +499,79 @@ export function DebugPanel() {
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="border-border flex flex-wrap items-center gap-1.5 border-b px-2 py-1.5">
+			<div className="border-border ui-bar flex-wrap border-b px-2">
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="outline"
 					onClick={onLaunch}
 					disabled={busy}
 				>
-					<Bug className="mr-1 h-3.5 w-3.5" /> Launch…
+					Launch
 				</Button>
 				<div className="flex items-center gap-1">
 					<Input
 						value={attachPid}
 						onChange={(e) => setAttachPid(e.target.value)}
 						placeholder="pid"
-						className="h-7 w-16 text-xs"
+						className="w-16"
 					/>
 					<Button
+						variant="toolbar"
 						size="sm"
-						variant="outline"
 						onClick={onAttach}
 						disabled={busy || !attachPid.trim()}
 					>
 						Attach
 					</Button>
 				</div>
-				<div className="bg-border mx-1 h-5 w-px" />
+				<div className="ui-sep" />
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="secondary"
+					className={active && !busy ? "ui-selected" : undefined}
 					onClick={() => void run("continue")}
 					disabled={busy || !active}
 					title="Run (continue)"
 				>
-					<Play className="mr-1 h-3.5 w-3.5" /> Run
+					Run
 				</Button>
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="outline"
 					onClick={() => void run("interrupt")}
 					disabled={!active}
 					title="Pause the running target"
 				>
-					<Pause className="mr-1 h-3.5 w-3.5" /> Pause
+					Pause
 				</Button>
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="ghost"
 					onClick={() => void run("step", { kind: "into" })}
 					disabled={busy || !active}
 					title="Step into"
 				>
-					<StepForward className="h-3.5 w-3.5" />
+					Into
 				</Button>
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="ghost"
 					onClick={() => void run("step", { kind: "over" })}
 					disabled={busy || !active}
 					title="Step over"
 				>
-					<CornerDownRight className="h-3.5 w-3.5" />
+					Over
 				</Button>
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="ghost"
 					onClick={() => void run("step", { kind: "out" })}
 					disabled={busy || !active}
 					title="Step out"
 				>
-					<CornerUpRight className="h-3.5 w-3.5" />
+					Out
 				</Button>
-				<div className="bg-border mx-1 h-5 w-px" />
+				<div className="ui-sep" />
 				<Input
 					value={breakAt}
 					onChange={(e) => setBreakAt(e.target.value)}
@@ -594,45 +579,42 @@ export function DebugPanel() {
 						if (e.key === "Enter") void onBreak();
 					}}
 					placeholder="break at addr or symbol"
-					className="h-7 w-44 text-xs"
+					className="w-44"
 				/>
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="outline"
 					onClick={onBreak}
 					disabled={busy || !active || !breakAt.trim()}
 				>
 					Break
 				</Button>
-				<div className="bg-border mx-1 h-5 w-px" />
+				<div className="ui-sep" />
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="ghost"
 					onClick={() => void run("detach")}
 					disabled={busy || !active}
 				>
 					Detach
 				</Button>
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant="ghost"
-					className="text-destructive"
+					className="text-destructive hover:bg-destructive/10 hover:text-destructive"
 					onClick={() => void run("kill")}
 					disabled={busy || !active}
 				>
-					<X className="mr-1 h-3.5 w-3.5" /> Kill
+					Kill
 				</Button>
 				<Button
+					variant="toolbar"
 					size="sm"
-					variant={follow ? "secondary" : "ghost"}
+					className="ui-press"
+					aria-pressed={follow}
 					onClick={() => setFollow(!follow)}
 					title="Follow the debug session live — including when the agent drives it"
 				>
-					{follow ? (
-						<Eye className="mr-1 h-3.5 w-3.5" />
-					) : (
-						<EyeOff className="mr-1 h-3.5 w-3.5" />
-					)}
 					Follow
 				</Button>
 				{busy && (
@@ -640,7 +622,7 @@ export function DebugPanel() {
 				)}
 			</div>
 
-			<div className="text-muted-foreground flex items-center gap-3 border-b px-3 py-1 text-[11px]">
+			<div className="text-muted-foreground flex items-center gap-3 border-b px-3 py-1 text-xs">
 				<span>
 					pid{" "}
 					<span className="text-foreground font-mono">
@@ -660,7 +642,7 @@ export function DebugPanel() {
 			</div>
 
 			{error && (
-				<div className="border-destructive bg-destructive/10 text-destructive border-b px-3 py-1.5 text-[11px]">
+				<div className="border-destructive bg-destructive/10 text-destructive border-b px-3 py-1.5 text-xs">
 					{error}
 				</div>
 			)}
@@ -681,11 +663,11 @@ export function DebugPanel() {
 			</div>
 
 			<div className="border-border border-t">
-				<div className="text-muted-foreground px-3 py-1 text-[11px] font-semibold tracking-wider uppercase">
+				<div className="text-muted-foreground px-3 py-1 text-xs font-semibold tracking-wider uppercase">
 					Program output
 				</div>
 				<div ref={outputRef} className="scroll-host h-24 overflow-auto">
-					<pre className="p-2 font-mono text-[10.5px] whitespace-pre-wrap">
+					<pre className="text-2xs p-2 font-mono whitespace-pre-wrap">
 						{output.replace(/\r/g, "")}
 					</pre>
 				</div>
@@ -701,11 +683,12 @@ export function DebugPanel() {
 						disabled={!active}
 					/>
 					<Button
+						variant="toolbar"
 						size="sm"
 						onClick={onSendStdin}
 						disabled={!active || !stdin.trim()}
 					>
-						<Send className="h-3.5 w-3.5" />
+						Send
 					</Button>
 				</div>
 			</div>
