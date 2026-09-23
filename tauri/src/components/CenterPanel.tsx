@@ -1,4 +1,4 @@
-import { Loader2 } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import {
 	lazy,
 	Suspense,
@@ -36,6 +36,21 @@ const GraphPanel = lazy(() =>
 
 function fmtAddr(a?: number | null) {
 	return typeof a === "number" ? `0x${a.toString(16)}` : "";
+}
+
+/**
+ * The last segment of a path, for either separator.
+ *
+ * ```
+ * baseName("/usr/bin/youki") // => "youki"
+ * baseName("C:\\tools\\youki.exe") // => "youki.exe"
+ * baseName(undefined) // => "binary"
+ * ```
+ */
+function baseName(path: string | undefined): string {
+	if (!path) return "binary";
+	const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+	return path.slice(i + 1);
 }
 
 const HL_COLORS: Record<string, string> = {
@@ -430,13 +445,17 @@ export function CenterPanel() {
 							{tab === "disasm" && (
 								<>
 									{selected && (
-										<div className="border-border bg-card sticky top-0 z-10 flex items-baseline gap-3 border-b px-3 py-1.5">
-											<span className="font-semibold">
+										<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-1.5 border-b px-3 py-1.5 text-xs">
+											<span className="text-muted-foreground truncate">
+												{baseName(binaryPath)}
+											</span>
+											<ChevronRight className="text-muted-foreground/50 h-3 w-3 shrink-0" />
+											<span className="text-foreground truncate font-medium">
 												{selected.name ??
 													selected.signature ??
 													"unknown"}
 											</span>
-											<span className="text-muted-foreground font-mono text-xs">
+											<span className="text-muted-foreground nums ml-auto shrink-0 font-mono">
 												{fmtAddr(selected.addr)} ·{" "}
 												{asm?.size ??
 													selected.size ??

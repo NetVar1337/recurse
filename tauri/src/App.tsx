@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ActivityBar } from "@/components/ActivityBar";
 import { AgentChat } from "@/components/AgentChat";
 import { CenterPanel } from "@/components/CenterPanel";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -107,25 +108,28 @@ function App() {
 			{!binary ? (
 				<ProjectScreen />
 			) : (
-				<div
-					className="grid min-h-0 flex-1 overflow-hidden"
-					style={{
-						gridTemplateColumns: chatOpen
-							? "260px 1fr 340px"
-							: "260px 1fr",
-					}}
-				>
-					<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-r">
-						<FunctionList />
-					</aside>
-
-					<CenterPanel />
-
-					{chatOpen && (
-						<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
-							<AgentChat inputRef={chatInputRef} />
+				<div className="flex min-h-0 flex-1 overflow-hidden">
+					<ActivityBar />
+					<div
+						className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
+						style={{
+							gridTemplateColumns: chatOpen
+								? "260px 1fr 340px"
+								: "260px 1fr",
+						}}
+					>
+						<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-r">
+							<FunctionList />
 						</aside>
-					)}
+
+						<CenterPanel />
+
+						{chatOpen && (
+							<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
+								<AgentChat inputRef={chatInputRef} />
+							</aside>
+						)}
+					</div>
 				</div>
 			)}
 
