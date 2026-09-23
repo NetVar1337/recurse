@@ -89,24 +89,22 @@ function blockWidth(ops: BlockOp[]): number {
 function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 	const cols = blockColumns(data.ops);
 	return (
-		<div className="border-border bg-card rounded border font-mono text-[10.5px] shadow-lg">
+		<div className="border-border bg-card text-2xs rounded border font-mono shadow-lg">
 			<Handle
 				type="target"
 				position={Position.Top}
 				className="!opacity-0"
 			/>
-			<div className="text-muted-foreground border-border bg-secondary/30 flex items-center gap-2 border-b px-1.5 py-0.5 text-[9px]">
+			<div className="text-muted-foreground border-border bg-secondary/30 text-2xs flex items-center gap-2 border-b px-1.5 py-0.5">
 				<span className="text-primary font-semibold">{data.addr}</span>
 				<span className="ml-auto">{data.ops.length} insn</span>
 			</div>
 			<div
-				className="text-muted-foreground border-border grid gap-x-2 border-b px-1.5 py-0.5 text-[8px] font-semibold tracking-wider uppercase"
+				className="text-muted-foreground border-border text-2xs grid gap-x-2 border-b px-1.5 py-0.5 font-semibold tracking-wider uppercase"
 				style={{ gridTemplateColumns: cols }}
 			>
-				<span className="text-sky-600 dark:text-sky-400">Addr</span>
-				<span className="text-emerald-600 dark:text-emerald-400">
-					Bytes
-				</span>
+				<span className="text-asm-addr">Addr</span>
+				<span className="text-asm-bytes">Bytes</span>
 				<span>Instruction</span>
 			</div>
 			<div className="py-0.5">
@@ -137,13 +135,13 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 							}
 						>
 							<span
-								className="overflow-hidden text-sky-600 dark:text-sky-400"
+								className="nums text-asm-addr overflow-hidden"
 								title="Virtual address"
 							>
 								{fmtAddr(op.addr)}
 							</span>
 							<span
-								className="overflow-hidden text-emerald-600 dark:text-emerald-400"
+								className="text-asm-bytes overflow-hidden"
 								title="Machine code bytes (hex)"
 							>
 								{op.bytes ?? ""}
@@ -177,7 +175,7 @@ const nodeTypes = { cfgnode: BlockNodeComponent };
 function makeEdge(src: string, dst: number, label: string | undefined): Edge {
 	const taken = label === "T";
 	const failed = label === "F";
-	const color = taken ? "#22c55e" : failed ? "#ef4444" : "#8b8b8b";
+	const color = taken ? "#8fd694" : failed ? "#ff7a5c" : "#69727f";
 	return {
 		id: `${src}->${dst}`,
 		source: src,
@@ -303,7 +301,7 @@ function GraphCanvas({ addr }: { addr: number }) {
 					building graph…
 				</div>
 			) : err ? (
-				<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 text-[11px]">
+				<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 text-xs">
 					{err}
 				</div>
 			) : nodes.length === 0 ? (

@@ -74,11 +74,11 @@ export function DebugCpu() {
 		);
 	}
 	if (err) {
-		return <div className="text-destructive p-3 text-[11px]">{err}</div>;
+		return <div className="text-destructive p-3 text-xs">{err}</div>;
 	}
 
 	return (
-		<div className="scroll-host min-h-0 flex-1 overflow-auto font-mono text-[11px]">
+		<div className="scroll-host min-h-0 flex-1 overflow-auto font-mono text-xs">
 			<table className="w-full border-collapse">
 				<tbody>
 					{ops.map((op) => {
@@ -89,7 +89,7 @@ export function DebugCpu() {
 								key={op.addr}
 								className={cn(
 									"hover:bg-accent/40",
-									isPc && "bg-primary/25",
+									isPc && "ui-selected",
 								)}
 							>
 								<td
@@ -109,10 +109,10 @@ export function DebugCpu() {
 								<td className="text-primary w-3 text-center select-none">
 									{isPc ? "▶" : ""}
 								</td>
-								<td className="min-w-[9ch] px-1 whitespace-nowrap text-sky-600 dark:text-sky-400">
+								<td className="nums text-asm-addr min-w-[9ch] px-1 whitespace-nowrap">
 									{fmtAddr(op.addr)}
 								</td>
-								<td className="min-w-[16ch] px-1 whitespace-nowrap text-emerald-600 dark:text-emerald-400">
+								<td className="text-asm-bytes min-w-[16ch] px-1 whitespace-nowrap">
 									{op.bytes}
 								</td>
 								<td className="px-1 whitespace-nowrap">

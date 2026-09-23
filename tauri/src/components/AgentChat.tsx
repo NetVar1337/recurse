@@ -34,7 +34,7 @@ function ToolCallChip({ call }: { call: ToolCallUi }) {
 	const [open, setOpen] = useState(false);
 	const running = call.result === undefined;
 	return (
-		<div className="border-border/60 bg-muted/30 text-muted-foreground rounded border px-2 py-1 text-[11px]">
+		<div className="border-border/60 bg-muted/30 text-muted-foreground rounded border px-2 py-1 text-xs">
 			<button
 				className="flex w-full min-w-0 items-center gap-1.5 text-left"
 				onClick={() => setOpen((o) => !o)}
@@ -58,7 +58,7 @@ function ToolCallChip({ call }: { call: ToolCallUi }) {
 				</span>
 			</button>
 			{open && call.result !== undefined && (
-				<pre className="text-muted-foreground mt-1 max-h-40 overflow-auto pt-1 font-mono text-[10px] break-words whitespace-pre-wrap">
+				<pre className="text-muted-foreground text-2xs mt-1 max-h-40 overflow-auto pt-1 font-mono break-words whitespace-pre-wrap">
 					{call.result}
 				</pre>
 			)}
@@ -161,7 +161,7 @@ export function AgentChat({ inputRef }: Props) {
 			</div>
 
 			{!configured && (
-				<div className="border-border text-warning-foreground bg-warning/10 border-b px-3 py-1.5 text-[11px]">
+				<div className="border-border text-warning-foreground bg-warning/10 border-b px-3 py-1.5 text-xs">
 					Set your{" "}
 					<code className="font-mono">
 						{provider.toUpperCase().replace(/_/g, " ")} API key
@@ -177,7 +177,7 @@ export function AgentChat({ inputRef }: Props) {
 				{showSessions && (
 					<div className="flex flex-col gap-3">
 						{sessionsError && (
-							<div className="bg-destructive/10 text-destructive rounded-md px-3 py-2 text-[11px]">
+							<div className="bg-destructive/10 text-destructive rounded-md px-3 py-2 text-xs">
 								{sessionsError}
 							</div>
 						)}
@@ -204,7 +204,7 @@ export function AgentChat({ inputRef }: Props) {
 												<span className="block max-w-full truncate text-xs font-medium">
 													{s.name}
 												</span>
-												<span className="mt-0.5 block truncate text-[10px] opacity-70">
+												<span className="text-2xs mt-0.5 block truncate opacity-70">
 													{fmtDate(s.updated_at)}
 												</span>
 											</button>
@@ -240,7 +240,7 @@ export function AgentChat({ inputRef }: Props) {
 														(ref, i) => (
 															<span
 																key={i}
-																className="bg-primary-foreground/15 rounded px-1 py-px font-mono text-[10px]"
+																className="bg-primary-foreground/15 text-2xs rounded px-1 py-px font-mono"
 															>
 																{ref}
 															</span>
@@ -270,7 +270,7 @@ export function AgentChat({ inputRef }: Props) {
 									<Badge
 										key={it.id}
 										variant="secondary"
-										className="font-mono text-[10px]"
+										className="text-2xs font-mono"
 									>
 										<span className="max-w-[180px] truncate">
 											{it.label}
@@ -336,7 +336,7 @@ function ReasoningBlock({ text }: { text: string }) {
 	return (
 		<div className="border-primary/50 text-muted-foreground mb-1.5 border-l-2 pl-2">
 			<button
-				className="flex items-center gap-1 text-[10px] tracking-wider uppercase"
+				className="text-2xs flex items-center gap-1 tracking-wider uppercase"
 				onClick={() => setShow((s) => !s)}
 			>
 				{show ? "Hide" : "Show"} thinking
@@ -388,9 +388,7 @@ function AssistantMessage({
 				<span className="text-muted-foreground animate-pulse">…</span>
 			)}
 			{error && (
-				<div className="text-destructive mt-1.5 text-[11px]">
-					{error}
-				</div>
+				<div className="text-destructive mt-1.5 text-xs">{error}</div>
 			)}
 		</div>
 	);

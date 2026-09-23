@@ -11,14 +11,14 @@ function Code({ node: _node, className, children, ...props }: CodeProps) {
 	const isBlock = /^language-/.test(className ?? "") || text.includes("\n");
 	if (isBlock) {
 		return (
-			<code className={cn("font-mono text-[11px]", className)} {...props}>
+			<code className={cn("font-mono text-xs", className)} {...props}>
 				{children}
 			</code>
 		);
 	}
 	return (
 		<code
-			className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]"
+			className="bg-muted rounded px-1 py-0.5 font-mono text-xs"
 			{...props}
 		>
 			{children}
@@ -44,7 +44,7 @@ const components = {
 		<h2 className="mb-1.5 text-sm font-semibold" {...p} />
 	),
 	h3: (p: ComponentProps<"h3">) => (
-		<h3 className="mb-1 text-[13px] font-semibold" {...p} />
+		<h3 className="mb-1 text-base font-semibold" {...p} />
 	),
 	h4: (p: ComponentProps<"h4">) => (
 		<h4 className="mb-1 text-xs font-semibold" {...p} />
@@ -63,7 +63,7 @@ const components = {
 	),
 	pre: (p: ComponentProps<"pre">) => (
 		<pre
-			className="bg-muted/60 mb-2 overflow-x-auto rounded p-2 font-mono text-[11px] leading-relaxed whitespace-pre last:mb-0"
+			className="bg-muted/60 mb-2 overflow-x-auto rounded p-2 font-mono text-xs leading-relaxed whitespace-pre last:mb-0"
 			{...p}
 		/>
 	),
@@ -79,7 +79,7 @@ const components = {
 	hr: () => <hr className="border-border my-2" />,
 	table: (p: ComponentProps<"table">) => (
 		<div className="mb-2 overflow-x-auto last:mb-0">
-			<table className="border-border text-[11px]" {...p} />
+			<table className="border-border text-xs" {...p} />
 		</div>
 	),
 	th: (p: ComponentProps<"th">) => (

@@ -16,6 +16,7 @@ import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { chrome } from "@/lib/chrome";
 import { callTarget } from "@/lib/calls";
 import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
 import { api } from "@/api";
@@ -38,13 +39,13 @@ function fmtAddr(a?: number | null) {
 }
 
 const HL_COLORS: Record<string, string> = {
-	keyword: "text-pink-400",
+	keyword: "text-asm-mnemonic",
 	comment: "text-muted-foreground italic",
-	datatype: "text-sky-400",
-	function_name: "text-yellow-400",
-	function_parameter: "text-orange-300",
-	local_variable: "text-purple-300",
-	constant_variable: "text-emerald-400",
+	datatype: "text-asm-addr",
+	function_name: "text-asm-jump",
+	function_parameter: "text-asm-string",
+	local_variable: "text-asm-register",
+	constant_variable: "text-asm-number",
 };
 
 function highlight(
@@ -102,7 +103,8 @@ function OpRow({
 	return (
 		<div
 			className={cn(
-				"flex gap-3 px-3 py-px whitespace-nowrap",
+				chrome.row,
+				"gap-3 pl-3",
 				clickable && "hover:bg-accent/70 cursor-pointer",
 			)}
 			onClick={clickable && onGoTo ? () => onGoTo(target) : undefined}
@@ -113,13 +115,13 @@ function OpRow({
 			}
 		>
 			<span
-				className="min-w-[9ch] shrink-0 text-sky-600 dark:text-sky-400"
+				className="nums text-asm-addr min-w-[9ch] shrink-0 font-mono"
 				title="Virtual address"
 			>
 				{fmtAddr(op.addr)}
 			</span>
 			<span
-				className="min-w-[16ch] shrink-0 text-emerald-600 dark:text-emerald-400"
+				className="text-asm-bytes min-w-[16ch] shrink-0 font-mono"
 				title="Machine code bytes (hex)"
 			>
 				{op.bytes ?? ""}
@@ -135,13 +137,10 @@ function OpRow({
 				{instr && <DisasmInstr text={instr} />}
 				<DisasmComment comment={comment} />
 				{typeof op.jump === "number" && (
-					<span className="text-violet-500 dark:text-violet-400">
-						{" "}
-						→ {fmtAddr(op.jump)}
-					</span>
+					<span className="text-asm-jump"> → {fmtAddr(op.jump)}</span>
 				)}
 				{typeof op.ptr === "number" && (
-					<span className="text-violet-500 dark:text-violet-400">
+					<span className="text-asm-jump">
 						{" "}
 						; [{fmtAddr(op.ptr)}]
 					</span>
@@ -437,7 +436,7 @@ export function CenterPanel() {
 													selected.signature ??
 													"unknown"}
 											</span>
-											<span className="text-muted-foreground font-mono text-[11px]">
+											<span className="text-muted-foreground font-mono text-xs">
 												{fmtAddr(selected.addr)} ·{" "}
 												{asm?.size ??
 													selected.size ??
@@ -450,7 +449,7 @@ export function CenterPanel() {
 										selected &&
 										xrefsAddress === selectedAddr && (
 											<div className="border-border bg-card mx-3 my-2 max-h-44 overflow-auto rounded-md border">
-												<div className="text-muted-foreground flex items-center justify-between px-2.5 py-1.5 text-[11px]">
+												<div className="text-muted-foreground flex items-center justify-between px-2.5 py-1.5 text-xs">
 													<span>
 														Incoming references
 													</span>
@@ -491,7 +490,7 @@ export function CenterPanel() {
 																selectFn(source)
 															}
 															className={cn(
-																"hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-[11px] disabled:cursor-default",
+																"hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs disabled:cursor-default",
 																source &&
 																	"text-primary",
 															)}
@@ -544,14 +543,16 @@ export function CenterPanel() {
 										{selected &&
 											!asmLoading &&
 											(asm?.ops?.length ?? 0) > 0 && (
-												<div className="border-border text-muted-foreground bg-card flex gap-3 border-b px-3 py-1 text-[10px] font-semibold tracking-wider uppercase">
-													<span className="w-[9ch] shrink-0 text-sky-600 dark:text-sky-400">
+												<div className="border-border bg-card text-2xs flex gap-3 border-b px-3 py-1 font-semibold tracking-wider uppercase">
+													<span className="text-asm-addr w-[9ch] shrink-0">
 														Address
 													</span>
-													<span className="w-[16ch] shrink-0 text-emerald-600 dark:text-emerald-400">
+													<span className="text-asm-bytes w-[16ch] shrink-0">
 														Bytes
 													</span>
-													<span>Instruction</span>
+													<span className="text-muted-foreground">
+														Instruction
+													</span>
 												</div>
 											)}
 										{asm?.ops?.map((op) => (
@@ -580,7 +581,7 @@ export function CenterPanel() {
 											placeholder={`Filter ${strings.length.toLocaleString()} strings…`}
 											className="w-64 font-mono"
 										/>
-										<span className="text-muted-foreground text-[11px]">
+										<span className="text-muted-foreground text-xs">
 											showing{" "}
 											{visibleStrings.rows.length.toLocaleString()}{" "}
 											of{" "}
@@ -592,7 +593,7 @@ export function CenterPanel() {
 									</div>
 									<table className="w-full font-mono text-xs">
 										<thead className="bg-card sticky top-0">
-											<tr className="text-muted-foreground text-left text-[11px]">
+											<tr className="text-muted-foreground text-left text-xs">
 												<th className="px-3 py-1.5">
 													Offset
 												</th>
@@ -653,7 +654,7 @@ export function CenterPanel() {
 											placeholder={`Filter ${imports.length.toLocaleString()} imports…`}
 											className="w-64 font-mono"
 										/>
-										<span className="text-muted-foreground text-[11px]">
+										<span className="text-muted-foreground text-xs">
 											showing{" "}
 											{visibleImports.length.toLocaleString()}{" "}
 											of {imports.length.toLocaleString()}
@@ -661,7 +662,7 @@ export function CenterPanel() {
 									</div>
 									<table className="w-full font-mono text-xs">
 										<thead className="bg-card sticky top-0">
-											<tr className="text-muted-foreground text-left text-[11px]">
+											<tr className="text-muted-foreground text-left text-xs">
 												<th className="px-3 py-1.5">
 													Import
 												</th>
@@ -714,7 +715,7 @@ export function CenterPanel() {
 						)}
 
 						{tab === "disasm" && decompileError && (
-							<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 font-mono text-[11px] whitespace-pre-wrap">
+							<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 font-mono text-xs whitespace-pre-wrap">
 								{decompileError}
 							</div>
 						)}

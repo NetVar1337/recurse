@@ -45,7 +45,7 @@ export function Console() {
 				>
 					{open ? "Hide console" : "Console"}
 				</Button>
-				<span className="text-muted-foreground text-[11px]">
+				<span className="text-muted-foreground text-xs">
 					raw analysis commands
 				</span>
 				{open && (
@@ -74,7 +74,7 @@ export function Console() {
 				)}
 			</div>
 			{open && (
-				<pre className="border-border text-muted-foreground max-h-44 overflow-auto border-t px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">
+				<pre className="border-border text-muted-foreground max-h-44 overflow-auto border-t px-3 py-2 font-mono text-xs whitespace-pre-wrap">
 					{lines.length === 0 ? "—" : lines.join("\n")}
 				</pre>
 			)}

@@ -1,8 +1,9 @@
 import { Loader2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
+import { Pane } from "@/components/Pane";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
@@ -97,33 +98,33 @@ export function FunctionList() {
 	}, [ordered, query]);
 
 	return (
-		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="text-muted-foreground flex items-center gap-2 px-3 py-2 text-[11px] font-semibold tracking-wider uppercase">
-				Functions
-				{funcs.length > 0 && (
-					<span className="text-muted-foreground/70 font-normal normal-case">
-						{funcs.length}
-						{indexing ? "+" : ""}
-					</span>
-				)}
-			</div>
-			{indexing && (
-				<div className="text-muted-foreground/80 flex items-center gap-1.5 px-3 pb-1 text-[10px]">
-					<Loader2 className="h-3 w-3 animate-spin" />
-					indexing in the background — more may appear
-				</div>
-			)}
-			<div className="px-2 pb-2">
+		<Pane
+			title="Functions"
+			count={
+				funcs.length > 0
+					? `${funcs.length}${indexing ? "+" : ""}`
+					: undefined
+			}
+			scroll={false}
+			bodyClassName="flex min-h-0 flex-col"
+		>
+			<div className="px-2 py-1.5">
 				<Input
 					placeholder="Filter functions…"
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 				/>
 			</div>
-			<ScrollArea className="flex-1">
-				{/* `pr-2.5` reserves a gutter for the overlay scrollbar (w-2.5),
-				    so it never covers the rename button on hover. */}
-				<div className="flex flex-col pr-2.5">
+			{indexing && (
+				<div className="text-muted-foreground/80 text-2xs flex items-center gap-1.5 px-3 pb-1.5">
+					<Loader2 className="h-3 w-3 animate-spin" />
+					indexing in the background — more may appear
+				</div>
+			)}
+			{/* `pr-2.5` reserves a gutter for the overlay scrollbar (w-2.5),
+			    so it never covers the rename button on hover. */}
+			<div className="scroll-host min-h-0 flex-1 overflow-auto pr-2.5">
+				<div className="flex flex-col">
 					{busy && filtered.length === 0 ? (
 						<div className="text-muted-foreground flex items-center gap-2 px-3 py-3 text-xs">
 							<Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -143,14 +144,15 @@ export function FunctionList() {
 									<div
 										key={`${f.addr}-${name}`}
 										className={cn(
-											"group flex items-center border-l-2 pr-1 text-xs",
+											chrome.row,
+											"group border-l-2",
 											active
 												? "border-foreground ui-selected"
 												: "hover:bg-accent border-transparent",
 										)}
 									>
 										{editing ? (
-											<Input
+											<input
 												autoFocus
 												value={draft}
 												placeholder="name (blank clears)"
@@ -170,14 +172,12 @@ export function FunctionList() {
 													}
 													void commitRename();
 												}}
-												// Blend with the row: no border, no fill, and the
-												// same colour as a normal function name.
-												className="h-6 flex-1 border-0 bg-transparent px-3 py-0 text-xs shadow-none focus-visible:ring-0"
+												className="min-w-0 flex-1 bg-transparent text-xs outline-none"
 											/>
 										) : (
 											<>
 												<button
-													className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1 text-left"
+													className="flex min-w-0 flex-1 items-center gap-2 text-left"
 													onClick={() => selectFn(f)}
 													onDoubleClick={() =>
 														startRename(
@@ -189,10 +189,10 @@ export function FunctionList() {
 												>
 													<span
 														className={cn(
-															"font-mono",
+															"nums font-mono",
 															active
 																? "opacity-80"
-																: "text-primary",
+																: "text-asm-addr",
 														)}
 													>
 														{fmtAddr(f.addr)}
@@ -202,7 +202,7 @@ export function FunctionList() {
 													</span>
 												</button>
 												<button
-													className="text-muted-foreground hover:text-foreground hidden shrink-0 px-1 text-[10px] group-hover:block"
+													className="text-muted-foreground hover:text-foreground text-2xs hidden shrink-0 px-1 group-hover:block"
 													onClick={(e) => {
 														e.stopPropagation();
 														startRename(
@@ -228,7 +228,7 @@ export function FunctionList() {
 						</>
 					)}
 				</div>
-			</ScrollArea>
-		</div>
+			</div>
+		</Pane>
 	);
 }

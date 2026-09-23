@@ -47,7 +47,7 @@ export function Header() {
 				<span className="text-sm font-semibold tracking-wide">
 					Recurse
 				</span>
-				<span className="text-muted-foreground text-[11px]">
+				<span className="text-muted-foreground text-xs">
 					agentic reverse engineering
 				</span>
 			</div>
@@ -115,18 +115,14 @@ export function Header() {
 							onClick={() => void setBackend("native")}
 						>
 							<span className="flex-1">Native</span>
-							<span className="text-[10px] opacity-70">
-								default
-							</span>
+							<span className="text-2xs opacity-70">default</span>
 						</DropdownMenuItem>
 						<DropdownMenuItem
 							className={cn(backend === "r2" && chrome.selected)}
 							onClick={() => void setBackend("r2")}
 						>
 							<span className="flex-1">radare2</span>
-							<span className="text-[10px] opacity-70">
-								opt-in
-							</span>
+							<span className="text-2xs opacity-70">opt-in</span>
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>

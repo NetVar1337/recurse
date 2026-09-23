@@ -4,51 +4,62 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-	--background: oklab(0.99 0 0);
-	--foreground: oklab(0.18 0 0);
-	--card: oklab(1 0 0);
-	--card-foreground: oklab(0.18 0 0);
-	--popover: oklab(1 0 0);
-	--popover-foreground: oklab(0.18 0 0);
-	--primary: oklab(0.21 0 0);
-	--primary-foreground: oklab(0.98 0 0);
-	--secondary: oklab(0.94 0 0);
-	--secondary-foreground: oklab(0.21 0 0);
-	--muted: oklab(0.94 0 0);
-	--muted-foreground: oklab(0.52 0 0);
-	--accent: oklab(0.94 0 0);
-	--accent-foreground: oklab(0.21 0 0);
-	--destructive: oklab(0.58 0.22 0.25);
-	--destructive-foreground: oklab(0.98 0 0);
-	--border: oklab(0.88 0 0);
-	--input: oklab(0.88 0 0);
-	--ring: oklab(0.55 0 0);
+	--background: #fbfcfe;
+	--foreground: #0b0d12;
+	--card: #ffffff;
+	--card-foreground: #0b0d12;
+	--popover: #ffffff;
+	--popover-foreground: #0b0d12;
+	--primary: #0b0d12;
+	--primary-foreground: #ffffff;
+	--secondary: #eef1f6;
+	--secondary-foreground: #0b0d12;
+	--muted: #eef1f6;
+	--muted-foreground: #5b6472;
+	--accent: #eef1f6;
+	--accent-foreground: #0b0d12;
+	--destructive: #d4432a;
+	--destructive-foreground: #ffffff;
+	--border: rgba(0, 0, 0, 0.1);
+	--input: rgba(0, 0, 0, 0.16);
+	--ring: #1f7fd0;
 	--radius: 0.25rem;
 }
 
 .dark {
-	--background: oklab(0.16 0 0);
-	--foreground: oklab(0.95 0 0);
-	--card: oklab(0.2 0 0);
-	--card-foreground: oklab(0.95 0 0);
-	--popover: oklab(0.2 0 0);
-	--popover-foreground: oklab(0.95 0 0);
-	--primary: oklab(0.72 0 0);
-	--primary-foreground: oklab(0.12 0 0);
-	--secondary: oklab(0.26 0 0);
-	--secondary-foreground: oklab(0.95 0 0);
-	--muted: oklab(0.24 0 0);
-	--muted-foreground: oklab(0.68 0 0);
-	--accent: oklab(0.26 0 0);
-	--accent-foreground: oklab(0.95 0 0);
-	--destructive: oklab(0.68 0.21 0.16);
-	--destructive-foreground: oklab(0.97 0 0);
-	--border: oklab(0.28 0 0);
-	--input: oklab(0.28 0 0);
-	--ring: oklab(0.62 0 0);
+	--background: #06070a;
+	--foreground: #e9edf3;
+	--card: #0a0c11;
+	--card-foreground: #e9edf3;
+	--popover: #0e1117;
+	--popover-foreground: #e9edf3;
+	--primary: #e9edf3;
+	--primary-foreground: #06070a;
+	--secondary: #14171d;
+	--secondary-foreground: #e9edf3;
+	--muted: #0e1117;
+	--muted-foreground: #9aa4b2;
+	--accent: #14171d;
+	--accent-foreground: #e9edf3;
+	--destructive: #ff7a5c;
+	--destructive-foreground: #06070a;
+	--border: rgba(255, 255, 255, 0.09);
+	--input: rgba(255, 255, 255, 0.16);
+	--ring: #7ec8ff;
 }
 
 @theme inline {
+	/* Type scale. One family of sizes, dense by default:
+	   2xs labels · xs data rows · sm controls · base prose. */
+	--text-2xs: 10px;
+	--text-2xs--line-height: 1.4;
+	--text-xs: 11px;
+	--text-xs--line-height: 1.45;
+	--text-sm: 12px;
+	--text-sm--line-height: 1.5;
+	--text-base: 13px;
+	--text-base--line-height: 1.55;
+
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
 	--color-card: var(--card);
@@ -109,13 +120,13 @@ body {
 	height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-	background: oklab(0.34 0 0);
+	background: rgba(255, 255, 255, 0.14);
 	border-radius: 9999px;
 	border: 1px solid transparent;
 	background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-	background: oklab(0.45 0 0);
+	background: rgba(255, 255, 255, 0.24);
 	background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
@@ -125,10 +136,21 @@ body {
 	background: transparent;
 }
 
-/* compact scrollbars (Firefox) */
+/* Compact scrollbars (Firefox) */
 * {
 	scrollbar-width: thin;
-	scrollbar-color: oklab(0.34 0 0) transparent;
+	scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+::selection {
+	background: var(--selection);
+	color: var(--selection-foreground);
+}
+
+/* One focus ring for the whole app. */
+:focus-visible {
+	outline: 1px solid var(--ring);
+	outline-offset: 1px;
 }
 
 /* Scroll areas reserve the gutter so bars never overlap content. */
@@ -151,18 +173,18 @@ body {
 	fill: transparent;
 }
 div.react-flow__controls {
-	background: #0c0c0c;
-	border: 1px solid #2a2a2a;
+	background: var(--card);
+	border: 1px solid var(--border);
 	border-radius: 4px;
 	box-shadow: 0 1px 6px oklab(0 0 0 / 0.5);
 	overflow: hidden;
 }
 .react-flow__controls .react-flow__controls-button {
-	background: #0c0c0c;
+	background: var(--card);
 	border: none;
-	border-bottom: 1px solid #2a2a2a;
+	border-bottom: 1px solid var(--border);
 	box-sizing: content-box;
-	color: #fff;
+	color: var(--foreground);
 	display: flex;
 	height: 14px;
 	padding: 3px;
@@ -172,7 +194,7 @@ div.react-flow__controls {
 	border-bottom: none;
 }
 .react-flow__controls .react-flow__controls-button:hover {
-	background: #1a1a1a;
+	background: var(--accent);
 }
 .react-flow__controls .react-flow__controls-button svg {
 	height: 12px;
@@ -180,5 +202,5 @@ div.react-flow__controls {
 	fill: currentColor;
 }
 .react-flow__controls .react-flow__controls-button.disabled svg {
-	fill: #4a4a4a;
+	fill: var(--muted-foreground);
 }

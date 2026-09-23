@@ -9,4 +9,10 @@ export const chrome = {
 	menuLabel: "ui-menu-label",
 	kbd: "ui-kbd",
 	panelTitle: "ui-panel-title",
+	/** One row in any data list. */
+	row: "data-row",
+	/** Uppercase micro-heading for pane titles. */
+	label: "label",
+	/** Tabular numerals for columns of numbers. */
+	nums: "nums",
 } as const;

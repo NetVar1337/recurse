@@ -29,11 +29,11 @@ export interface Token {
 	kind: TokenKind;
 }
 
-/** Colour per token kind (mnemonic / register / immediate). */
+/** Colour per token kind (mnemonic / register / immediate), from the theme. */
 const TOKEN_CLASS: Record<TokenKind, string> = {
-	mnemonic: "text-fuchsia-400",
-	register: "text-cyan-300",
-	number: "text-amber-300",
+	mnemonic: "text-asm-mnemonic",
+	register: "text-asm-register",
+	number: "text-asm-number",
 	plain: "",
 };
 
@@ -143,11 +143,7 @@ export function DisasmComment({ comment }: { comment: string }): ReactNode {
 	const isString = comment.startsWith('"');
 	return (
 		<span
-			className={
-				isString
-					? "text-orange-500 dark:text-orange-400"
-					: "text-muted-foreground italic"
-			}
+			className={isString ? "text-asm-string" : "text-asm-symbol italic"}
 		>
 			{" ; "}
 			{comment}

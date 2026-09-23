@@ -155,7 +155,7 @@ function ProviderAuthPanel({ provider }: { provider: ProviderStatus }) {
 							href={anthropicAuthorizeUrl}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-primary flex items-center gap-1 text-[11px] underline"
+							className="text-primary flex items-center gap-1 text-xs underline"
 						>
 							Open sign-in page again{" "}
 							<ExternalLink className="h-3 w-3" />
@@ -198,7 +198,7 @@ function ProviderAuthPanel({ provider }: { provider: ProviderStatus }) {
 			<div className="space-y-2">
 				{provider.configured ? (
 					<div className="flex items-center gap-2">
-						<Badge variant="outline" className="text-[10px]">
+						<Badge variant="outline" className="text-2xs">
 							connected
 						</Badge>
 						<Button
@@ -226,9 +226,7 @@ function ProviderAuthPanel({ provider }: { provider: ProviderStatus }) {
 					</Button>
 				)}
 				{loginStage === "error" && loginError && (
-					<div className="text-destructive text-[11px]">
-						{loginError}
-					</div>
+					<div className="text-destructive text-xs">{loginError}</div>
 				)}
 			</div>
 		);
@@ -252,13 +250,13 @@ function ProviderAuthPanel({ provider }: { provider: ProviderStatus }) {
 							href={copilotVerificationUri}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-primary flex items-center justify-center gap-1 text-[11px] underline"
+							className="text-primary flex items-center justify-center gap-1 text-xs underline"
 						>
 							Open {copilotVerificationUri}{" "}
 							<ExternalLink className="h-3 w-3" />
 						</a>
 					)}
-					<div className="text-muted-foreground flex items-center justify-center gap-1.5 text-[11px]">
+					<div className="text-muted-foreground flex items-center justify-center gap-1.5 text-xs">
 						<Loader2 className="h-3 w-3 animate-spin" /> Waiting for
 						approval…
 					</div>
@@ -277,7 +275,7 @@ function ProviderAuthPanel({ provider }: { provider: ProviderStatus }) {
 			<div className="space-y-2">
 				{provider.configured ? (
 					<div className="flex items-center gap-2">
-						<Badge variant="outline" className="text-[10px]">
+						<Badge variant="outline" className="text-2xs">
 							connected
 						</Badge>
 						<Button
@@ -302,9 +300,7 @@ function ProviderAuthPanel({ provider }: { provider: ProviderStatus }) {
 					</Button>
 				)}
 				{loginStage === "error" && loginError && (
-					<div className="text-destructive text-[11px]">
-						{loginError}
-					</div>
+					<div className="text-destructive text-xs">{loginError}</div>
 				)}
 			</div>
 		);
@@ -388,7 +384,7 @@ function ProviderAuthPanel({ provider }: { provider: ProviderStatus }) {
 					href={provider.docs_url}
 					target="_blank"
 					rel="noopener noreferrer"
-					className="text-muted-foreground flex items-center gap-1 text-[11px] underline"
+					className="text-muted-foreground flex items-center gap-1 text-xs underline"
 				>
 					Get an API key <ExternalLink className="h-3 w-3" />
 				</a>
@@ -500,7 +496,7 @@ export function ModelPicker() {
 					<div className="border-border/50 w-56 shrink-0 overflow-y-auto border-r p-2">
 						{grouped.map(([label, list]) => (
 							<div key={label} className="mb-2">
-								<div className="text-muted-foreground px-2 py-1 text-[10px] font-medium tracking-wide uppercase">
+								<div className="text-muted-foreground text-2xs px-2 py-1 font-medium tracking-wide uppercase">
 									{label}
 								</div>
 								{list.map((p) => (
@@ -600,7 +596,7 @@ export function ModelPicker() {
 							</Button>
 						</div>
 						{error && (
-							<div className="bg-destructive/10 text-destructive rounded-md p-2 text-[11px]">
+							<div className="bg-destructive/10 text-destructive rounded-md p-2 text-xs">
 								{error}
 							</div>
 						)}
@@ -640,7 +636,7 @@ export function ModelPicker() {
 											{m.free && (
 												<Badge
 													variant="outline"
-													className="text-[9px]"
+													className="text-2xs"
 												>
 													free
 												</Badge>
@@ -648,13 +644,13 @@ export function ModelPicker() {
 											{!m.free && priceOf(m) > 0 && (
 												<Badge
 													variant="outline"
-													className="px-1.5 py-0 text-[9px]"
+													className="text-2xs px-1.5 py-0"
 												>
 													{fmtPrice(m)}
 												</Badge>
 											)}
 											{m.context_length > 0 && (
-												<span className="text-muted-foreground text-[10px]">
+												<span className="text-muted-foreground text-2xs">
 													{Math.round(
 														m.context_length / 1000,
 													)}

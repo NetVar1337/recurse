@@ -60,11 +60,11 @@ function renderValue(key: string, v: unknown): string {
 function Field({ label, value }: { label: string; value: string }) {
 	return (
 		<div className="flex min-w-0 items-center gap-2">
-			<span className="text-muted-foreground w-24 shrink-0 truncate text-right text-[11px]">
+			<span className="text-muted-foreground w-24 shrink-0 truncate text-right text-xs">
 				{label}
 			</span>
 			<span
-				className="bg-muted/40 min-w-0 flex-1 truncate rounded px-2 py-1 font-mono text-[11px]"
+				className="bg-muted/40 min-w-0 flex-1 truncate rounded px-2 py-1 font-mono text-xs"
 				title={value}
 			>
 				{value}
@@ -76,7 +76,7 @@ function Field({ label, value }: { label: string; value: string }) {
 function Bar({ value }: { value: string }) {
 	return (
 		<span
-			className="bg-muted/40 truncate rounded px-2 py-1 font-mono text-[11px]"
+			className="bg-muted/40 truncate rounded px-2 py-1 font-mono text-xs"
 			title={value}
 		>
 			{value}
@@ -87,9 +87,7 @@ function Bar({ value }: { value: string }) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
 	return (
 		<section className="min-w-0">
-			<h3 className="mb-2 text-sm font-bold tracking-wide uppercase">
-				{title}
-			</h3>
+			<h3 className="label mb-2">{title}</h3>
 			{children}
 		</section>
 	);
@@ -133,7 +131,7 @@ export function ReconPanel() {
 	}
 	if (error) {
 		return (
-			<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 text-[11px]">
+			<div className="border-destructive bg-destructive/10 text-destructive m-3 rounded-md border p-2.5 text-xs">
 				{error}
 			</div>
 		);
@@ -195,7 +193,7 @@ export function ReconPanel() {
 				<Section title="Libraries">
 					<div className="flex flex-col gap-1.5">
 						{recon.libraries.length === 0 ? (
-							<span className="text-muted-foreground text-[11px]">
+							<span className="text-muted-foreground text-xs">
 								no dynamic libraries
 							</span>
 						) : (

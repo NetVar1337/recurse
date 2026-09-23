@@ -46,7 +46,7 @@ export function ProjectScreen() {
 				>
 					New Project
 				</Button>
-				<span className="text-muted-foreground text-[11px]">
+				<span className="text-muted-foreground text-xs">
 					projects live in{" "}
 					<code className="text-primary font-mono">~/.recurse</code>
 				</span>
@@ -61,10 +61,10 @@ export function ProjectScreen() {
 			{!loading && projects.length > 0 && (
 				<div className="mt-12 w-full">
 					<div className="flex items-center justify-between px-1">
-						<h2 className="text-muted-foreground text-[11px] font-semibold tracking-wider uppercase">
+						<h2 className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
 							Recent projects
 						</h2>
-						<span className="text-muted-foreground text-[11px]">
+						<span className="text-muted-foreground text-xs">
 							{projects.length}
 						</span>
 					</div>
@@ -82,11 +82,11 @@ export function ProjectScreen() {
 											<div className="truncate text-sm font-medium">
 												{p.name}
 											</div>
-											<div className="text-muted-foreground truncate font-mono text-[11px]">
+											<div className="text-muted-foreground truncate font-mono text-xs">
 												{baseName(p.binary_path)}
 											</div>
 										</div>
-										<span className="text-muted-foreground shrink-0 text-[11px]">
+										<span className="text-muted-foreground shrink-0 text-xs">
 											{fmtDate(p.updated_at)}
 										</span>
 									</button>

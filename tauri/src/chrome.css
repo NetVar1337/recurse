@@ -12,25 +12,49 @@
  */
 
 :root {
-	--selection: oklab(0.92 0 0);
-	--selection-foreground: oklab(0.18 0 0);
-	--warning: oklab(0.72 0.1 0.08);
-	--warning-foreground: oklab(0.38 0.08 0.04);
-	--kbd: oklab(0.45 0 0);
+	--selection: rgba(31, 127, 208, 0.14);
+	--selection-foreground: #0b0d12;
+	--warning: #9a6a00;
+	--warning-foreground: #6b4a00;
+	--kbd: #6b7280;
+	--brand: #1f7fd0;
 	--control-h: 1.75rem;
 	--chrome-h: 2.25rem;
+	--status-h: 1.375rem;
 	--radius-control: 0.25rem;
 	--space-1: 0.25rem;
 	--space-2: 0.5rem;
 	--space-3: 0.75rem;
+	/* One row height for every data list, so columns line up across panes. */
+	--row-h: 1.125rem;
+
+	/* Disassembly palette: colour carries meaning, nothing else. */
+	--asm-addr: #5b6472;
+	--asm-bytes: #8a93a2;
+	--asm-mnemonic: #1f7fd0;
+	--asm-register: #0b0d12;
+	--asm-number: #9a6a00;
+	--asm-string: #9a6a00;
+	--asm-symbol: #5b6472;
+	--asm-jump: #1f7fd0;
 }
 
 .dark {
-	--selection: oklab(0.3 0 0);
-	--selection-foreground: oklab(0.96 0 0);
-	--warning: oklab(0.78 0.09 0.04);
-	--warning-foreground: oklab(0.9 0.05 0.02);
-	--kbd: oklab(0.64 0 0);
+	--selection: rgba(126, 200, 255, 0.14);
+	--selection-foreground: #e9edf3;
+	--warning: #e5c07b;
+	--warning-foreground: #e5c07b;
+	--kbd: #69727f;
+	--brand: #7ec8ff;
+
+	--asm-addr: #69727f;
+	--asm-bytes: #4d5666;
+	--asm-mnemonic: #7ec8ff;
+	--asm-register: #e9edf3;
+	--asm-number: #e5c07b;
+	--asm-string: #e5c07b;
+	--asm-symbol: #9aa4b2;
+	--asm-jump: #7ec8ff;
 }
 
 @theme inline {
@@ -38,6 +62,40 @@
 	--color-selection-foreground: var(--selection-foreground);
 	--color-warning: var(--warning);
 	--color-warning-foreground: var(--warning-foreground);
+	--color-kbd: var(--kbd);
+	--color-brand: var(--brand);
+	--color-asm-addr: var(--asm-addr);
+	--color-asm-bytes: var(--asm-bytes);
+	--color-asm-mnemonic: var(--asm-mnemonic);
+	--color-asm-register: var(--asm-register);
+	--color-asm-number: var(--asm-number);
+	--color-asm-string: var(--asm-string);
+	--color-asm-symbol: var(--asm-symbol);
+	--color-asm-jump: var(--asm-jump);
+}
+
+/* A row in any data list: one height, one hover, so panes align. */
+.data-row {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	height: var(--row-h);
+	white-space: nowrap;
+	padding-inline: var(--space-2);
+}
+
+/* Numbers in a column must line up: addresses, sizes, offsets, registers. */
+.nums {
+	font-variant-numeric: tabular-nums;
+}
+
+/* Uppercase micro-heading used by every pane title. */
+.label {
+	font-size: var(--text-2xs);
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
 }
 
 .ui-bar {

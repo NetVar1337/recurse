@@ -43,7 +43,7 @@ export function SessionMenu() {
 				<DropdownMenuLabel>Recent sessions</DropdownMenuLabel>
 
 				{sessions.length === 0 && (
-					<div className="text-muted-foreground px-2 py-1 text-[11px]">
+					<div className="text-muted-foreground px-2 py-1 text-xs">
 						No sessions yet
 					</div>
 				)}
@@ -70,7 +70,7 @@ export function SessionMenu() {
 						</button>
 						<button
 							type="button"
-							className="shrink-0 text-[10px] opacity-60 hover:opacity-100"
+							className="text-2xs shrink-0 opacity-60 hover:opacity-100"
 							onClick={(e) => {
 								e.stopPropagation();
 								remove(s.id);
