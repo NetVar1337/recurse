@@ -14,7 +14,6 @@ import { Input } from "@/components/ui/input";
 import { DebugPanel } from "@/components/DebugPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { chrome } from "@/lib/chrome";
 import { callTarget } from "@/lib/calls";
@@ -24,7 +23,7 @@ import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
 import { useUiStore } from "@/store/uiStore";
-import type { CenterTab, DecompileAnnotation, Function, Xref } from "@/types";
+import type { DecompileAnnotation, Function, Xref } from "@/types";
 
 const R2Console = lazy(() =>
 	import("@/components/R2Console").then((m) => ({ default: m.R2Console })),
@@ -167,7 +166,6 @@ function OpRow({
 
 export function CenterPanel() {
 	const tab = useUiStore((s) => s.tab);
-	const setTab = useUiStore((s) => s.setTab);
 	const selected = useAnalysisStore((s) => s.selected);
 	const funcs = useAnalysisStore((s) => s.funcs);
 	const selectFn = useAnalysisStore((s) => s.selectFn);
@@ -192,8 +190,6 @@ export function CenterPanel() {
 	const pending = useContextStore((s) => s.pending);
 	const setPending = useContextStore((s) => s.setPending);
 	const commitPending = useContextStore((s) => s.commitPending);
-
-	const setTabSafe = (t: string) => setTab(t as CenterTab);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
@@ -334,21 +330,26 @@ export function CenterPanel() {
 
 	return (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
-			<div className="border-border bg-card ui-bar border-b px-1">
-				<Tabs value={tab} onValueChange={setTabSafe} className="flex-1">
-					<TabsList>
-						<TabsTrigger value="recon">Recon</TabsTrigger>
-						<TabsTrigger value="debug">Debug</TabsTrigger>
-						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
-						<TabsTrigger value="strings">Strings</TabsTrigger>
-						<TabsTrigger value="imports">Imports</TabsTrigger>
-						{capabilities?.raw !== false && (
-							<TabsTrigger value="console">Console</TabsTrigger>
-						)}
-					</TabsList>
-				</Tabs>
-				{tab === "disasm" && (
-					<div className="flex items-center pr-1">
+			{tab === "disasm" && (
+				<div className="border-border bg-card ui-bar shrink-0 gap-2 border-b px-3">
+					{selected && (
+						<>
+							<span className="text-muted-foreground truncate text-xs">
+								{baseName(binaryPath)}
+							</span>
+							<ChevronRight className="text-muted-foreground/50 h-3 w-3 shrink-0" />
+							<span className="text-foreground truncate text-xs font-medium">
+								{selected.name ??
+									selected.signature ??
+									"unknown"}
+							</span>
+							<span className="text-muted-foreground nums shrink-0 font-mono text-xs">
+								{fmtAddr(selected.addr)} ·{" "}
+								{asm?.size ?? selected.size ?? "?"} bytes
+							</span>
+						</>
+					)}
+					<div className="ml-auto flex items-center gap-1">
 						<div className="ui-seg" role="group" aria-label="View">
 							<button
 								type="button"
@@ -398,8 +399,8 @@ export function CenterPanel() {
 							{asmLoading ? "Loading" : "Reload"}
 						</Button>
 					</div>
-				)}
-			</div>
+				</div>
+			)}
 
 			<div className="flex min-h-0 min-w-0 flex-1 flex-col">
 				{tab === "recon" ? (
@@ -444,26 +445,6 @@ export function CenterPanel() {
 							)}
 							{tab === "disasm" && (
 								<>
-									{selected && (
-										<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-1.5 border-b px-3 py-1.5 text-xs">
-											<span className="text-muted-foreground truncate">
-												{baseName(binaryPath)}
-											</span>
-											<ChevronRight className="text-muted-foreground/50 h-3 w-3 shrink-0" />
-											<span className="text-foreground truncate font-medium">
-												{selected.name ??
-													selected.signature ??
-													"unknown"}
-											</span>
-											<span className="text-muted-foreground nums ml-auto shrink-0 font-mono">
-												{fmtAddr(selected.addr)} ·{" "}
-												{asm?.size ??
-													selected.size ??
-													"?"}{" "}
-												bytes
-											</span>
-										</div>
-									)}
 									{xrefsOpen &&
 										selected &&
 										xrefsAddress === selectedAddr && (

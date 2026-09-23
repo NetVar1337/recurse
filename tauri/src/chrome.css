@@ -30,7 +30,6 @@
 	--row-h: 1.125rem;
 
 	--activity-bg: #f3f3f3;
-	--tab-active-bg: #ffffff;
 
 	/* Disassembly palette: colour carries meaning, nothing else. */
 	--asm-addr: #6b7280;
@@ -52,7 +51,6 @@
 	--brand: #7ec8ff;
 
 	--activity-bg: #0e1117;
-	--tab-active-bg: #0e1117;
 
 	--asm-addr: #7d8794;
 	--asm-bytes: #5c6673;

@@ -10,6 +10,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import { LogoMark } from "@/components/Logo";
+import { useBinaryStore } from "@/store/binaryStore";
 import { useUiStore } from "@/store/uiStore";
 import type { CenterTab } from "@/types";
 
@@ -44,6 +45,11 @@ export function ActivityBar() {
 	const setTab = useUiStore((s) => s.setTab);
 	const chatOpen = useUiStore((s) => s.chatOpen);
 	const toggleChat = useUiStore((s) => s.toggleChat);
+	// The raw console is a backend capability; hide it when it is absent.
+	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
+	const views = VIEWS.filter(
+		(v) => v.tab !== "console" || capabilities?.raw !== false,
+	);
 
 	return (
 		<nav
@@ -55,7 +61,7 @@ export function ActivityBar() {
 			</div>
 
 			<div className="flex w-full flex-col">
-				{VIEWS.map((v) => (
+				{views.map((v) => (
 					<button
 						key={v.tab}
 						type="button"
