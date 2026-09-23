@@ -52,6 +52,11 @@ function buildCommands(): Command[] {
 				});
 			},
 		},
+		{
+			id: "model-picker",
+			title: "Switch model / provider…",
+			run: () => ui.setModelPickerOpen(true),
+		},
 	];
 	if (!bin.binary) {
 		cmds.push({
