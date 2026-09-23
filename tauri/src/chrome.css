@@ -47,14 +47,14 @@
 	--kbd: #69727f;
 	--brand: #7ec8ff;
 
-	--asm-addr: #69727f;
-	--asm-bytes: #4d5666;
-	--asm-mnemonic: #7ec8ff;
-	--asm-register: #e9edf3;
-	--asm-number: #e5c07b;
-	--asm-string: #e5c07b;
-	--asm-symbol: #9aa4b2;
-	--asm-jump: #7ec8ff;
+	--asm-addr: #94a0b3;
+	--asm-bytes: #67717f;
+	--asm-mnemonic: #b6c2d2;
+	--asm-register: #9ec5f0;
+	--asm-number: #d8bd93;
+	--asm-string: #d8bd93;
+	--asm-symbol: #94a0b3;
+	--asm-jump: #9ec5f0;
 }
 
 @theme inline {
