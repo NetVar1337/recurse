@@ -483,11 +483,12 @@ export function ModelPicker() {
 		<Dialog open={open} onOpenChange={setOpen}>
 			<DialogTrigger asChild>
 				<Button
-					variant="ghost"
+					variant="toolbar"
 					size="sm"
-					className="h-7 max-w-[150px] truncate px-1.5 text-[11px]"
+					className="max-w-[180px] truncate"
 				>
-					{model || "select model"} ▾
+					{model || "select model"}
+					<span className="text-muted-foreground">▾</span>
 				</Button>
 			</DialogTrigger>
 			<DialogContent className="max-h-[90vh] w-[95vw] max-w-4xl overflow-hidden p-0 sm:max-w-4xl">

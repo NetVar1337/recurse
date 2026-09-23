@@ -1,14 +1,4 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import {
-	ChevronDown,
-	ChevronRight,
-	House,
-	Plus,
-	Send,
-	Square,
-	Wrench,
-	X,
-} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -49,7 +39,6 @@ function ToolCallChip({ call }: { call: ToolCallUi }) {
 				className="flex w-full min-w-0 items-center gap-1.5 text-left"
 				onClick={() => setOpen((o) => !o)}
 			>
-				<Wrench className="h-3 w-3 shrink-0" />
 				<span className="shrink-0 font-mono font-semibold">
 					{call.name}
 				</span>
@@ -62,9 +51,9 @@ function ToolCallChip({ call }: { call: ToolCallUi }) {
 					{running ? (
 						<span className="text-primary animate-pulse">…</span>
 					) : open ? (
-						<ChevronDown className="h-3 w-3" />
+						"Hide"
 					) : (
-						<ChevronRight className="h-3 w-3" />
+						"Show"
 					)}
 				</span>
 			</button>
@@ -93,7 +82,9 @@ export function AgentChat({ inputRef }: Props) {
 	const refreshSessions = useSessionStore((s) => s.refresh);
 
 	const [input, setInput] = useState("");
-	const [showSessions, setShowSessions] = useState(true);
+	const [showSessions, setShowSessions] = useState(
+		() => !useSessionStore.getState().current,
+	);
 	const scrollRef = useRef<HTMLDivElement>(null);
 
 	const provider = useLlmStore((s) => s.provider);
@@ -140,37 +131,37 @@ export function AgentChat({ inputRef }: Props) {
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="border-border/60 bg-background/80 flex items-center justify-between border-b px-4 py-2.5">
-				<div className="flex min-w-0 items-center gap-1.5">
+			<div className="border-border ui-bar border-b px-2">
+				{showSessions ? (
+					<span className="ui-panel-title">Sessions</span>
+				) : (
 					<Button
-						variant="ghost"
-						size="icon"
-						className="h-7 w-7 shrink-0"
+						variant="toolbar"
+						size="sm"
 						onClick={openSessions}
-						title="Sessions home"
-						aria-label="Sessions home"
+						title="Sessions"
 					>
-						<House className="h-3.5 w-3.5" />
+						Sessions
 					</Button>
-					<span className="min-w-0 truncate text-xs font-medium">
-						{showSessions ? "Sessions" : (current?.name ?? "Chat")}
+				)}
+				{!showSessions && (
+					<span className="ui-panel-title text-muted-foreground">
+						{current?.name ?? "Chat"}
 					</span>
-				</div>
-				<div className="flex items-center gap-1">
-					<Button
-						variant="ghost"
-						size="icon"
-						className="h-7 w-7"
-						onClick={() => void startNewChat()}
-						title="New chat"
-					>
-						<Plus className="h-4 w-4" />
-					</Button>
-				</div>
+				)}
+				<Button
+					variant="toolbar"
+					size="sm"
+					className="ml-auto"
+					onClick={() => void startNewChat()}
+					title="New chat"
+				>
+					New
+				</Button>
 			</div>
 
 			{!configured && (
-				<div className="border-border/60 border-b bg-yellow-500/10 px-4 py-1.5 text-[11px] text-yellow-600 dark:text-yellow-500">
+				<div className="border-border text-warning-foreground bg-warning/10 border-b px-3 py-1.5 text-[11px]">
 					Set your{" "}
 					<code className="font-mono">
 						{provider.toUpperCase().replace(/_/g, " ")} API key
@@ -195,47 +186,35 @@ export function AgentChat({ inputRef }: Props) {
 								Loading sessions…
 							</div>
 						) : sessions.length > 0 ? (
-							<ul className="border-border/60 bg-card/50 space-y-0.5 overflow-hidden rounded-lg border p-1.5 shadow-sm">
+							<ul className="border-border overflow-hidden rounded-[var(--radius-control)] border">
 								{sessions.map((s) => {
 									const active = current?.id === s.id;
 									return (
 										<li key={s.id} className="min-w-0">
-											<div className="min-w-0 px-1.5 py-1">
-												<button
-													type="button"
-													onClick={() =>
-														void selectSession(s.id)
-													}
-													className={cn(
-														"hover:bg-accent/80 focus-visible:ring-ring flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-md px-2.5 py-2 text-left transition-colors hover:shadow-sm focus-visible:ring-1",
-														active
-															? "bg-accent/75"
-															: "",
-													)}
-												>
-													<span className="text-primary mt-1 text-[10px]">
-														●
-													</span>
-													<span className="min-w-0 flex-1 overflow-hidden">
-														<span className="block max-w-full truncate text-xs font-medium">
-															{s.name}
-														</span>
-														<span className="text-muted-foreground mt-0.5 block truncate text-[10px]">
-															Completed ·{" "}
-															{fmtDate(
-																s.updated_at,
-															)}
-														</span>
-													</span>
-												</button>
-											</div>
+											<button
+												type="button"
+												onClick={() =>
+													void selectSession(s.id)
+												}
+												className={cn(
+													"hover:bg-accent focus-visible:ring-ring flex w-full min-w-0 flex-col px-3 py-2 text-left focus-visible:ring-1",
+													active && "ui-selected",
+												)}
+											>
+												<span className="block max-w-full truncate text-xs font-medium">
+													{s.name}
+												</span>
+												<span className="mt-0.5 block truncate text-[10px] opacity-70">
+													{fmtDate(s.updated_at)}
+												</span>
+											</button>
 										</li>
 									);
 								})}
 							</ul>
 						) : (
-							<div className="border-border/60 bg-card/50 text-muted-foreground rounded-lg border px-3 py-8 text-center text-xs">
-								No chats yet. Start one with + above.
+							<div className="text-muted-foreground border-border rounded-[var(--radius-control)] border px-3 py-8 text-center text-xs">
+								No chats yet. Start one with New.
 							</div>
 						)}
 					</div>
@@ -282,70 +261,70 @@ export function AgentChat({ inputRef }: Props) {
 					))}
 			</div>
 
-			<div className="border-border/60 flex justify-center border-t px-3 py-2.5">
-				<div className="border-border/70 bg-card w-full max-w-[340px] rounded-xl border p-2 shadow-sm">
-					{items.length > 0 && (
-						<div className="mb-1.5 flex flex-wrap gap-1">
-							{items.map((it) => (
-								<Badge
-									key={it.id}
-									variant="secondary"
-									className="font-mono text-[10px]"
-								>
-									<span className="max-w-[180px] truncate">
-										{it.label}
-									</span>
-									<button
-										className="hover:text-destructive ml-1"
-										onClick={() => removeItem(it.id)}
-										title="Remove from context"
+			<div className="border-border border-t px-3 py-2">
+				<div className="flex w-full flex-col gap-1">
+					<div className="ui-composer">
+						{items.length > 0 && (
+							<div className="flex flex-wrap gap-1 px-1">
+								{items.map((it) => (
+									<Badge
+										key={it.id}
+										variant="secondary"
+										className="font-mono text-[10px]"
 									>
-										<X className="h-3 w-3" />
-									</button>
-								</Badge>
-							))}
-						</div>
-					)}
-
-					<div className="flex items-end gap-2">
-						<Textarea
-							ref={inputRef}
-							placeholder="e.g. what does sym.main do? disassemble it"
-							rows={1}
-							className="min-h-10 resize-none border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0"
-							value={input}
-							onChange={(e) => setInput(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Enter" && !e.shiftKey) {
-									e.preventDefault();
-									doSend();
-								}
-							}}
-						/>
-						{busy ? (
-							<Button
-								size="icon"
-								className="h-7 w-7 shrink-0"
-								onClick={() => void api.agentCancel()}
-								title="Stop the agent (lands between tool steps)"
-							>
-								<Square className="h-3.5 w-3.5 fill-current" />
-							</Button>
-						) : (
-							<Button
-								size="icon"
-								className="h-7 w-7 shrink-0"
-								onClick={doSend}
-								disabled={!input.trim()}
-								title="Send"
-							>
-								<Send />
-							</Button>
+										<span className="max-w-[180px] truncate">
+											{it.label}
+										</span>
+										<button
+											className="hover:text-destructive ml-1"
+											onClick={() => removeItem(it.id)}
+											title="Remove from context"
+											aria-label="Remove from context"
+										>
+											×
+										</button>
+									</Badge>
+								))}
+							</div>
 						)}
+						<div className="flex items-end gap-1">
+							<Textarea
+								ref={inputRef}
+								placeholder="e.g. what does sym.main do? disassemble it"
+								rows={1}
+								className="min-h-[var(--control-h)] flex-1 resize-none border-0 bg-transparent px-1.5 py-1.5 shadow-none focus-visible:ring-0"
+								value={input}
+								onChange={(e) => setInput(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === "Enter" && !e.shiftKey) {
+										e.preventDefault();
+										doSend();
+									}
+								}}
+							/>
+							{busy ? (
+								<Button
+									variant="toolbar"
+									size="sm"
+									onClick={() => void api.agentCancel()}
+									title="Stop the agent (lands between tool steps)"
+								>
+									Stop
+								</Button>
+							) : (
+								<Button
+									variant="toolbar"
+									size="sm"
+									onClick={doSend}
+									disabled={!input.trim()}
+									title="Send"
+								>
+									Send
+								</Button>
+							)}
+						</div>
 					</div>
-					<div className="border-border/50 mt-1 flex items-center border-t pt-1">
-						<ModelPicker />
-					</div>
+					<ModelPicker />
 				</div>
 			</div>
 		</div>
@@ -360,12 +339,7 @@ function ReasoningBlock({ text }: { text: string }) {
 				className="flex items-center gap-1 text-[10px] tracking-wider uppercase"
 				onClick={() => setShow((s) => !s)}
 			>
-				{show ? (
-					<ChevronDown className="h-3 w-3" />
-				) : (
-					<ChevronRight className="h-3 w-3" />
-				)}
-				thinking
+				{show ? "Hide" : "Show"} thinking
 			</button>
 			{show && (
 				<div className="text-muted-foreground/80 mt-1 break-words whitespace-pre-wrap">

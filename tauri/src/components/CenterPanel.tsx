@@ -1,4 +1,4 @@
-import { Link2, Loader2, RefreshCw, X } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import {
 	lazy,
 	Suspense,
@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { DebugPanel } from "@/components/DebugPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
@@ -190,6 +191,7 @@ export function CenterPanel() {
 	const [xrefsLoading, setXrefsLoading] = useState(false);
 	const [xrefsError, setXrefsError] = useState<string | null>(null);
 	const [stringQuery, setStringQuery] = useState("");
+	const [importQuery, setImportQuery] = useState("");
 
 	// Large Rust binaries can carry 100k+ strings (youki: 113k). Rendering
 	// them all freezes the webview, so filter first and cap the row count.
@@ -211,6 +213,14 @@ export function CenterPanel() {
 			capped: matched.length > CAP,
 		};
 	}, [strings, stringQuery]);
+
+	const visibleImports = useMemo(() => {
+		const q = importQuery.trim().toLowerCase();
+		if (!q) return imports;
+		return imports.filter((imp) =>
+			(imp.name ?? "").toLowerCase().includes(q),
+		);
+	}, [imports, importQuery]);
 
 	// Address → function lookup so call instructions can resolve to their target.
 	const funcByAddr = useMemo(() => {
@@ -310,9 +320,9 @@ export function CenterPanel() {
 
 	return (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
-			<div className="border-border bg-card flex items-center gap-1 border-b px-1">
+			<div className="border-border bg-card ui-bar border-b px-1">
 				<Tabs value={tab} onValueChange={setTabSafe} className="flex-1">
-					<TabsList className="h-9 bg-transparent p-1">
+					<TabsList>
 						<TabsTrigger value="recon">Recon</TabsTrigger>
 						<TabsTrigger value="debug">Debug</TabsTrigger>
 						<TabsTrigger value="disasm">Disassembly</TabsTrigger>
@@ -324,27 +334,19 @@ export function CenterPanel() {
 					</TabsList>
 				</Tabs>
 				{tab === "disasm" && (
-					<div className="flex items-center gap-1 pr-2">
-						<div className="border-border flex overflow-hidden rounded-md border">
+					<div className="flex items-center pr-1">
+						<div className="ui-seg" role="group" aria-label="View">
 							<button
-								className={cn(
-									"px-2 py-1 text-[11px]",
-									viewMode === "linear"
-										? "bg-primary text-primary-foreground"
-										: "hover:bg-accent",
-								)}
+								type="button"
+								aria-pressed={viewMode === "linear"}
 								onClick={() => setViewMode("linear")}
 								title="Linear disassembly"
 							>
 								Linear
 							</button>
 							<button
-								className={cn(
-									"px-2 py-1 text-[11px]",
-									viewMode === "graph"
-										? "bg-primary text-primary-foreground"
-										: "hover:bg-accent",
-								)}
+								type="button"
+								aria-pressed={viewMode === "graph"}
 								onClick={() => setViewMode("graph")}
 								title="Control-flow graph (pan/zoom)"
 							>
@@ -353,7 +355,7 @@ export function CenterPanel() {
 						</div>
 						{capabilities?.decompile !== false && (
 							<Button
-								variant="ghost"
+								variant="toolbar"
 								size="sm"
 								onClick={decompile}
 								disabled={decompiling || !selected}
@@ -362,25 +364,24 @@ export function CenterPanel() {
 							</Button>
 						)}
 						<Button
-							variant={xrefsOpen ? "secondary" : "ghost"}
+							variant="toolbar"
 							size="sm"
+							className="ui-press"
+							aria-pressed={xrefsOpen}
 							onClick={toggleXrefs}
 							disabled={!selected}
 							title="Show incoming cross-references"
 						>
-							<Link2 className="mr-1 h-3.5 w-3.5" />
 							Xrefs
 						</Button>
 						<Button
-							variant="ghost"
-							size="icon"
+							variant="toolbar"
+							size="sm"
 							onClick={refreshDisasm}
 							disabled={asmLoading}
 							title="Reload"
 						>
-							<RefreshCw
-								className={asmLoading ? "animate-spin" : ""}
-							/>
+							{asmLoading ? "Loading" : "Reload"}
 						</Button>
 					</div>
 				)}
@@ -411,21 +412,19 @@ export function CenterPanel() {
 							{pending && (
 								<div className="absolute top-2 right-2 z-20 flex items-center gap-1">
 									<Button
+										variant="toolbar"
 										size="sm"
 										onClick={commitPending}
-										className="shadow"
 										title="Add selection to agent context (Ctrl+L)"
 									>
-										+ Add to agent context
+										Add to context
 									</Button>
 									<Button
-										variant="ghost"
-										size="icon"
-										className="shadow"
+										variant="toolbar"
+										size="sm"
 										onClick={() => setPending(null)}
-										title="Dismiss"
 									>
-										<X className="h-3.5 w-3.5" />
+										Dismiss
 									</Button>
 								</div>
 							)}
@@ -573,13 +572,13 @@ export function CenterPanel() {
 							{tab === "strings" && (
 								<div className="flex min-h-0 flex-1 flex-col">
 									<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5">
-										<input
+										<Input
 											value={stringQuery}
 											onChange={(e) =>
 												setStringQuery(e.target.value)
 											}
 											placeholder={`Filter ${strings.length.toLocaleString()} strings…`}
-											className="bg-background border-border w-64 rounded-md border px-2 py-1 font-mono text-xs outline-none"
+											className="w-64 font-mono"
 										/>
 										<span className="text-muted-foreground text-[11px]">
 											showing{" "}
@@ -625,33 +624,73 @@ export function CenterPanel() {
 													</td>
 												</tr>
 											))}
+											{visibleStrings.rows.length ===
+												0 && (
+												<tr>
+													<td
+														colSpan={3}
+														className="text-muted-foreground px-3 py-3 text-center"
+													>
+														{stringQuery.trim()
+															? `no strings match "${stringQuery.trim()}"`
+															: "no strings"}
+													</td>
+												</tr>
+											)}
 										</tbody>
 									</table>
 								</div>
 							)}
 
 							{tab === "imports" && (
-								<table className="w-full font-mono text-xs">
-									<thead className="bg-card sticky top-0">
-										<tr className="text-muted-foreground text-left text-[11px]">
-											<th className="px-3 py-1.5">
-												Import
-											</th>
-										</tr>
-									</thead>
-									<tbody>
-										{imports.map((imp, i) => (
-											<tr
-												key={i}
-												className="hover:bg-accent"
-											>
-												<td className="px-3 py-px">
-													{imp.name ?? "(unnamed)"}
-												</td>
+								<div className="flex min-h-0 flex-1 flex-col">
+									<div className="border-border bg-card sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5">
+										<Input
+											value={importQuery}
+											onChange={(e) =>
+												setImportQuery(e.target.value)
+											}
+											placeholder={`Filter ${imports.length.toLocaleString()} imports…`}
+											className="w-64 font-mono"
+										/>
+										<span className="text-muted-foreground text-[11px]">
+											showing{" "}
+											{visibleImports.length.toLocaleString()}{" "}
+											of {imports.length.toLocaleString()}
+										</span>
+									</div>
+									<table className="w-full font-mono text-xs">
+										<thead className="bg-card sticky top-0">
+											<tr className="text-muted-foreground text-left text-[11px]">
+												<th className="px-3 py-1.5">
+													Import
+												</th>
 											</tr>
-										))}
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											{visibleImports.map((imp, i) => (
+												<tr
+													key={i}
+													className="hover:bg-accent"
+												>
+													<td className="px-3 py-px">
+														{imp.name ??
+															"(unnamed)"}
+													</td>
+												</tr>
+											))}
+											{visibleImports.length === 0 && (
+												<tr>
+													<td className="text-muted-foreground px-3 py-3 text-center">
+														{importQuery.trim()
+															? `no imports match "${importQuery.trim()}"`
+															: "no imports"}
+													</td>
+												</tr>
+											)}
+										</tbody>
+									</table>
+								</div>
 							)}
 						</div>
 
@@ -664,13 +703,12 @@ export function CenterPanel() {
 									)}
 								</pre>
 								<Button
-									variant="ghost"
-									size="icon"
-									className="bg-card/80 absolute top-1 right-1 h-6 w-6"
+									variant="toolbar"
+									size="sm"
+									className="absolute top-1 right-1"
 									onClick={clearDecompiled}
-									title="Close decompiled view"
 								>
-									<X className="h-3.5 w-3.5" />
+									Close
 								</Button>
 							</div>
 						)}

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CornerDownLeft, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/api";
@@ -145,22 +144,19 @@ export function R2Console() {
 					className="h-8 min-h-8 resize-none bg-transparent px-1 py-1 font-mono text-xs focus-visible:ring-0"
 				/>
 				<Button
-					size="icon"
-					variant="ghost"
-					className="h-7 w-7 shrink-0"
+					variant="toolbar"
+					size="sm"
 					onClick={() => setLines([])}
-					title="Clear output"
 				>
-					<Trash2 className="h-3.5 w-3.5" />
+					Clear
 				</Button>
 				<Button
-					size="icon"
-					className="h-7 w-7 shrink-0"
+					variant="toolbar"
+					size="sm"
 					onClick={() => void send(input)}
 					disabled={!input.trim() || running}
-					title="Run (Enter)"
 				>
-					<CornerDownLeft className="h-3.5 w-3.5" />
+					Run
 				</Button>
 			</div>
 		</div>

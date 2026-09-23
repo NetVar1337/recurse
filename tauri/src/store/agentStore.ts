@@ -205,7 +205,7 @@ function applyEvent(m: UiMessage, ev: AgentEvent): UiMessage {
 		}
 		case "done": {
 			const content = ev.content ?? "";
-			const blocks = m.blocks.map((b, i, arr) => {
+			const blocks = m.blocks.map((b, i, arr): UiBlock => {
 				if (b.kind !== "content" || !content) return b;
 				const later = arr.slice(i + 1).some((x) => x.kind === "content");
 				if (later) return b;
