@@ -44,6 +44,7 @@ use object::{
 };
 use serde_json::json;
 
+use crate::arch;
 use crate::engine::{
     BackendKind, BasicBlock, Capabilities, Decompilation, Disassembly, Engine, FunctionGraph,
     FunctionInfo, Import, Instruction, StringRef, Target, Xref, XrefDirection,
@@ -635,35 +636,57 @@ impl NativeEngine {
 
     /// Append `; name` / `; "string"` comments to `ops`, so the model does not
     /// have to cross-reference addresses by hand.
+    ///
+    /// Shared by the linear view, `function_disasm` and `function_graph`, so all
+    /// three annotate identically. Two independent sources feed it: text spelled
+    /// by an immediate, which is derived from the instruction itself and is
+    /// therefore available even before the name index is built, and the name of
+    /// a symbol or string the operand points at. An instruction that offers both
+    /// is annotated once, with the immediate text, since that is the value the
+    /// instruction actually carries.
     fn annotate_ops(&self, ops: &mut [Instruction]) {
-        if self.ensure_labels().is_err() {
-            return;
-        }
-        let Ok(state) = self.state.lock() else {
-            return;
-        };
-        let Some(labels) = state.labels.as_ref() else {
-            return;
-        };
-        for op in ops.iter_mut() {
-            let mut comment: Option<String> = op.jump.and_then(|t| labels.names.get(&t).cloned());
-            if comment.is_none() {
-                for ea in memory_references(op) {
-                    if let Some(name) = labels.names.get(&ea) {
-                        comment = Some(name.clone());
-                        break;
-                    }
-                    if let Some(text) = labels.strings.get(&ea) {
-                        comment = Some(format!("\"{}\"", truncate_str(text, 48)));
-                        break;
+        let little_endian = self.parse().map(|f| f.is_little_endian()).unwrap_or(true);
+        let mut comments: Vec<Option<String>> = ops
+            .iter()
+            .map(|op| {
+                arch::inline_text(&op.disasm, little_endian).map(|spelled| format!("'{spelled}'"))
+            })
+            .collect();
+
+        if self.ensure_labels().is_ok() {
+            if let Ok(state) = self.state.lock() {
+                if let Some(labels) = state.labels.as_ref() {
+                    for (op, slot) in ops.iter().zip(comments.iter_mut()) {
+                        if slot.is_none() {
+                            *slot = referenced_comment(op, labels);
+                        }
                     }
                 }
             }
+        }
+
+        for (op, comment) in ops.iter_mut().zip(comments) {
             if let Some(c) = comment {
                 op.disasm = format!("{} ; {}", op.disasm, c);
             }
         }
     }
+}
+
+/// The name of the symbol or string an operand's address resolves to, if any.
+fn referenced_comment(op: &Instruction, labels: &Labels) -> Option<String> {
+    if let Some(name) = op.jump.and_then(|t| labels.names.get(&t).cloned()) {
+        return Some(name);
+    }
+    for ea in memory_references(op) {
+        if let Some(name) = labels.names.get(&ea) {
+            return Some(name.clone());
+        }
+        if let Some(text) = labels.strings.get(&ea) {
+            return Some(format!("\"{}\"", truncate_str(text, 48)));
+        }
+    }
+    None
 }
 
 /// Decode up to `max` instructions from a byte slice that begins at `ip`.
@@ -3419,6 +3442,182 @@ mod tests {
     #[test]
     fn demangle_falls_back_to_input() {
         assert_eq!(demangle("plain_name"), "plain_name");
+    }
+
+    /// Copy a fixture next to this test binary so each run gets its own, and
+    /// remove it afterwards.
+    fn temp_fixture(name: &str) -> PathBuf {
+        let mut dst = std::env::temp_dir();
+        dst.push(format!(
+            "recurse-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+            &dst,
+        )
+        .expect("copy fixture");
+        dst
+    }
+
+    /// The name of a symbol an operand points at is still annotated, and still
+    /// takes the instruction when the immediate spells nothing. Guards the half
+    /// of `annotate_ops` that the immediate-text pass runs alongside.
+    #[test]
+    fn symbol_names_are_still_annotated() {
+        let path = temp_fixture("notype_labels_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+        let text: String = engine
+            .function_disasm(entry)
+            .expect("function_disasm")
+            .ops
+            .iter()
+            .map(|op| op.disasm.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // `push $0x8049018` names the `_exit` label at that address.
+        assert!(
+            text.contains("; _exit"),
+            "symbol name annotation was lost:\n{text}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An immediate that spells text and one that names a symbol are
+    /// independent: text wins for its own instruction, the name for the other.
+    #[test]
+    fn text_and_symbol_annotations_coexist() {
+        let path = temp_fixture("inline_text_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+        let text: String = engine
+            .function_disasm(entry)
+            .expect("function_disasm")
+            .ops
+            .iter()
+            .map(|op| op.disasm.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("; 'CTF:'"),
+            "lost the text annotation:\n{text}"
+        );
+        // No instruction may end up carrying two comments.
+        for line in text.lines() {
+            assert!(
+                line.matches(" ; ").count() <= 1,
+                "instruction annotated twice: {line}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A string constant compiled into the instruction stream is carried as an
+    /// immediate and must be spelled out in the disassembly.
+    ///
+    /// The fixture pushes the four chunks of "Let's start the CTF:" one
+    /// instruction each, so each operand is worth one comment. The three
+    /// trailing `mov`s are the negative cases: all-blank padding, a single
+    /// character, and a value that is not text at all.
+    #[test]
+    fn immediate_text_is_spelled_in_both_views() {
+        let path = temp_fixture("inline_text_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+
+        // The function view and the graph share one annotation pass, so both
+        // must carry the same comments.
+        let linear: Vec<String> = engine
+            .function_disasm(entry)
+            .expect("function_disasm")
+            .ops
+            .iter()
+            .map(|op| op.disasm.clone())
+            .collect();
+        let graph: Vec<String> = engine
+            .function_graph(entry)
+            .expect("function_graph")
+            .blocks
+            .iter()
+            .flat_map(|b| b.ops.iter())
+            .map(|op| op.disasm.clone())
+            .collect();
+
+        for (view, ops) in [("linear", &linear), ("graph", &graph)] {
+            let text = ops.join("\n");
+            // Each push carries four bytes of the message, least significant
+            // first, so `mov $0x4b454c4f` spells OLEK rather than KOLE.
+            for spelled in ["'CTF:'", "'the '", "'art '", "'OLEK'"] {
+                assert!(
+                    text.contains(spelled),
+                    "{view} view is missing the spelled immediate {spelled}:\n{text}"
+                );
+            }
+            // Negative cases stay unannotated: all-blank padding, and a value
+            // too short to be a word.
+            for noise in ["0x20202020 ;", "0x48 ;"] {
+                assert!(
+                    !text.contains(noise),
+                    "{view} view wrongly annotated {noise}:\n{text}"
+                );
+            }
+        }
+
+        assert_eq!(
+            linear, graph,
+            "the linear and graph views must annotate identically"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The count-anchored linear view, which is a different entry point from
+    /// `function_disasm`, annotates the same way.
+    #[test]
+    fn immediate_text_is_spelled_in_a_count_anchored_window() {
+        let path = temp_fixture("inline_text_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+        let ops = engine
+            .disassemble(&Target::Addr(entry), Some(16))
+            .expect("disassemble")
+            .ops;
+        let text: String = ops.iter().map(|op| op.disasm.clone()).collect();
+        assert!(
+            text.contains("'CTF:'"),
+            "window view lost the comment: {text}"
+        );
+        assert!(
+            text.contains("'Let'"),
+            "window view lost the comment: {text}"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     /// `STT_NOTYPE` assembly labels are real function starts, so a binary whose

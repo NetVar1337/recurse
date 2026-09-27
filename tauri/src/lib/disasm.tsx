@@ -4,8 +4,9 @@ import type { ReactNode } from "react";
  * Split a disassembly line into its instruction and its `; comment` suffix.
  *
  * Both backends append annotations to `disasm` as `"<instr> ; <comment>"`
- * (the comment is a string literal, a symbol, or a GOT/PLT name), so the UI
- * splits on that separator to colour the two parts independently.
+ * (the comment is a string literal, text spelled by an immediate, a symbol, or
+ * a GOT/PLT name), so the UI splits on that separator to colour the two parts
+ * independently.
  *
  * ```
  * splitComment('mov edi, 0x4007d4 ; "Hello ! "')
@@ -148,19 +149,21 @@ export function DisasmInstr({ text }: { text: string }): ReactNode {
 		</>
 	);
 }
-
 /**
- * Render the `; comment` suffix of a disassembly line. Quoted string literals
- * get the string accent; symbol / GOT / PLT comments are muted italic, so a
- * `; "Give me your flag"` reads clearly as a string rather than more assembly.
+ * Render the `; comment` suffix of a disassembly line.
+ *
+ * Every comment shares one style. The suffix is always the same kind of thing —
+ * a note about the operand, never more assembly — whatever produced it: a
+ * symbol or GOT/PLT name, a string read from the binary (`"Give me your
+ * flag"`), or characters spelled by an immediate (`'CTF:'`). Colouring those
+ * differently implied they differed in kind rather than only in origin, and
+ * the mixed palette made a run of annotated instructions harder to scan, not
+ * easier.
  */
 export function DisasmComment({ comment }: { comment: string }): ReactNode {
 	if (!comment) return null;
-	const isString = comment.startsWith('"');
 	return (
-		<span
-			className={isString ? "text-asm-string" : "text-asm-symbol italic"}
-		>
+		<span className="text-asm-symbol italic">
 			{" ; "}
 			{comment}
 		</span>

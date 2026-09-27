@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { DisasmInstr } from "@/lib/disasm";
+import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
 import { chrome } from "@/lib/chrome";
 import { DISASM_AFTER, windowAround } from "@/lib/debugDisasm";
 import { cn } from "@/lib/utils";
@@ -29,6 +29,9 @@ function fmtAddr(a?: number | null): string {
  * Only the last `debugHistory` already-executed instructions are shown, set
  * from Settings > Debugger; older ones stay in the cache, so raising it
  * scrolls them back into view without refetching.
+ *
+ * A `; ...` suffix is split out and rendered by [`DisasmComment`], so the live
+ * view colours comments exactly as the static views do.
  */
 export function DebugCpu() {
 	const livePc = useDebugStore((s) => s.registers?.pc ?? null);
@@ -101,6 +104,10 @@ export function DebugCpu() {
 			<table className="w-full border-collapse">
 				<tbody>
 					{ops.map((op) => {
+						// The `; ...` suffix is a comment, not assembly, so it is
+						// split out and styled like every other view rather than
+						// tokenized as operands.
+						const { instr, comment } = splitComment(op.text);
 						const isPc = live && op.addr === anchor;
 						const seen = visited.has(op.addr);
 						const hasBp = bpAt.has(op.addr);
@@ -155,7 +162,8 @@ export function DebugCpu() {
 									{op.bytes}
 								</td>
 								<td className="px-1 whitespace-nowrap">
-									<DisasmInstr text={op.text} />
+									<DisasmInstr text={instr} />
+									<DisasmComment comment={comment} />
 								</td>
 							</tr>
 						);
