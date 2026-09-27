@@ -1,7 +1,8 @@
 //! End-to-end test of the Linux backend: compile a fixture, launch it under
 //! the debugger, break on a symbol, inspect registers, step, and detach.
 //!
-//! Skips (never fails) when there is no C compiler or no ptrace support.
+//! Skips (never fails) off Linux, and when this host cannot produce the
+//! fixture (no C compiler, one that cannot link it, or no ptrace support).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -52,9 +53,20 @@ impl Symbols for ElfSymbols {
     }
 }
 
-/// Compile the fixture into a temp dir and return its path, or `None` when no
-/// compiler is available.
+/// Compile the fixture into a temp dir and return its path, or `None` when this
+/// host cannot produce one.
+///
+/// Gated on the host platform first: `-no-pie` is a GNU/Linux linker option, and
+/// the debugger exercised here is the ptrace backend, so a compiler on another
+/// host would build a binary this test cannot launch. Skipping before the
+/// compiler runs also keeps a wrong-host build from looking like a test failure.
+/// "no compiler" and "could not link" are reported apart, since the first is a
+/// missing toolchain and the second is a broken one.
 fn build_fixture() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipping: Linux backend, not the host platform");
+        return None;
+    }
     let dir = std::env::temp_dir().join(format!("recurse-debug-it-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let src = dir.join("target.c");
@@ -66,7 +78,11 @@ fn build_fixture() -> Option<PathBuf> {
         .arg(&src)
         .status()
         .ok()?;
-    status.success().then_some(bin)
+    if !status.success() {
+        eprintln!("skipping: `cc` could not build the fixture");
+        return None;
+    }
+    Some(bin)
 }
 
 /// Parse the fixture's symbols for the debugger.
@@ -92,7 +108,7 @@ fn elf_symbols(path: &Path) -> Option<ElfSymbols> {
 #[test]
 fn launch_break_step_detach() {
     let Some(bin) = build_fixture() else {
-        eprintln!("skipping: no `cc` available");
+        eprintln!("skipping: no Linux fixture available");
         return;
     };
     let symbols = match elf_symbols(&bin) {
