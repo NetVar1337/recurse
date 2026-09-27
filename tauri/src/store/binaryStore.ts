@@ -78,10 +78,18 @@ export const useBinaryStore = create<BinaryState>((set) => ({
 				api.strings(),
 				api.imports(),
 			]);
+			// Fetched apart from the rest on purpose: a backend that does not
+			// report data regions must not fail the whole open, and the panel
+			// degrades to empty instead.
+			const dataRegions = await api.dataRegions().catch(() => ({
+				sections: [],
+				boundaries: [],
+			}));
 			useAnalysisStore.getState().setAll({
 				funcs: f ?? [],
 				strings: s ?? [],
 				imports: i ?? [],
+				dataRegions,
 			});
 			await useSessionStore.getState().ensure();
 			void pollIndexing(indexPollToken);

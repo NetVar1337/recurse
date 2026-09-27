@@ -429,6 +429,20 @@ pub fn strings(state: State<'_, AppState>) -> Result<Value, String> {
     serde_json::to_value(strings).map_err(|e| e.to_string())
 }
 
+/// The image's non-executable regions: data sections and linker boundary
+/// markers. None of it is code, so it is never part of `functions`.
+#[tauri::command]
+pub fn data_regions(state: State<'_, AppState>) -> Result<Value, String> {
+    let guard = session(&state)?;
+    let regions = with_sess(&guard)?.data_regions()?;
+    eprintln!(
+        "[recurse] data_regions: {} sections, {} boundaries",
+        regions.sections.len(),
+        regions.boundaries.len()
+    );
+    serde_json::to_value(regions).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn imports(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;

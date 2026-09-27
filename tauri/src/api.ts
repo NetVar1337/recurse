@@ -9,6 +9,7 @@ import type {
 	BinaryInfo,
 	CallGraph,
 	ChatMessage,
+	DataRegions,
 	DebugSnapshot,
 	DebugTraceEntry,
 	DecompileResult,
@@ -63,6 +64,7 @@ export const api = {
 	disassemble: (addr: number, count: number) =>
 		invoke<AsmInsn[]>("disassemble", { addr, count }),
 	strings: () => invoke<R2String[]>("strings"),
+	dataRegions: () => invoke<DataRegions>("data_regions"),
 	imports: () => invoke<Import[]>("imports"),
 	xrefsTo: (addr: number) => invoke<Xref[]>("xrefs_to", { addr }),
 	decompile: (addr: number) => invoke<DecompileResult>("decompile", { addr }),

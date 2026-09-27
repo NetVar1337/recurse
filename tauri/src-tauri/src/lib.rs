@@ -122,6 +122,7 @@ pub fn run() {
             commands::function_disasm,
             commands::function_graph,
             commands::strings,
+            commands::data_regions,
             commands::imports,
             commands::xrefs_to,
             commands::decompile,

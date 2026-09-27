@@ -46,8 +46,9 @@ use serde_json::json;
 
 use crate::arch;
 use crate::engine::{
-    BackendKind, BasicBlock, Capabilities, Decompilation, Disassembly, Engine, FunctionGraph,
-    FunctionInfo, Import, Instruction, StringRef, Target, Xref, XrefDirection,
+    BackendKind, BasicBlock, BoundarySymbol, Capabilities, DataRegions, DataSection, Decompilation,
+    Disassembly, Engine, FunctionGraph, FunctionInfo, Import, Instruction, StringRef, Target, Xref,
+    XrefDirection,
 };
 
 /// Maximum functions discovered per binary; guards recursive descent and caps
@@ -793,6 +794,164 @@ fn data_ranges(file: &object::File<'_>) -> Vec<(u64, u64)> {
 /// True when `addr` is inside a data range from [`data_ranges`].
 fn in_data_ranges(ranges: &[(u64, u64)], addr: u64) -> bool {
     ranges.iter().any(|(lo, hi)| addr >= *lo && addr < *hi)
+}
+
+/// What a linker boundary marker means, from the name it is given.
+///
+/// A linker's own vocabulary, spelled several ways across toolchains, so each
+/// entry lists the spellings that mean the same thing. Matching is on the
+/// trimmed name: the surrounding underscores are decoration, and `__bss_start`
+/// and `bss_start` are the same marker.
+fn boundary_kind(name: &str) -> Option<&'static str> {
+    let n = name.trim_matches('_');
+    match n {
+        "end" | "end__" | "__end" | "end_" => Some("end of image"),
+        "edata" | "data_end" | "end_data" => Some("end of initialised data"),
+        "bss_start" | "bssstart" => Some("start of zero-initialised data"),
+        "bss_end" | "bssend" => Some("end of zero-initialised data"),
+        "etext" | "text_end" | "end_text" => Some("end of text"),
+        _ => None,
+    }
+}
+
+/// Coarse description of what a non-executable section holds.
+///
+/// `object` folds several unrelated ELF section types into one kind — relocations
+/// (`SHT_RELA`), the dynamic table (`SHT_DYNAMIC`) and notes (`SHT_NOTE`) all
+/// arrive as `Metadata` — so the well-known section names are labelled from the
+/// name and the kind is only the fallback. Best-effort: an unrecognised name
+/// gets its kind's description, which is right and coarse.
+fn section_kind_label(name: &str, kind: SectionKind) -> &'static str {
+    match name {
+        ".dynamic" => return "dynamic linking table",
+        ".got" | ".got.plt" => return "global offset table",
+        ".init_array" | ".fini_array" => return "initialisation arrays",
+        ".eh_frame" | ".eh_frame_hdr" | ".sframe" => return "unwind tables",
+        ".tdata" | ".tbss" => return "thread-local data",
+        _ => {}
+    }
+    if name.starts_with(".rela") || name.starts_with(".rel") {
+        return "relocations";
+    }
+    if name.starts_with(".note") {
+        return "build notes";
+    }
+    match kind {
+        SectionKind::ReadOnlyData => "read-only data",
+        SectionKind::Data => "writable data",
+        SectionKind::UninitializedData => "zero-initialised data",
+        SectionKind::Tls | SectionKind::UninitializedTls => "thread-local data",
+        SectionKind::Metadata | SectionKind::Note | SectionKind::Debug => "metadata",
+        SectionKind::Linker | SectionKind::Other | SectionKind::Common => "other",
+        // Executable sections are never reported here; this arm only keeps the
+        // match total.
+        _ => "other",
+    }
+}
+
+/// ELF `sh_flags` bits, for the formats that carry access in the section header.
+const SHF_WRITE: u64 = 0x1;
+const SHF_ALLOC: u64 = 0x2;
+const SHF_EXECINSTR: u64 = 0x4;
+/// COFF `IMAGE_SCN_MEM_*` bits.
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+const IMAGE_SCN_MEM_READ: u32 = 0x4000_0000;
+const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+/// Whether a section is readable, writable and executable.
+///
+/// ELF and COFF carry the access bits in the section header, so they are used
+/// directly; `SHF_ALLOC`/`IMAGE_SCN_MEM_READ` is what "readable" means here,
+/// since a section without it is not mapped into the image at all. Mach-O keeps
+/// those bits on the *segment*, so its section header cannot answer, and the
+/// kind is used instead — a read-only-data section is readable and not writable,
+/// a data or zero-initialised one is both. That inference is weaker than a
+/// header bit, so it is confined to the formats that give nothing better.
+fn section_access(kind: SectionKind, flags: object::SectionFlags) -> (bool, bool, bool) {
+    match flags {
+        object::SectionFlags::Elf { sh_flags } => (
+            sh_flags & SHF_ALLOC != 0,
+            sh_flags & SHF_WRITE != 0,
+            sh_flags & SHF_EXECINSTR != 0,
+        ),
+        object::SectionFlags::Coff { characteristics } => (
+            characteristics & IMAGE_SCN_MEM_READ != 0,
+            characteristics & IMAGE_SCN_MEM_WRITE != 0,
+            characteristics & IMAGE_SCN_MEM_EXECUTE != 0,
+        ),
+        _ => match kind {
+            SectionKind::ReadOnlyData => (true, false, false),
+            SectionKind::Data | SectionKind::UninitializedData => (true, true, false),
+            _ => (true, false, false),
+        },
+    }
+}
+
+/// Collect the image's non-executable regions: every section that is not code,
+/// plus the linker's boundary markers.
+///
+/// Sections are the whole non-executable *address space*, so TLS is included
+/// alongside `.rodata`/`.data`/`.bss`. Sections the loader never maps are not:
+/// `.symtab`, `.strtab`, `.shstrtab` and `.comment` live in the file at address
+/// zero and occupy no memory, so listing them would report three "regions" of
+/// the image that do not exist in it. Allocation is what separates the two, and
+/// for ELF that is the `SHF_ALLOC` bit [`section_access`] reads.
+///
+/// A marker is reported whether or not it lands inside a section. In a normal
+/// image it does (that is where `.bss` begins); in a hand-written one it can sit
+/// past the last section entirely, which is exactly the case where it is the
+/// only description of where the image stops.
+fn data_regions(file: &object::File<'_>) -> DataRegions {
+    let mut sections: Vec<DataSection> = file
+        .sections()
+        .filter(|s| s.kind() != SectionKind::Text && s.size() > 0)
+        .filter_map(|s| {
+            let (readable, writable, executable) = section_access(s.kind(), s.flags());
+            // Unmapped bookkeeping: not part of the image's memory.
+            if !readable {
+                return None;
+            }
+            // A section that occupies no file bytes (`.bss`) is still part of
+            // the image; `file_range` is what distinguishes the two.
+            let file_len = s.file_range().map(|(_, len)| len).unwrap_or(0);
+            let name = s.name().unwrap_or("<unnamed>").to_string();
+            Some(DataSection {
+                kind: section_kind_label(&name, s.kind()).to_string(),
+                name,
+                addr: s.address(),
+                size: s.size(),
+                readable,
+                writable,
+                executable,
+                uninitialized: file_len == 0,
+            })
+        })
+        .collect();
+    sections.sort_by_key(|s| s.addr);
+
+    let mut boundaries: Vec<BoundarySymbol> = file
+        .symbols()
+        .chain(file.dynamic_symbols())
+        .filter_map(|sym| {
+            let name = sym.name().ok()?;
+            let kind = boundary_kind(name)?;
+            (sym.address() != 0).then(|| BoundarySymbol {
+                name: name.to_string(),
+                addr: sym.address(),
+                kind: kind.to_string(),
+            })
+        })
+        .collect();
+    // Two markers can share an address (`_edata` and `__bss_start` both point
+    // at the start of `.bss`); keep both, ordered by address then name so the
+    // list is stable between calls.
+    boundaries.sort_by_key(|b| (b.addr, b.name.clone()));
+    boundaries.dedup_by(|a, b| a.addr == b.addr && a.name == b.name);
+
+    DataRegions {
+        sections,
+        boundaries,
+    }
 }
 
 /// Name of the function containing `addr`, from the current state. Used by
@@ -2722,6 +2881,11 @@ impl Engine for NativeEngine {
         })
     }
 
+    fn data_regions(&self) -> Result<DataRegions, String> {
+        let file = self.parse()?;
+        Ok(data_regions(&file))
+    }
+
     fn strings(&self) -> Result<Vec<StringRef>, String> {
         self.ensure_labels()?;
         let state = self
@@ -3618,6 +3782,105 @@ mod tests {
             "window view lost the comment: {text}"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The boundary markers a linker emits are reported as data regions, which
+    /// is where an analyst can see them: they are addresses, never functions.
+    #[test]
+    fn data_regions_report_the_linker_boundary_markers() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file);
+
+        let names: Vec<&str> = regions.boundaries.iter().map(|b| b.name.as_str()).collect();
+        for expected in ["_end", "_edata", "__bss_start"] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
+        // Each marker says what it marks, not just where it points.
+        let end = regions
+            .boundaries
+            .iter()
+            .find(|b| b.name == "_end")
+            .expect("_end");
+        assert_eq!(end.kind, "end of image");
+        assert!(end.addr > 0);
+    }
+
+    /// A code-only image reports no sections, and never its own `.text`.
+    #[test]
+    fn data_regions_exclude_code_and_unmapped_bookkeeping() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file);
+
+        for s in &regions.sections {
+            assert_ne!(s.name, ".text", "code must never be reported as data");
+            assert!(
+                s.addr != 0,
+                "{} is unmapped bookkeeping, not part of the image",
+                s.name
+            );
+            assert!(!s.executable, "{} is not executable", s.name);
+        }
+    }
+
+    /// A real compiler-built image: `.rodata`, `.data` and `.bss` are reported
+    /// with their sizes and permissions, and `.bss` is flagged as occupying no
+    /// file bytes. The test binary is a genuine ELF with all three.
+    #[test]
+    fn data_regions_report_real_data_sections() {
+        let exe = std::env::current_exe().expect("current test binary");
+        let engine = NativeEngine::open(&exe).expect("open test binary");
+        let regions = engine.data_regions().expect("data regions");
+        assert!(
+            !regions.sections.is_empty(),
+            "a compiler-built image must have data sections"
+        );
+
+        let find = |name: &str| {
+            regions
+                .sections
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+
+        let rodata = find(".rodata");
+        assert!(rodata.addr > 0);
+        assert!(rodata.size > 0);
+        assert!(rodata.readable, ".rodata is readable");
+        assert!(!rodata.writable, ".rodata is not writable");
+
+        let data = find(".data");
+        assert!(data.writable, ".data is writable");
+
+        let bss = find(".bss");
+        assert!(bss.uninitialized, ".bss occupies no file bytes");
+
+        // Permissions follow the header, so a read-only region and a writable
+        // one must not be reported the same way.
+        assert_ne!(rodata.writable, data.writable);
+    }
+
+    /// The address spaces must not overlap: a section cannot start inside
+    /// another, which is what makes the two lists readable as one map.
+    #[test]
+    fn data_region_sections_do_not_overlap() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file);
+        let mut prev_end: Option<u64> = None;
+        for s in &regions.sections {
+            if let Some(end) = prev_end {
+                assert!(
+                    s.addr >= end,
+                    "{} starts at {:#x}, inside the previous section",
+                    s.name,
+                    s.addr
+                );
+            }
+            prev_end = Some(s.addr + s.size);
+        }
     }
 
     /// `STT_NOTYPE` assembly labels are real function starts, so a binary whose

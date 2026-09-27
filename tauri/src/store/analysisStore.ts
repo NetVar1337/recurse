@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { api } from "../api";
 import type {
 	AsmResult,
+	DataRegions,
 	DecompileAnnotation,
 	Function,
 	Import,
@@ -23,6 +24,11 @@ interface AnalysisState {
 	asmLoading: boolean;
 	strings: R2String[];
 	imports: Import[];
+	/**
+	 * The image's non-executable regions. Empty until a binary is opened, and
+	 * for a backend that does not report them at all.
+	 */
+	dataRegions: DataRegions;
 	decompiled: string | null;
 	decompiledAnnotations: DecompileAnnotation[];
 	decompileError: string | null;
@@ -33,6 +39,7 @@ interface AnalysisState {
 		funcs: Function[];
 		strings: R2String[];
 		imports: Import[];
+		dataRegions: DataRegions;
 	}) => void;
 	setFunctions: (funcs: Function[]) => void;
 	renameFunction: (addr: number, name: string) => Promise<void>;
@@ -55,6 +62,7 @@ const initial = {
 	asmLoading: false,
 	strings: [] as R2String[],
 	imports: [] as Import[],
+	dataRegions: { sections: [], boundaries: [] } as DataRegions,
 	decompiled: null as string | null,
 	decompiledAnnotations: [] as DecompileAnnotation[],
 	decompileError: null as string | null,
@@ -68,7 +76,8 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
 
 	beginOpen: () => set({ ...initial }),
 
-	setAll: ({ funcs, strings, imports }) => set({ funcs, strings, imports }),
+	setAll: ({ funcs, strings, imports, dataRegions }) =>
+		set({ funcs, strings, imports, dataRegions }),
 
 	setFunctions: (funcs) =>
 		set((state) => ({

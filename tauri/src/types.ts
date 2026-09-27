@@ -100,6 +100,42 @@ export interface R2String {
 	[k: string]: unknown;
 }
 
+/**
+ * A non-executable region of the image. None of it is code, so it is never
+ * part of `Function[]` — the debugger cannot single-step it and the linear
+ * sweep skips it, which leaves this as the only view of it.
+ */
+export interface DataSection {
+	name: string;
+	addr: number;
+	size: number;
+	/** Coarse description, e.g. `read-only data`, `unwind tables`. */
+	kind: string;
+	readable: boolean;
+	writable: boolean;
+	executable: boolean;
+	/** True when the section occupies no file bytes (`.bss` and friends). */
+	uninitialized: boolean;
+}
+
+/**
+ * A linker-provided marker for a region boundary (`_end`, `_edata`,
+ * `__bss_start`, `_etext`). An address, not code: `gdb` lists these under
+ * "Non-debugging symbols" for the same reason.
+ */
+export interface BoundarySymbol {
+	name: string;
+	addr: number;
+	/** What the marker means, e.g. `end of initialised data`. */
+	kind: string;
+}
+
+/** Everything in the image that is not executable code. */
+export interface DataRegions {
+	sections: DataSection[];
+	boundaries: BoundarySymbol[];
+}
+
 export interface Import {
 	name?: string;
 	[k: string]: unknown;

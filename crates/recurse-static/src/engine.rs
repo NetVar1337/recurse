@@ -254,6 +254,60 @@ pub struct FunctionInfo {
     pub signature: Option<String>,
 }
 
+/// A non-executable region of the image: a data section.
+///
+/// Reported separately from functions because none of it is code. The debugger
+/// cannot single-step it, and a linear sweep over the text deliberately skips
+/// it, so without this it is invisible in the UI — the one part of the image an
+/// analyst has no other view of.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DataSection {
+    /// Section name as the object file spells it (`.rodata`, `.data`, `.bss`).
+    pub name: String,
+    /// Virtual address.
+    pub addr: u64,
+    /// Size in bytes.
+    pub size: u64,
+    /// Coarse description of the contents: `read-only data`,
+    /// `writable data`, `zero-initialized data`, `tls`, or `metadata`.
+    pub kind: String,
+    /// Whether the region can be read / written / executed.
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+    /// True when the section occupies no file bytes (`.bss` and friends).
+    pub uninitialized: bool,
+}
+
+/// A linker-provided marker for a region boundary, such as `_end`,
+/// `_edata`, `__bss_start` or `_etext`.
+///
+/// These are addresses, not code, and they are the only record of where one
+/// region stops and the next begins — in a stripped binary they can be the sole
+/// thing describing the image's memory layout. `gdb`'s `info functions` lists
+/// them under "Non-debugging symbols"; they are reported here for the same
+/// reason and to the same end.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BoundarySymbol {
+    /// Symbol name as spelled (leading underscores included).
+    pub name: String,
+    /// Address the marker points at.
+    pub addr: u64,
+    /// What the marker means: `end of image`, `end of initialised data`,
+    /// `start of zero-initialised data`, `end of text`.
+    pub kind: String,
+}
+
+/// Everything in the image that is not executable code: its data sections and
+/// the linker's boundary markers.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DataRegions {
+    /// Non-executable sections, ordered by address.
+    pub sections: Vec<DataSection>,
+    /// Linker boundary markers, ordered by address.
+    pub boundaries: Vec<BoundarySymbol>,
+}
+
 /// One disassembled instruction.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Instruction {
@@ -461,6 +515,17 @@ pub trait Engine: Send + Sync {
 
     /// Recover strings referenced by the binary.
     fn strings(&self) -> Result<Vec<StringRef>, String>;
+
+    /// The image's non-executable regions: data sections and linker boundary
+    /// markers. Reported separately from [`Engine::functions`] because none of
+    /// it is code, so it can never be listed there.
+    ///
+    /// Defaults to an error so a backend that does not read the object file's
+    /// section and symbol tables says so plainly, rather than reporting an
+    /// image with no data at all.
+    fn data_regions(&self) -> Result<DataRegions, String> {
+        Err("this backend does not report data regions".to_string())
+    }
 
     /// List imported symbols.
     fn imports(&self) -> Result<Vec<Import>, String>;

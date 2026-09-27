@@ -5,10 +5,10 @@ import { ActivityBar } from "@/components/ActivityBar";
 import { AgentChat } from "@/components/AgentChat";
 import { CenterPanel } from "@/components/CenterPanel";
 import { CommandPalette } from "@/components/CommandPalette";
-import { FunctionList } from "@/components/FunctionList";
 import { Header } from "@/components/Header";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { ProjectScreen } from "@/components/ProjectScreen";
+import { Sidebar } from "@/components/Sidebar";
 import { StatusBar } from "@/components/StatusBar";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useDebugStore } from "@/store/debugStore";
@@ -120,7 +120,7 @@ function App() {
 						}}
 					>
 						<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-r">
-							<FunctionList />
+							<Sidebar />
 						</aside>
 
 						<CenterPanel />
