@@ -166,11 +166,37 @@ Crates (all permissive): `libc`/`nix` (Unix), `mach2` (macOS), `windows-sys`
 ### Stepping
 
 - **Into**: single-step the current thread.
-- **Over**: if the current instruction is a `call`, read the return address
-  (top of stack / `LR`), set a temporary breakpoint there, continue; otherwise
-  single-step.
-- **Out**: unwind one frame, temporary breakpoint at the return address,
+- **Over**: if the current instruction is a `call`, set a temporary breakpoint
+  at the *next instruction* and continue, so the call runs to completion;
+  otherwise single-step.
+- **Out**: set a temporary breakpoint where the current function returns to and
   continue.
+
+Neither of the two run-to-a-place steps reads the top of the stack. It holds a
+return address only at a function's entry: one instruction in it is a saved
+register or a local, so `Over` resumes a whole call too late and `Out` plants
+its breakpoint in the middle of the frame and then stops wherever the program
+comes back round — for a loop, at the next call of the same function.
+
+Where control comes back to is taken from **unwind data** (`.eh_frame`), read
+for the object the pc is actually in rather than only for the main binary, so a
+frame in libc or the loader unwinds with that library's rules. A frame-pointer
+chain is *not* used for this: at a callee's entry `rbp` is still the caller's,
+and in code built without frame pointers it is stale — and the word above it
+reads as an address far more often than not, including a perfectly plausible
+code address, which is the worst thing to hand a step that writes memory.
+
+When a frame has no unwind data, `Out` steps one instruction at a time and stops
+when the stack comes back above where it started, which is the return. That
+needs no address and no breakpoint, so it is correct anywhere — at the cost of
+being only as fast as single-stepping, and it stops early on any breakpoint,
+signal or exit on the way.
+
+The temporary breakpoint is put back and **the program counter is rewound onto
+the restored instruction** before the stop is reported. Without that rewind the
+reported pc is a byte past the instruction, which is not an instruction boundary
+at all — and the CPU view anchors itself on the pc. The same rewind belongs to
+deleting a breakpoint the program is stopped on, and to resuming from one.
 
 ### ASLR / PIE
 
@@ -262,6 +288,19 @@ the existing "verify, don't guess" framing.
 - **Breakpoints in the disassembly**: a gutter affordance on each instruction
   row to toggle a breakpoint; the store keeps the set; the row shows a red dot.
   Clicking a backtrace frame selects the function and highlights the line.
+- **The CPU view is a code window, not a history**: the rows above the cursor
+  are the instructions leading into it, dimmed as context. A debugger only
+  observes the program between stops, so a row at a lower address is not a row
+  that ran — and on a loop it is a branch forward to code that has not run yet,
+  which is exactly how an address-ordered "history" makes a backward branch
+  invisible. Marking those rows as executed was the bug, not the fix.
+- **The branch the cursor is on is where the answer is**: a conditional branch
+  reads as `taken`/`not taken` with the flag condition that decides it
+  (`lib/branches.ts` evaluates the x86 conditions against the live `eflags`),
+  and when it is going to be taken the target is spliced in underneath with `↳`.
+  That is what makes a loop legible from the inside: standing on the back edge,
+  the whole iteration is right there. `debugContext` (Settings > Debugger) sets
+  how many instructions of context stay above the cursor.
 - `FunctionList` / disasm: optionally annotate functions with a breakpoint count.
 
 ## Milestones

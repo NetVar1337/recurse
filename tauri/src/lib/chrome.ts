@@ -8,8 +8,14 @@ export const chrome = {
 	selected: "ui-selected",
 	/** Draggable value input. */
 	slider: "ui-slider",
-	/** Debugger: an instruction the program counter has already passed. */
-	executed: "ui-executed",
+	/** Debugger: the code leading into the program counter. */
+	past: "ui-past",
+	/** Debugger: a conditional branch the cursor is about to take. */
+	taken: "ui-taken",
+	/** Debugger: a conditional branch it is about to skip. */
+	fall: "ui-fall",
+	/** Debugger: the code a taken branch is about to land in. */
+	peek: "ui-peek",
 	composer: "ui-composer",
 	menuLabel: "ui-menu-label",
 	kbd: "ui-kbd",

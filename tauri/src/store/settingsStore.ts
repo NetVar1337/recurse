@@ -9,18 +9,18 @@ import { useUiStore } from "./uiStore";
 const KEY = "recurse.zoomLevel";
 const BACKEND_KEY = "recurse.backend";
 const THEME_KEY = "recurse.theme";
-const DEBUG_HISTORY_KEY = "recurse.debugHistory";
+const DEBUG_CONTEXT_KEY = "recurse.debugContext";
 const MIN = -5;
 const MAX = 8;
 
-/** Fewest already-executed instructions the debugger CPU view will keep. */
-export const DEBUG_HISTORY_MIN = 1;
+/** Fewest instructions of context the CPU view will keep above the cursor. */
+export const DEBUG_CONTEXT_MIN = 0;
 
 /** Most the CPU view will keep, bounding both the rows and the scrollback. */
-export const DEBUG_HISTORY_MAX = 10;
+export const DEBUG_CONTEXT_MAX = 20;
 
-/** Instructions of history shown when nothing has been configured. */
-export const DEBUG_HISTORY_DEFAULT = 5;
+/** Instructions of context shown when nothing has been configured. */
+export const DEBUG_CONTEXT_DEFAULT = 5;
 
 /**
  * Calculates the zoom scale multiplier for a given integer zoom level.
@@ -39,11 +39,15 @@ interface SettingsState {
 	backend: Backend;
 	theme: Theme;
 	/**
-	 * How many already-executed instructions the debugger CPU view keeps above
-	 * the program counter. Older history scrolls out of the view but stays in
-	 * the session's disassembly cache, so raising this brings it back.
+	 * How many instructions of context the debugger CPU view keeps above the
+	 * program counter.
+	 *
+	 * Those rows are the code leading into the cursor, not a record of what ran:
+	 * a debugger only observes the program between stops, and a row at a lower
+	 * address is not a row that executed. Where the run really came from is
+	 * shown by peeking the branch the cursor is on, which needs no setting.
 	 */
-	debugHistory: number;
+	debugContext: number;
 	initZoom: () => Promise<void>;
 	zoomIn: () => Promise<void>;
 	zoomOut: () => Promise<void>;
@@ -53,9 +57,9 @@ interface SettingsState {
 	initTheme: () => void;
 	toggleTheme: () => void;
 	setTheme: (theme: Theme) => void;
-	setDebugHistory: (n: number) => void;
-	nudgeDebugHistory: (delta: number) => void;
-	resetDebugHistory: () => void;
+	setDebugContext: (n: number) => void;
+	nudgeDebugContext: (delta: number) => void;
+	resetDebugContext: () => void;
 }
 
 /**
@@ -96,34 +100,36 @@ function readInitialTheme(): Theme {
 }
 
 /**
- * Clamp a debugger history depth into the supported range.
+ * Clamp a debugger context depth into the supported range.
  *
  * A non-finite depth is treated as unset and resolves to the default rather than
  * to a bound: a `NaN` or `Infinity` reaching here means a corrupt stored value,
  * and "no usable preference" has a better answer than "pin to an extreme".
  *
- * @param n - Requested number of instructions of history.
- * @returns The depth, rounded and bounded to [DEBUG_HISTORY_MIN, DEBUG_HISTORY_MAX],
- * or DEBUG_HISTORY_DEFAULT when `n` is not finite.
+ * @param n - Requested number of instructions of context.
+ * @returns The depth, rounded and bounded to [DEBUG_CONTEXT_MIN, DEBUG_CONTEXT_MAX],
+ * or DEBUG_CONTEXT_DEFAULT when `n` is not finite.
  */
-export function clampDebugHistory(n: number): number {
-	if (!Number.isFinite(n)) return DEBUG_HISTORY_DEFAULT;
+export function clampDebugContext(n: number): number {
+	if (!Number.isFinite(n)) return DEBUG_CONTEXT_DEFAULT;
 	return Math.min(
-		DEBUG_HISTORY_MAX,
-		Math.max(DEBUG_HISTORY_MIN, Math.round(n)),
+		DEBUG_CONTEXT_MAX,
+		Math.max(DEBUG_CONTEXT_MIN, Math.round(n)),
 	);
 }
 
 /**
- * Reads the initial debugger history depth from localStorage.
+ * Reads the initial debugger context depth from localStorage.
  *
- * @returns The saved depth, or DEBUG_HISTORY_DEFAULT when unset or invalid.
+ * @returns The saved depth, or DEBUG_CONTEXT_DEFAULT when unset or invalid.
  */
-function readInitialDebugHistory(): number {
-	const v = Number(localStorage.getItem(DEBUG_HISTORY_KEY));
-	return Number.isFinite(v) && v > 0
-		? clampDebugHistory(v)
-		: DEBUG_HISTORY_DEFAULT;
+function readInitialDebugContext(): number {
+	const raw = localStorage.getItem(DEBUG_CONTEXT_KEY);
+	// Read as null first: `Number(null)` is 0, and 0 is a depth the user can
+	// legitimately choose, so it cannot double as "nothing stored".
+	if (raw === null) return DEBUG_CONTEXT_DEFAULT;
+	const v = Number(raw);
+	return Number.isFinite(v) ? clampDebugContext(v) : DEBUG_CONTEXT_DEFAULT;
 }
 
 /**
@@ -142,7 +148,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 	zoomLevel: readInitial(),
 	backend: readInitialBackend(),
 	theme: readInitialTheme(),
-	debugHistory: readInitialDebugHistory(),
+	debugContext: readInitialDebugContext(),
 
 	initZoom: async () => {
 		try {
@@ -246,19 +252,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 		applyTheme(theme);
 	},
 
-	setDebugHistory: (n: number) => {
-		const depth = clampDebugHistory(n);
-		set({ debugHistory: depth });
-		localStorage.setItem(DEBUG_HISTORY_KEY, String(depth));
+	setDebugContext: (n: number) => {
+		const depth = clampDebugContext(n);
+		set({ debugContext: depth });
+		localStorage.setItem(DEBUG_CONTEXT_KEY, String(depth));
 	},
 
-	nudgeDebugHistory: (delta: number) => {
-		get().setDebugHistory(get().debugHistory + delta);
+	nudgeDebugContext: (delta: number) => {
+		get().setDebugContext(get().debugContext + delta);
 	},
 
-	resetDebugHistory: () => {
-		localStorage.removeItem(DEBUG_HISTORY_KEY);
-		set({ debugHistory: DEBUG_HISTORY_DEFAULT });
+	resetDebugContext: () => {
+		localStorage.removeItem(DEBUG_CONTEXT_KEY);
+		set({ debugContext: DEBUG_CONTEXT_DEFAULT });
 	},
 }));
 

@@ -6,7 +6,6 @@ import {
 	countForward,
 	DISASM_MIN_FORWARD,
 	DISASM_WINDOW,
-	markVisited,
 	mergeDisasm,
 	type DisasmCache,
 } from "../lib/debugDisasm";
@@ -105,8 +104,6 @@ interface DebugState {
 	 * replacing it. Only addresses with no contiguous coverage are fetched.
 	 */
 	disasm: DisasmCache;
-	/** Addresses the program counter has already been observed at. */
-	visited: ReadonlySet<number>;
 	/** Anchors with a `disasm` fetch already in flight, so steps cannot pile up. */
 	disasmPending: ReadonlySet<number>;
 
@@ -149,7 +146,6 @@ const initial = {
 	sessionGen: 0,
 	follow: false,
 	disasm: new Map() as DisasmCache,
-	visited: new Set<number>(),
 	disasmPending: new Set<number>(),
 };
 
@@ -195,24 +191,18 @@ async function refreshFrames(): Promise<void> {
 }
 
 /**
- * Fold a register set in, remembering the pc as one the program has reached so
- * the CPU view can mark it as already executed.
+ * Fold a register set in.
  *
  * A null register set means there is no live debuggee. `lastPc` is deliberately
  * left alone so the CPU view keeps an anchor on the final state, and the live
  * `registers` are cleared so nothing reads a pc out of a process that is gone.
  */
 function applyRegisters(regs: DebugRegisters | null): void {
-	const pc = regs?.pc ?? null;
-	if (pc == null) {
+	if (regs?.pc == null) {
 		useDebugStore.setState({ registers: null });
 		return;
 	}
-	useDebugStore.setState({ registers: regs, lastPc: pc });
-	if (useDebugStore.getState().visited.has(pc)) return;
-	useDebugStore.setState({
-		visited: markVisited(useDebugStore.getState().visited, pc),
-	});
+	useDebugStore.setState({ registers: regs, lastPc: regs.pc });
 }
 
 /**
@@ -220,9 +210,10 @@ function applyRegisters(regs: DebugRegisters | null): void {
  *
  * Used when a new process is launched or attached: its addresses, registers,
  * breakpoints and stdout mean nothing for the next one, so they must not leak
- * across. `output` in particular is per-process — the backend hands each
- * `Debugger` its own capture buffer, so the pane must show one run's stdout,
- * not a run's output with the next run's appended underneath it.
+ * across. `output` in particular is per-process — the
+ * backend hands each `Debugger` its own capture buffer, so the pane must show
+ * one run's stdout, not a run's output with the next run's appended underneath
+ * it.
  *
  * The finished run's own output stays readable while its exited session is on
  * screen; it is dropped here, at the boundary where a new process takes over.
@@ -240,7 +231,6 @@ function clearProcessState(): void {
 		disasmError: null,
 		output: [],
 		disasm: new Map(),
-		visited: new Set<number>(),
 		disasmPending: new Set<number>(),
 		sessionGen: s.sessionGen + 1,
 	}));

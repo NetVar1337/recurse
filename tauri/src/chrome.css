@@ -3,7 +3,9 @@
  * selection fills. Class names are also exported from src/lib/chrome.ts.
  *
  * --selection          quiet selected/pressed fill (not an inverted slab)
- * --executed           debugger fill for an instruction the program has passed
+ * --past               debugger text for the code leading into the cursor
+ * --taken              a conditional branch the cursor is about to take
+ * --fall               a conditional branch it is about to skip
  * --control-h          toolbar control height
  * --chrome-h           bar / tab-strip height
  * --radius-control     shared corner radius
@@ -15,11 +17,14 @@
 :root {
 	--selection: rgba(0, 122, 204, 0.14);
 	--selection-foreground: #0b0d12;
-	/* "Already run past" in the debugger: a green the selection blue cannot be
-	 * mistaken for, with a stronger edge for the leading rule. */
-	--executed: rgba(20, 124, 92, 0.12);
-	--executed-edge: rgba(20, 124, 92, 0.55);
-	--executed-foreground: #4a6a60;
+	/* Debugger: the code above the cursor is context, not a record of what ran,
+	 * so it is dimmed rather than filled. Nothing but the cursor row is
+	 * highlighted, which is what keeps a branch from reading as a wall of
+	 * "already executed" it never claimed to be. */
+	--past-foreground: #6b7280;
+	--taken: #0f766e;
+	--fall: #9a3b3b;
+	--peek-foreground: #5b6b78;
 	--warning: #9a6a00;
 	--warning-foreground: #6b4a00;
 	--kbd: #6b7280;
@@ -51,9 +56,10 @@
 .dark {
 	--selection: rgba(126, 200, 255, 0.14);
 	--selection-foreground: #e9edf3;
-	--executed: rgba(74, 190, 148, 0.11);
-	--executed-edge: rgba(74, 190, 148, 0.5);
-	--executed-foreground: #7fb9a3;
+	--past-foreground: #5f6873;
+	--taken: #7fd6b0;
+	--fall: #e08b8b;
+	--peek-foreground: #8b98a5;
 	--warning: #e5c07b;
 	--warning-foreground: #e5c07b;
 	--kbd: #69727f;
@@ -74,9 +80,10 @@
 @theme inline {
 	--color-selection: var(--selection);
 	--color-selection-foreground: var(--selection-foreground);
-	--color-executed: var(--executed);
-	--color-executed-edge: var(--executed-edge);
-	--color-executed-foreground: var(--executed-foreground);
+	--color-past-foreground: var(--past-foreground);
+	--color-taken: var(--taken);
+	--color-fall: var(--fall);
+	--color-peek-foreground: var(--peek-foreground);
 	--color-warning: var(--warning);
 	--color-warning-foreground: var(--warning-foreground);
 	--color-kbd: var(--kbd);
@@ -193,23 +200,31 @@
 }
 
 /*
- * Debugger: an instruction the program counter has already been observed at.
- * Deliberately a different hue from `.ui-selected` (which marks the one about
- * to run) and a leading rule rather than a cursor glyph alone, so a run of
- * passed instructions reads as a block of history at a glance.
+ * Debugger: the instructions leading into the program counter. Context, not
+ * history — a lower address has not necessarily run — so it recedes rather than
+ * filling, and the cursor row stays the only marked line in the listing.
  */
-.ui-executed {
-	background: var(--executed);
-	box-shadow: inset 2px 0 0 var(--executed-edge);
-	color: var(--executed-foreground);
+.ui-past {
+	color: var(--past-foreground);
 }
 
-/* The current row wins over the executed fill, so the two never stack. */
-.ui-selected.ui-executed,
-.ui-executed.ui-selected {
-	background: var(--selection);
-	color: var(--selection-foreground);
-	box-shadow: inset 2px 0 0 var(--brand);
+/* The branch the cursor is on, and the way it is about to go. */
+.ui-taken {
+	color: var(--taken);
+	font-weight: 600;
+}
+
+.ui-fall {
+	color: var(--fall);
+	font-weight: 600;
+}
+
+/*
+ * The code a taken branch is about to land in, spliced in under it. Recedes
+ * like the context above: it is somewhere else in memory, not the next address.
+ */
+.ui-peek {
+	color: var(--peek-foreground);
 }
 
 /*

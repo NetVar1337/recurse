@@ -21,10 +21,10 @@ vi.mock("../api", () => ({
 import { useAnalysisStore } from "./analysisStore";
 import { useContextStore } from "./contextStore";
 import {
-	clampDebugHistory,
-	DEBUG_HISTORY_DEFAULT,
-	DEBUG_HISTORY_MAX,
-	DEBUG_HISTORY_MIN,
+	clampDebugContext,
+	DEBUG_CONTEXT_DEFAULT,
+	DEBUG_CONTEXT_MAX,
+	DEBUG_CONTEXT_MIN,
 	useSettingsStore,
 } from "./settingsStore";
 import { api } from "../api";
@@ -149,132 +149,133 @@ describe("settingsStore zoom clamps", () => {
 	});
 });
 
-describe("settingsStore debugger history depth", () => {
+describe("settingsStore debugger context depth", () => {
 	it("starts at the default", () => {
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_DEFAULT,
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_DEFAULT,
 		);
 	});
 
 	it("uses the documented range", () => {
-		// The slider is a small 1-10 range, so these are exact values, not just
-		// relative bounds: a wider default or cap would be a visible change.
-		expect(DEBUG_HISTORY_MIN).toBe(1);
-		expect(DEBUG_HISTORY_MAX).toBe(10);
-		expect(DEBUG_HISTORY_DEFAULT).toBe(5);
+		// The slider runs from no context at all to most of the pane, so these
+		// are exact values, not just relative bounds: a wider default or cap
+		// would be a visible change.
+		expect(DEBUG_CONTEXT_MIN).toBe(0);
+		expect(DEBUG_CONTEXT_MAX).toBe(20);
+		expect(DEBUG_CONTEXT_DEFAULT).toBe(5);
 	});
 
 	it("keeps the default inside the range", () => {
-		expect(DEBUG_HISTORY_DEFAULT).toBeGreaterThanOrEqual(DEBUG_HISTORY_MIN);
-		expect(DEBUG_HISTORY_DEFAULT).toBeLessThanOrEqual(DEBUG_HISTORY_MAX);
+		expect(DEBUG_CONTEXT_DEFAULT).toBeGreaterThanOrEqual(DEBUG_CONTEXT_MIN);
+		expect(DEBUG_CONTEXT_DEFAULT).toBeLessThanOrEqual(DEBUG_CONTEXT_MAX);
 	});
 
 	it("clamps into the supported range", () => {
-		const { setDebugHistory } = useSettingsStore.getState();
-		setDebugHistory(0);
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_MIN,
+		const { setDebugContext } = useSettingsStore.getState();
+		setDebugContext(-40);
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_MIN,
 		);
-		setDebugHistory(-40);
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_MIN,
+		setDebugContext(99999);
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_MAX,
 		);
-		setDebugHistory(99999);
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_MAX,
-		);
+	});
+
+	it("keeps zero, which means no context above the counter", () => {
+		useSettingsStore.getState().setDebugContext(0);
+		expect(useSettingsStore.getState().debugContext).toBe(0);
 	});
 
 	it("rounds a fractional depth", () => {
-		useSettingsStore.getState().setDebugHistory(3.6);
-		expect(useSettingsStore.getState().debugHistory).toBe(4);
+		useSettingsStore.getState().setDebugContext(3.6);
+		expect(useSettingsStore.getState().debugContext).toBe(4);
 	});
 
 	it("falls back to the default for a non-finite depth", () => {
-		useSettingsStore.getState().setDebugHistory(Number.NaN);
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_DEFAULT,
+		useSettingsStore.getState().setDebugContext(Number.NaN);
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_DEFAULT,
 		);
 	});
 
 	it("nudges and stops at the bounds", () => {
-		const { nudgeDebugHistory, setDebugHistory } =
+		const { nudgeDebugContext, setDebugContext } =
 			useSettingsStore.getState();
-		setDebugHistory(5);
-		nudgeDebugHistory(3);
-		expect(useSettingsStore.getState().debugHistory).toBe(8);
-		nudgeDebugHistory(-100);
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_MIN,
+		setDebugContext(5);
+		nudgeDebugContext(3);
+		expect(useSettingsStore.getState().debugContext).toBe(8);
+		nudgeDebugContext(-100);
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_MIN,
 		);
-		nudgeDebugHistory(9999);
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_MAX,
+		nudgeDebugContext(9999);
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_MAX,
 		);
 	});
 
 	it("accepts every value the slider can reach", () => {
-		for (let n = DEBUG_HISTORY_MIN; n <= DEBUG_HISTORY_MAX; n++) {
-			useSettingsStore.getState().setDebugHistory(n);
-			expect(useSettingsStore.getState().debugHistory).toBe(n);
+		for (let n = DEBUG_CONTEXT_MIN; n <= DEBUG_CONTEXT_MAX; n++) {
+			useSettingsStore.getState().setDebugContext(n);
+			expect(useSettingsStore.getState().debugContext).toBe(n);
 		}
 	});
 
 	it("persists the depth so it survives a reload", () => {
-		useSettingsStore.getState().setDebugHistory(8);
-		expect(store.get("recurse.debugHistory")).toBe("8");
+		useSettingsStore.getState().setDebugContext(8);
+		expect(store.get("recurse.debugContext")).toBe("8");
 	});
 
-	it("clamps a depth saved under the old wider range", () => {
-		// A value persisted before the range narrowed must not escape it.
-		useSettingsStore.getState().setDebugHistory(64);
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_MAX,
+	it("clamps a depth saved under a different range", () => {
+		// A value persisted before the range changed must not escape it.
+		useSettingsStore.getState().setDebugContext(64);
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_MAX,
 		);
-		expect(store.get("recurse.debugHistory")).toBe(
-			String(DEBUG_HISTORY_MAX),
+		expect(store.get("recurse.debugContext")).toBe(
+			String(DEBUG_CONTEXT_MAX),
 		);
 	});
 
 	it("resets to the default and forgets the saved value", () => {
-		useSettingsStore.getState().setDebugHistory(9);
-		useSettingsStore.getState().resetDebugHistory();
-		expect(useSettingsStore.getState().debugHistory).toBe(
-			DEBUG_HISTORY_DEFAULT,
+		useSettingsStore.getState().setDebugContext(9);
+		useSettingsStore.getState().resetDebugContext();
+		expect(useSettingsStore.getState().debugContext).toBe(
+			DEBUG_CONTEXT_DEFAULT,
 		);
-		expect(store.get("recurse.debugHistory")).toBeUndefined();
+		expect(store.get("recurse.debugContext")).toBeUndefined();
 	});
 });
 
-describe("clampDebugHistory", () => {
+describe("clampDebugContext", () => {
 	it("passes through values already in range", () => {
-		for (let n = DEBUG_HISTORY_MIN; n <= DEBUG_HISTORY_MAX; n++) {
-			expect(clampDebugHistory(n)).toBe(n);
+		for (let n = DEBUG_CONTEXT_MIN; n <= DEBUG_CONTEXT_MAX; n++) {
+			expect(clampDebugContext(n)).toBe(n);
 		}
 	});
 
 	it("bounds values outside the range", () => {
-		expect(clampDebugHistory(-1)).toBe(DEBUG_HISTORY_MIN);
-		expect(clampDebugHistory(11)).toBe(DEBUG_HISTORY_MAX);
-		expect(clampDebugHistory(24)).toBe(DEBUG_HISTORY_MAX);
-		expect(clampDebugHistory(500)).toBe(DEBUG_HISTORY_MAX);
+		expect(clampDebugContext(-1)).toBe(DEBUG_CONTEXT_MIN);
+		expect(clampDebugContext(21)).toBe(DEBUG_CONTEXT_MAX);
+		expect(clampDebugContext(500)).toBe(DEBUG_CONTEXT_MAX);
 	});
 
 	it("rounds, then bounds", () => {
-		expect(clampDebugHistory(4.4)).toBe(4);
-		expect(clampDebugHistory(4.5)).toBe(5);
-		expect(clampDebugHistory(9.7)).toBe(DEBUG_HISTORY_MAX);
+		expect(clampDebugContext(4.4)).toBe(4);
+		expect(clampDebugContext(4.5)).toBe(5);
+		expect(clampDebugContext(19.7)).toBe(DEBUG_CONTEXT_MAX);
 	});
 
 	it("treats any non-finite value as unset and uses the default", () => {
 		// Not "clamp to the bound": a NaN or Infinity from a corrupt value means
 		// there is no usable preference, so the default is the safe answer.
-		expect(clampDebugHistory(Number.NaN)).toBe(DEBUG_HISTORY_DEFAULT);
-		expect(clampDebugHistory(Number.POSITIVE_INFINITY)).toBe(
-			DEBUG_HISTORY_DEFAULT,
+		expect(clampDebugContext(Number.NaN)).toBe(DEBUG_CONTEXT_DEFAULT);
+		expect(clampDebugContext(Number.POSITIVE_INFINITY)).toBe(
+			DEBUG_CONTEXT_DEFAULT,
 		);
-		expect(clampDebugHistory(Number.NEGATIVE_INFINITY)).toBe(
-			DEBUG_HISTORY_DEFAULT,
+		expect(clampDebugContext(Number.NEGATIVE_INFINITY)).toBe(
+			DEBUG_CONTEXT_DEFAULT,
 		);
 	});
 });
