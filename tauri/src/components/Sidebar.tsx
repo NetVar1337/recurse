@@ -81,7 +81,7 @@ export function Sidebar() {
 									: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
 							)}
 						>
-							<Icon className="h-3.5 w-3.5" />
+							<Icon className="h-3.5 w-3.5" strokeWidth={1.5} />
 							{label}
 							{count !== undefined && (
 								<span className="nums text-2xs opacity-70">

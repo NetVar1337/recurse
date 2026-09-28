@@ -40,6 +40,11 @@ const VIEWS: View[] = [
  * marked with an accent bar on its leading edge. The agent chat lives in its
  * own column rather than a tab, so it is toggled from the foot of the rail.
  *
+ * The marks are small and their strokes thin on purpose. A rail is a strip of
+ * nine icons read at a glance, and at a size where they are competing for
+ * attention with the code beside them, they are a way of changing view rather
+ * than something to look at.
+ *
  * ```
  * <ActivityBar />
  * // clicking the Code2 entry sets the center tab to "disasm"
@@ -71,10 +76,7 @@ export function ActivityBar() {
 						aria-pressed={tab === v.tab}
 						onClick={() => setTab(v.tab)}
 					>
-						<v.icon
-							className="h-[18px] w-[18px]"
-							strokeWidth={1.6}
-						/>
+						<v.icon className="h-4 w-4" strokeWidth={1.25} />
 					</button>
 				))}
 			</div>
@@ -87,10 +89,7 @@ export function ActivityBar() {
 				aria-pressed={chatOpen}
 				onClick={toggleChat}
 			>
-				<MessageSquare
-					className="h-[18px] w-[18px]"
-					strokeWidth={1.6}
-				/>
+				<MessageSquare className="h-4 w-4" strokeWidth={1.25} />
 			</button>
 		</nav>
 	);
