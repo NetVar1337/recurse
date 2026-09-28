@@ -1,3 +1,4 @@
+import { House } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -12,6 +13,7 @@ import {
 import { WindowControls } from "@/components/WindowControls";
 import { buildCommands, MENU_ORDER, type MenuName } from "@/lib/commands";
 import { chrome } from "@/lib/chrome";
+import { useProjectStore } from "@/store/projectStore";
 import {
 	groupSections,
 	readSections,
@@ -176,6 +178,8 @@ export function MenuBar() {
 	const menus = MENU_ORDER.filter(
 		(menu) => sectionsFor(menu, commands, readSections(menu)).length > 0,
 	);
+	const project = useProjectStore((s) => s.current);
+	const closeProject = useProjectStore((s) => s.close);
 	const [open, setOpen] = useState<MenuName | null>(null);
 	const [hovered, setHovered] = useState(false);
 	// The pointer's way out of a menu, held back by the grace pause and cancelled
@@ -221,6 +225,24 @@ export function MenuBar() {
 	if (menus.length === 0) return null;
 	return (
 		<div className={chrome.menuBar} role="menubar" aria-label="Main menu">
+			{/* Back to the projects, in the bar rather than in a menu: it is the way
+			    out of whatever is open, and the reader who wants it has usually not
+			    decided which menu holds it. Only while there is something to go back
+			    from — with no project open, the project list is already the screen. */}
+			{project && (
+				<>
+					<button
+						type="button"
+						className={chrome.menuItem}
+						title="Back to projects"
+						onClick={() => void closeProject()}
+					>
+						<House aria-hidden className="h-3 w-3" />
+						Home
+					</button>
+					<span className={chrome.menuDivider} aria-hidden="true" />
+				</>
+			)}
 			{menus.map((menu) => (
 				<Menu
 					key={menu}

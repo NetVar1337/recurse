@@ -71,33 +71,7 @@ describe("analysisStore selectFn stale-response guard", () => {
 		expect(useAnalysisStore.getState().asmLoading).toBe(false);
 	});
 
-	it("keeps multiple function tabs and closes the active tab to its neighbor", () => {
-		mockedDisasm.mockReturnValue(new Promise(() => {}) as never);
-		useAnalysisStore
-			.getState()
-			.setFunctions([{ addr: 0x1000 }, { addr: 0x2000 }] as never);
-		useAnalysisStore.getState().selectFn({ addr: 0x1000 } as never);
-		useAnalysisStore.getState().selectFn({ addr: 0x2000 } as never);
-		useAnalysisStore.getState().selectFn({ addr: 0x1000 } as never);
-		expect(useAnalysisStore.getState().openTabs).toEqual([0x1000, 0x2000]);
-		useAnalysisStore.getState().closeFunctionTab(0x1000);
-		expect(useAnalysisStore.getState().openTabs).toEqual([0x2000]);
-		expect(useAnalysisStore.getState().selected?.addr).toBe(0x2000);
-	});
-
-	it("reorders function tabs without changing the active function", () => {
-		mockedDisasm.mockReturnValue(new Promise(() => {}) as never);
-		useAnalysisStore
-			.getState()
-			.setFunctions([{ addr: 0x1000 }, { addr: 0x2000 }] as never);
-		useAnalysisStore.getState().selectFn({ addr: 0x1000 } as never);
-		useAnalysisStore.getState().selectFn({ addr: 0x2000 } as never);
-		useAnalysisStore.getState().moveFunctionTab(0x1000, 0x2000);
-		expect(useAnalysisStore.getState().openTabs).toEqual([0x2000, 0x1000]);
-		expect(useAnalysisStore.getState().selected?.addr).toBe(0x2000);
-	});
-
-	it("reuses cached disassembly when switching back to a tab", async () => {
+	it("reuses cached disassembly when switching back to a function", async () => {
 		mockedDisasm
 			.mockResolvedValueOnce({ name: "one" } as never)
 			.mockResolvedValueOnce({ name: "two" } as never);

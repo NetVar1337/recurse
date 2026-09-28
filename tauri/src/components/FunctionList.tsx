@@ -9,8 +9,6 @@ import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import type { Function } from "@/types";
 
-export const FUNCTION_DRAG_TYPE = "application/x-recurse-function";
-
 function fmtAddr(a: number) {
 	return `0x${a.toString(16)}`;
 }
@@ -207,21 +205,6 @@ export function FunctionList() {
 											) : (
 												<>
 													<button
-														draggable={!editing}
-														onDragStart={(
-															event,
-														) => {
-															event.dataTransfer.effectAllowed =
-																"copy";
-															event.dataTransfer.setData(
-																FUNCTION_DRAG_TYPE,
-																String(f.addr),
-															);
-															event.dataTransfer.setData(
-																"text/plain",
-																String(f.addr),
-															);
-														}}
 														className="flex min-w-0 flex-1 items-center gap-2 text-left"
 														onClick={() =>
 															selectFn(f)

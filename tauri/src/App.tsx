@@ -5,12 +5,11 @@ import { ActivityBar } from "@/components/ActivityBar";
 import { AgentChat } from "@/components/AgentChat";
 import { CenterPanel } from "@/components/CenterPanel";
 import { CommandPalette } from "@/components/CommandPalette";
-import { Header } from "@/components/Header";
+import { DebuggerSettingsDialog } from "@/components/DebuggerSettingsDialog";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { MenuBar } from "@/components/MenuBar";
 import { ProjectScreen } from "@/components/ProjectScreen";
 import { Sidebar } from "@/components/Sidebar";
-import { StatusBar } from "@/components/StatusBar";
 import { useResizableColumn } from "@/components/ui/resizable-column";
 import { CHAT_DEFAULT } from "@/lib/chatWidth";
 import { SIDEBAR_DEFAULT } from "@/lib/sidebarWidth";
@@ -29,6 +28,10 @@ function App() {
 	const chatOpen = useUiStore((s) => s.chatOpen);
 	const setChatOpen = useUiStore((s) => s.setChatOpen);
 	const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+	const debuggerSettingsOpen = useUiStore((s) => s.debuggerSettingsOpen);
+	const setDebuggerSettingsOpen = useUiStore(
+		(s) => s.setDebuggerSettingsOpen,
+	);
 	// The grid is state, not a ref: it is a value the layout reads during render,
 	// and a ref would put the columns in reach of it.
 	const [grid, setGrid] = useState<HTMLDivElement | null>(null);
@@ -42,6 +45,9 @@ function App() {
 		useLlmStore.getState().init();
 		useSettingsStore.getState().initZoom();
 		useSettingsStore.getState().initTheme();
+		// Came in with the header that used to hold it: the backend actually in use
+		// is the backend's answer, not whatever localStorage last remembered.
+		void useSettingsStore.getState().initBackend();
 		useProjectStore.getState().loadProjects();
 	}, []);
 
@@ -106,7 +112,6 @@ function App() {
 			{/* The bar is the top row, where the title bar was: a window's menus sit
 			    above its content, not below a heading. */}
 			<MenuBar />
-			<Header />
 
 			{err && (
 				<div className="border-destructive bg-destructive/15 text-destructive flex items-center justify-between gap-2 border-b px-3 py-1.5 text-xs">
@@ -158,9 +163,12 @@ function App() {
 				</div>
 			)}
 
-			{binary && <StatusBar />}
 			<CommandPalette />
 			<NewProjectDialog />
+			<DebuggerSettingsDialog
+				open={debuggerSettingsOpen}
+				onOpenChange={setDebuggerSettingsOpen}
+			/>
 		</div>
 	);
 }

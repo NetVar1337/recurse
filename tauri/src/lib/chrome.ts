@@ -1,7 +1,6 @@
 /** Class names backed by tokens in `src/chrome.css`. */
 export const chrome = {
 	bar: "ui-bar",
-	headerActions: "ui-header-actions",
 	sep: "ui-sep",
 	seg: "ui-seg",
 	press: "ui-press",
@@ -26,8 +25,10 @@ export const chrome = {
 	windowClose: "ui-window-close",
 	/** The row of menus across the top of the window. */
 	menuBar: "ui-menu-bar",
-	/** One menu's name in that row. */
+	/** One menu's name in that row, or the way out of the project. */
 	menuItem: "ui-menu-item",
+	/** A rule between the bar's way back and its menus. */
+	menuDivider: "ui-menu-divider",
 	menuLabel: "ui-menu-label",
 	kbd: "ui-kbd",
 	panelTitle: "ui-panel-title",
