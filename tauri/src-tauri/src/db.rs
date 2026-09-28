@@ -4,7 +4,7 @@
 //!
 //! - host (`db.rs`, `project.rs`, `sessions.rs`, `config.rs`, `renames.rs`,
 //!   `providers.rs`): `config`, `projects`, `sessions`, `models`,
-//!   `function_names`, `provider_credentials`
+//!   `function_names`, `variable_names`, `provider_credentials`
 //! - recurse_agent (`recurse_agent::memory`): `memories`, `memories_fts`
 //!
 //! The filesystem under `~/.recurse/<project>/` is reserved for
@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS function_names (
     name TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (binary_path, addr)
+);
+CREATE TABLE IF NOT EXISTS variable_names (
+    binary_path TEXT NOT NULL,
+    func_addr INTEGER NOT NULL,
+    -- `-8` for a frame slot, `rdi` for an argument register. A frame offset
+    -- alone cannot key both: two functions may use `-0x18` for different
+    -- things, and an argument is not an offset at all.
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (binary_path, func_addr, key)
 );
 CREATE TABLE IF NOT EXISTS provider_credentials (
     provider_id TEXT PRIMARY KEY,

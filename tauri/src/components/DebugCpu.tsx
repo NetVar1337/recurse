@@ -16,7 +16,11 @@ import {
 	type DisasmPeek,
 } from "@/lib/debugDisasm";
 import { cn } from "@/lib/utils";
-import { useDebugStore, isLiveState } from "@/store/debugStore";
+import { callTarget, ripTarget, shortName } from "@/lib/debugCalls";
+import { VarNameChip } from "@/components/VarNameChip";
+import { isLastStopView, isLiveState, useDebugStore } from "@/store/debugStore";
+import { useAnalysisStore } from "@/store/analysisStore";
+import type { DebugInsn } from "@/types";
 import { useSettingsStore } from "@/store/settingsStore";
 
 function fmtAddr(a?: number | null): string {
@@ -63,7 +67,18 @@ export function DebugCpu() {
 	const context = useSettingsStore((s) => s.debugContext);
 	const pcRow = useRef<HTMLTableRowElement | null>(null);
 
+	const bias = useDebugStore((s) => s.bias);
+	const callNames = useDebugStore((s) => s.callNames);
+	const ensureCallNames = useDebugStore((s) => s.ensureCallNames);
+	const moduleNames = useDebugStore((s) => s.moduleNames);
+	const ensureModuleNames = useDebugStore((s) => s.ensureModuleNames);
+	const dataNames = useDebugStore((s) => s.dataNames);
+	const ensureDataNames = useDebugStore((s) => s.ensureDataNames);
+	const imports = useAnalysisStore((s) => s.imports);
+	const funcs = useAnalysisStore((s) => s.funcs);
+
 	const live = isLiveState(state);
+	const stale = isLastStopView(state);
 	// Once the process is gone there is no live pc, so the view stays anchored on
 	// the last one and there are no registers left to judge a branch by.
 	const anchor = livePc ?? lastPc;
@@ -118,6 +133,88 @@ export function DebugCpu() {
 		pcRow.current?.scrollIntoView({ block: "nearest" });
 	}, [anchor, rows.length, cursorAt]);
 
+	// Name the function each call in the window is going to, so a PIE's
+	// `call qword ptr [rip + 0x200836]` reads as what it is. A direct branch
+	// names itself from the engine's functions; a jump through the GOT has to be
+	// resolved through the PLT, which is what `ensureCallNames` reads, once per
+	// session.
+	const funcNames = useMemo(() => {
+		const m = new Map<number, string>();
+		for (const f of funcs) {
+			if (typeof f.addr === "number")
+				m.set(f.addr, f.name ?? f.realname ?? "");
+		}
+		return m;
+	}, [funcs]);
+	const needsSlots = useMemo(
+		() => rows.some((row) => callTarget(row.insn)?.kind === "slot"),
+		[rows],
+	);
+	useEffect(() => {
+		if (!needsSlots || !live) return;
+		void ensureCallNames(imports);
+	}, [needsSlots, live, imports, ensureCallNames]);
+	// A direct call the analysis engine has no name for is either inside the
+	// debuggee's own binary — a function its discovery missed — or in a library,
+	// which has its own symbol table either way. Both are answered by reading
+	// the mapped file, once per file, and only for a file the visible window
+	// actually calls into. A jump through the GOT never needs this: it resolves
+	// through the PLT, which is inside the binary.
+	const unnamedTargets = useMemo(() => {
+		const out = new Set<number>();
+		for (const row of rows) {
+			const target = callTarget(row.insn);
+			if (target?.kind !== "direct") continue;
+			if (funcNames.has(target.addr - bias)) continue;
+			out.add(target.addr);
+		}
+		return [...out];
+	}, [rows, bias, funcNames]);
+	useEffect(() => {
+		if (unnamedTargets.length === 0 || !live) return;
+		void ensureModuleNames(unnamedTargets);
+	}, [unnamedTargets, live, ensureModuleNames]);
+	// Every `[rip + x]` in the window is a reference the displacement alone does
+	// not explain, so each one is resolved: a GOT slot names its import, and
+	// anything else may be text, which is read out of the process to find out.
+	const dataTargets = useMemo(() => {
+		const out = new Set<number>();
+		for (const row of rows) {
+			const target = ripTarget(row.insn);
+			if (target !== null) out.add(target);
+		}
+		return [...out];
+	}, [rows]);
+	useEffect(() => {
+		if (dataTargets.length === 0 || !live) return;
+		void ensureDataNames(dataTargets);
+	}, [dataTargets, live, ensureDataNames]);
+	// The function the cursor is in, by its static address, which is what the
+	// names are keyed by — and the same key the static views use, so a rename in
+	// either place is the same rename.
+	const frameFunc =
+		(livePc ?? lastPc) === null ? null : (livePc ?? lastPc)! - bias;
+
+	/** What a `[rip + x]` operand points at, if it can be named. */
+	const dataName = (insn: DebugInsn): string | null => {
+		const target = ripTarget(insn);
+		if (target === null) return null;
+		return dataNames.get(target) ?? null;
+	};
+
+	/** The function a call in this row reaches, if it can be named. */
+	const callName = (insn: DebugInsn): string | null => {
+		const target = callTarget(insn);
+		if (target === null) return null;
+		if (target.kind === "direct") {
+			const own = funcNames.get(target.addr - bias);
+			if (own) return shortName(own);
+			return moduleNames.get(target.addr) ?? null;
+		}
+		const name = callNames.get(target.addr - bias);
+		return name ? shortName(name) : null;
+	};
+
 	// Breakpoints are runtime addresses, matching these rows directly.
 	const bpAt = useMemo(() => {
 		const m = new Map<number, number>();
@@ -153,7 +250,15 @@ export function DebugCpu() {
 						// split out and styled like every other view rather than
 						// tokenized as operands.
 						const { instr, comment } = splitComment(row.insn.text);
-						const isPc = live && row.role === "cursor";
+						const isPc = live && !stale && row.role === "cursor";
+						// While the target runs, the marked row is where it *was*.
+						// It keeps the marker and the address — they are the most
+						// recent ones known — but dimmed and titled, because the
+						// "about to execute" reading would be a lie: the program is
+						// past it, quite possibly inside a syscall, and the live
+						// output pane will say so before the registers ever do.
+						const atLastStop =
+							live && stale && row.role === "cursor";
 						const hasBp = bpAt.has(row.addr);
 						return (
 							<tr
@@ -166,6 +271,7 @@ export function DebugCpu() {
 									row.role === "past" && chrome.past,
 									row.role === "peek" && chrome.peek,
 									isPc && chrome.selected,
+									atLastStop && "opacity-60",
 								)}
 							>
 								<td
@@ -192,9 +298,11 @@ export function DebugCpu() {
 									title={
 										row.role === "peek"
 											? "where this branch is about to land"
-											: row.role === "cursor"
-												? "about to execute"
-												: undefined
+											: atLastStop
+												? "last stop — the target is running past this"
+												: row.role === "cursor"
+													? "about to execute"
+													: undefined
 									}
 								>
 									{row.marker === "pc"
@@ -212,6 +320,18 @@ export function DebugCpu() {
 								<td className="px-1 whitespace-nowrap">
 									<DisasmInstr text={instr} />
 									<DisasmComment comment={comment} />
+									<DisasmComment
+										comment={
+											callName(row.insn) ??
+											dataName(row.insn) ??
+											""
+										}
+									/>
+									<VarNameChip
+										func={frameFunc}
+										insns={rows.map((r) => r.insn)}
+										text={row.insn.text}
+									/>
 									{isPc && verdict && (
 										<span
 											className={cn(

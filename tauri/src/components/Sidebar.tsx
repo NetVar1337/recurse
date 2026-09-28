@@ -42,7 +42,7 @@ export function Sidebar() {
 	];
 
 	return (
-		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
+		<div className="@container flex min-h-0 min-w-0 flex-1 flex-col">
 			<div
 				role="tablist"
 				aria-label="Sidebar view"

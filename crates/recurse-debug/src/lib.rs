@@ -38,5 +38,5 @@ pub mod target;
 pub mod tool;
 
 pub use error::{Error, Result};
-pub use session::Debugger;
+pub use session::{Debugger, SessionEvent, SessionEvents, Snapshot};
 pub use symbols::Symbols;

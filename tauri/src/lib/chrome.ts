@@ -10,6 +10,8 @@ export const chrome = {
 	slider: "ui-slider",
 	/** Debugger: the code leading into the program counter. */
 	past: "ui-past",
+	/** Debugger: a register that moved at the last stop. */
+	changed: "ui-changed",
 	/** Debugger: a conditional branch the cursor is about to take. */
 	taken: "ui-taken",
 	/** Debugger: a conditional branch it is about to skip. */
@@ -22,6 +24,17 @@ export const chrome = {
 	panelTitle: "ui-panel-title",
 	/** One row in any data list. */
 	row: "data-row",
+	/**
+	 * A row too wide for one line: the name on top, its metadata beneath, which
+	 * is the only way a narrow pane can show both without truncating either.
+	 */
+	row2: "data-row-2",
+	/**
+	 * A draggable divider between two panels. The element is the grab area; the
+	 * line drawn inside it is one pixel, however wide the grab is.
+	 */
+	colDivider: "ui-col-divider",
+	rowDivider: "ui-row-divider",
 	/** Uppercase micro-heading for pane titles. */
 	label: "label",
 	/** Tabular numerals for columns of numbers. */

@@ -29,6 +29,9 @@ recurse-agent = { path = "../../crates/recurse-agent" }
 # dwarf, firmware, semantic_memory, sig — it only needs `engine`/`native`).
 recurse-static = { path = "../../crates/recurse-static" }
 recurse-debug = { path = "../../crates/recurse-debug" }
+# Symbol tables for the modules a debuggee has mapped (libc and friends), so a
+# call into a library can be named. Same version recurse-static already pulls in.
+object = "0.36"
 # sync primitives only (Mutex); the async runtime comes from Tauri.
 tokio = { version = "1", features = ["sync"] }
 tauri = { version = "2", features = [] }

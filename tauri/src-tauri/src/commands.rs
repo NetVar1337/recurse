@@ -188,6 +188,39 @@ pub fn rename_function(addr: u64, name: String, state: State<'_, AppState>) -> R
     rename_function_impl(&state, addr, &name)
 }
 
+/// Name a local variable, or clear the name when `name` is blank.
+///
+/// A stack local has no address to key a rename on — it is a frame offset
+/// inside a function — so this is its own record, scoped to the function, and
+/// it survives closing and reopening the binary the way a function rename does.
+/// The engine has no view of stack slots, so the name lives here: the
+/// debugger's variable view and its disassembly annotations are what read it.
+#[tauri::command]
+pub fn rename_variable(
+    func: u64,
+    key: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let guard = session_of(&state)?;
+    let engine = with_sess(&guard)?;
+    let path = engine.path().to_string_lossy().to_string();
+    crate::renames::set_variable(&path, func, &key, Some(&name))
+}
+
+/// The variable names recorded for the open binary, as `(func, slot) -> name`.
+#[tauri::command]
+pub fn variable_names(state: State<'_, AppState>) -> Result<Value, String> {
+    let guard = session_of(&state)?;
+    let engine = with_sess(&guard)?;
+    let path = engine.path().to_string_lossy().to_string();
+    let names: std::collections::HashMap<String, String> = crate::renames::load_variables(&path)
+        .into_iter()
+        .map(|((func, key), name)| (format!("{func}:{key}"), name))
+        .collect();
+    serde_json::to_value(names).map_err(|e| e.to_string())
+}
+
 /// Current function count plus whether the backend is still discovering
 /// functions in the background. The UI polls this to grow the function list
 /// without blocking the initial open; synchronous backends always report
@@ -304,7 +337,26 @@ pub async fn debug_command(
     .map_err(|e| format!("debug task failed: {e}"))??;
     let value: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
     crate::debug_trace::record_if_stop(&state, &value);
+    state.debug_events.ensure_forwarding(&state);
     Ok(value)
+}
+
+/// The files mapped into the debuggee, with the ranges they occupy.
+///
+/// The kernel's own answer, so a runtime address can be attributed to the file
+/// it came from — which is the first half of naming a call that goes into libc.
+#[tauri::command]
+pub fn debug_modules(pid: u32) -> Result<Value, String> {
+    serde_json::to_value(crate::debug_modules::modules(pid)?).map_err(|e| e.to_string())
+}
+
+/// The functions a mapped file defines, sorted by address.
+///
+/// A symbol table, not an analysis pass: a call target is a function entry, and
+/// reading the table takes milliseconds where analysing libc takes seconds.
+#[tauri::command]
+pub fn debug_module_symbols(path: String) -> Result<Value, String> {
+    serde_json::to_value(crate::debug_modules::symbols(&path)?).map_err(|e| e.to_string())
 }
 
 /// Live snapshot of the debug session (pid, state, last stop, breakpoints,

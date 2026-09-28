@@ -34,6 +34,8 @@ import { ReconPanel } from "@/components/ReconPanel";
 import { cn } from "@/lib/utils";
 import { chrome } from "@/lib/chrome";
 import { callTarget } from "@/lib/calls";
+import { VarNameChip } from "@/components/VarNameChip";
+import { FunctionVariables } from "@/components/VariableList";
 import {
 	DisasmComment,
 	DisasmInstr,
@@ -286,7 +288,13 @@ function OpRow({
 	showBytes,
 	showComments,
 	wideSpacing,
+	func,
+	insns,
 }: {
+	/** The function this instruction belongs to, for its variable names. */
+	func?: number | null;
+	/** The function's instructions, which say how it addresses its frame. */
+	insns?: { text?: string; disasm?: string }[];
 	op: {
 		addr: number;
 		bytes?: string | null;
@@ -306,6 +314,18 @@ function OpRow({
 }) {
 	const text = op.text ?? op.disasm ?? "";
 	const { instr, comment } = splitComment(text);
+	// The variable's own name, editable where the analyst is reading it. The
+	// engine's comment — a string, an import — stays beside it, because those are
+	// different facts about the instruction, not two names for one slot.
+	const frameOps = useMemo(
+		() =>
+			(insns ?? []).map((i) => ({
+				addr: 0,
+				bytes: "",
+				text: i.text ?? i.disasm ?? "",
+			})),
+		[insns],
+	);
 	const clickable = !!target;
 	return (
 		<div
@@ -352,6 +372,11 @@ function OpRow({
 			>
 				{instr && <DisasmInstr text={instr} />}
 				{showComments !== false && <DisasmComment comment={comment} />}
+				<VarNameChip
+					func={func ?? null}
+					insns={frameOps}
+					text={instr}
+				/>
 				{typeof op.jump === "number" && (
 					<span className="text-asm-jump"> → {fmtAddr(op.jump)}</span>
 				)}
@@ -1099,6 +1124,12 @@ export function CenterPanel() {
 													proc
 												</div>
 											)}
+										{selected && asm?.ops && (
+											<FunctionVariables
+												funcAddr={selectedAddr ?? null}
+												ops={asm.ops}
+											/>
+										)}
 										{asmLoading && (
 											<div className="text-muted-foreground px-3 py-3">
 												disassembling…
@@ -1141,6 +1172,8 @@ export function CenterPanel() {
 											<OpRow
 												key={op.addr}
 												op={op}
+												func={selectedAddr}
+												insns={asm?.ops}
 												target={callTarget(
 													op,
 													funcByAddr,

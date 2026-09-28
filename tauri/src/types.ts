@@ -116,6 +116,40 @@ export interface DataSection {
 	executable: boolean;
 	/** True when the section occupies no file bytes (`.bss` and friends). */
 	uninitialized: boolean;
+	/** Where the bytes start in the file, which is not the address. */
+	file_offset: number;
+	/** Alignment the header requires, in bytes. */
+	align: number;
+	/** The header's own type: `PROGBITS`, `NOBITS`, `RELA`, `DYNSYM`, … */
+	section_type: string;
+	/** Raw header flags, for the bits the access flags do not cover. */
+	flags: number;
+}
+
+/**
+ * One loadable segment: an entry in the program header table.
+ *
+ * The kernel's view of the image, where a section list shows the linker's. A
+ * `PT_LOAD` with write and execute both set is the fact behind a writable-code
+ * finding that no section list can show, and `memsz` above `file_size` is how
+ * `.bss` is accounted for.
+ */
+export interface DataSegment {
+	/** `LOAD`, `DYNAMIC`, `GNU_RELRO`, `GNU_STACK`, … */
+	kind: string;
+	/** Virtual address the segment is mapped at. */
+	addr: number;
+	/** Bytes the segment occupies in memory. */
+	mem_size: number;
+	/** Bytes taken from the file; less than `mem_size` for a zero-filled tail. */
+	file_size: number;
+	/** Offset of the segment's bytes in the file. */
+	file_offset: number;
+	/** Required alignment. */
+	align: number;
+	readable: boolean;
+	writable: boolean;
+	executable: boolean;
 }
 
 /**
@@ -134,10 +168,20 @@ export interface BoundarySymbol {
 export interface DataRegions {
 	sections: DataSection[];
 	boundaries: BoundarySymbol[];
+	/** Loadable segments, ordered by address. */
+	segments?: DataSegment[];
 }
 
 export interface Import {
 	name?: string;
+	/**
+	 * Address of the PLT stub that forwards to this import, when the engine
+	 * found one.
+	 *
+	 * The stub is the only place in the file that says which GOT slot belongs to
+	 * which import, so it is what a `call [rip + x]` is resolved through.
+	 */
+	plt?: number;
 	[k: string]: unknown;
 }
 
@@ -359,13 +403,55 @@ export interface DebugSnapshot {
 	frames: DebugFrame[];
 	/** `runtime - static` address (ASLR/PIE load bias). */
 	bias: number;
+	/**
+	 * How many stops this session has reached.
+	 *
+	 * A view is published for all sorts of reasons, several of which leave the
+	 * registers exactly as they were, so this is what tells a new stop from the
+	 * same stop arriving again.
+	 */
+	stop_seq: number;
 }
+
+/** What the debugger pushes to the window, as it happens. */
+export type DebugEventBody =
+	| { event: "snapshot"; snapshot: DebugSnapshot }
+	| { event: "output"; text: string }
+	| { event: "trace_appended"; entry: DebugTraceEntry }
+	| { event: "trace_cleared" };
+
+/**
+ * One pushed event, stamped with the session that produced it.
+ *
+ * A forwarder can have an event in flight when a relaunch replaces the session
+ * under it, and the output transcript is per process — so the stamp is what
+ * tells the window which events still belong to the process on screen.
+ */
+export type DebugEvent = DebugEventBody & { gen: number };
 
 /** One instruction decoded from the debuggee's live memory. */
 export interface DebugInsn {
 	addr: number;
 	bytes: string;
 	text: string;
+}
+
+/** One file mapped into the debuggee, with the range it occupies. */
+export interface DebugModule {
+	path: string;
+	/** Lowest mapped address of the file, which is its load bias. */
+	base: number;
+	/** One past the highest mapped address of the file. */
+	end: number;
+}
+
+/** One function a mapped file defines. */
+export interface DebugModuleSymbol {
+	/** Address in the file's own address space. */
+	addr: number;
+	name: string;
+	/** A declared function, rather than an untyped label inside one. */
+	is_func: boolean;
 }
 
 /** A rendered memory read. */

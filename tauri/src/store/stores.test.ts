@@ -15,6 +15,7 @@ vi.mock("../api", () => ({
 		functionDisasm: vi.fn(),
 		decompile: vi.fn(),
 		setZoom: vi.fn().mockResolvedValue(undefined),
+		renameVariable: vi.fn().mockResolvedValue(undefined),
 	},
 }));
 
@@ -116,6 +117,44 @@ describe("analysisStore selectFn stale-response guard", () => {
 		await flush();
 		const s = useAnalysisStore.getState();
 		expect(s.asmLoading).toBe(false);
+	});
+});
+
+describe("analysisStore variable names", () => {
+	beforeEach(() => {
+		useAnalysisStore.setState({ variableNames: {} });
+		vi.mocked(api.renameVariable).mockReset();
+		vi.mocked(api.renameVariable).mockResolvedValue(undefined);
+	});
+
+	it("records a name against the function and the variable's own key", () => {
+		// The key is the frame offset, or the register for an argument: a local
+		// has no address, and two functions may both use `-0x18`.
+		useAnalysisStore
+			.getState()
+			.setVariableName(0x401000, "-24", "flag_len");
+		expect(useAnalysisStore.getState().variableNames).toEqual({
+			[`${0x401000}:-24`]: "flag_len",
+		});
+	});
+
+	it("keeps each function's names apart", () => {
+		useAnalysisStore
+			.getState()
+			.setVariableName(0x401000, "-24", "flag_len");
+		useAnalysisStore.getState().setVariableName(0x402000, "-24", "length");
+		expect(useAnalysisStore.getState().variableNames).toEqual({
+			[`${0x401000}:-24`]: "flag_len",
+			[`${0x402000}:-24`]: "length",
+		});
+	});
+
+	it("forgets a name when it is cleared", () => {
+		useAnalysisStore
+			.getState()
+			.setVariableName(0x401000, "-24", "flag_len");
+		useAnalysisStore.getState().setVariableName(0x401000, "-24", "   ");
+		expect(useAnalysisStore.getState().variableNames).toEqual({});
 	});
 });
 

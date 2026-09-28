@@ -54,6 +54,7 @@ const MAX_OUTPUT: usize = 1 << 20;
 pub struct DebugIo {
     stdin: Mutex<Option<Box<dyn std::io::Write + Send>>>,
     output: Mutex<Vec<u8>>,
+    watchers: Watchers,
 }
 
 impl DebugIo {
@@ -61,8 +62,14 @@ impl DebugIo {
     pub fn new() -> Self {
         Self {
             stdin: Mutex::new(None),
-            output: Mutex::new(Vec::new()),
+            output: Mutex::new(new_output_buffer()),
+            watchers: Watchers::new(),
         }
+    }
+
+    /// Subscribe to what the session changes. See [`Debugger::subscribe`].
+    pub fn subscribe(&self) -> SessionEvents {
+        self.watchers.subscribe()
     }
 
     /// Install the stdin sink. Called by the backend at launch.
@@ -73,6 +80,12 @@ impl DebugIo {
     }
 
     /// Append captured stdout/stderr. Called by the backend's reader threads.
+    ///
+    /// Subscribers are told what was appended as it arrives, rather than asking
+    /// for it on a timer: the debuggee's output is the one thing that changes
+    /// with no operation behind it, so it is the one thing that cannot wait for
+    /// a poll. The buffer still holds everything — draining is the `output` op's
+    /// business, and a subscriber is a listener rather than a second reader.
     pub fn push_output(&self, bytes: &[u8]) {
         if let Ok(mut v) = self.output.lock() {
             v.extend_from_slice(bytes);
@@ -81,6 +94,12 @@ impl DebugIo {
                 v.drain(..drop);
             }
         }
+        if bytes.is_empty() {
+            return;
+        }
+        self.watchers.notify(&SessionEvent::Output {
+            text: String::from_utf8_lossy(bytes).into_owned(),
+        });
     }
 
     /// Write `bytes` to the debuggee's stdin.
@@ -115,6 +134,62 @@ impl Default for DebugIo {
     }
 }
 
+/// An empty output buffer, so the type of its contents is written down once.
+fn new_output_buffer() -> Vec<u8> {
+    Vec::new()
+}
+
+/// Something a subscriber to the session is told when it changes.
+///
+/// This is the whole of a debugger's push surface, and it is two things: the
+/// state at a stop, and the bytes the debuggee printed in between. Neither
+/// needs a poll — both are already produced by the thread that owns them.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum SessionEvent {
+    /// The session published a new view of itself: a stop, a state change, or a
+    /// breakpoint list that moved.
+    Snapshot { snapshot: Snapshot },
+    /// The debuggee printed this.
+    Output { text: String },
+}
+
+/// One subscriber's stream of [`SessionEvent`]s.
+///
+/// The receiver ends when the session is dropped: the senders live in the
+/// session, so a forwarder thread needs no teardown of its own.
+pub type SessionEvents = std::sync::mpsc::Receiver<SessionEvent>;
+
+/// The sessions' list of subscribers.
+#[derive(Clone, Default)]
+struct Watchers {
+    inner: Arc<Mutex<Vec<std::sync::mpsc::Sender<SessionEvent>>>>,
+}
+
+impl Watchers {
+    /// An empty list.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// A new subscriber, starting from the next event.
+    fn subscribe(&self) -> SessionEvents {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Ok(mut list) = self.inner.lock() {
+            list.push(tx);
+        }
+        rx
+    }
+
+    /// Tell every subscriber, dropping the ones that have gone away.
+    fn notify(&self, event: &SessionEvent) {
+        let Ok(mut list) = self.inner.lock() else {
+            return;
+        };
+        list.retain(|tx| tx.send(event.clone()).is_ok());
+    }
+}
+
 /// A live, lock-cheap view of the session.
 ///
 /// Written by the worker thread after each operation and read directly by the
@@ -136,6 +211,13 @@ pub struct Snapshot {
     /// `runtime - static` address (ASLR/PIE load bias), so the UI can map a
     /// runtime PC to a disassembly (static) address and back.
     pub bias: u64,
+    /// Counts the stops this session has shaped.
+    ///
+    /// A view of the session is published for all sorts of reasons, including
+    /// ones that leave the registers exactly as they were, so a consumer cannot
+    /// tell "the program moved" from "this is the same stop again" by comparing
+    /// the registers. It can compare this.
+    pub stop_seq: u64,
 }
 
 /// A debug session handle. Cheap to clone-share behind an `Arc`.
@@ -144,6 +226,7 @@ pub struct Debugger {
     worker: Mutex<Option<JoinHandle<()>>>,
     io: Arc<DebugIo>,
     snapshot: Arc<Mutex<Snapshot>>,
+    watchers: Watchers,
 }
 
 /// One operation for the worker thread.
@@ -204,7 +287,8 @@ impl Debugger {
     pub fn with_symbols(symbols: Arc<dyn Symbols>) -> Result<Self> {
         let io = Arc::new(DebugIo::new());
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
-        let inner = Inner::new(symbols, io.clone(), snapshot.clone())?;
+        let watchers = io.watchers.clone();
+        let inner = Inner::new(symbols, io.clone(), snapshot.clone(), watchers.clone())?;
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("recurse-debug".to_string())
@@ -215,6 +299,7 @@ impl Debugger {
             worker: Mutex::new(Some(worker)),
             io,
             snapshot,
+            watchers,
         })
     }
 
@@ -224,6 +309,20 @@ impl Debugger {
     /// agent-driven session in real time.
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Watch the session change: a published view of itself, and the bytes the
+    /// debuggee prints.
+    ///
+    /// The stream is how a UI stops guessing. Polling for a stop means being
+    /// late by however long the interval is, and polling for output means
+    /// watching a program talk to itself and waiting to be told; both are
+    /// already produced by the threads that own them, so both are pushed.
+    ///
+    /// The stream ends when this session is dropped, which is what lets a
+    /// forwarding thread run for the length of the session and no longer.
+    pub fn subscribe(&self) -> SessionEvents {
+        self.watchers.subscribe()
     }
 
     /// The load bias of the current debuggee (0 when unknown).
@@ -608,6 +707,10 @@ struct Inner {
     /// Stack pointer a step out started at, while it is running with nowhere to
     /// jump to and is stepping an instruction at a time instead.
     frame_sp: Option<u64>,
+    /// How many stops this session has shaped; see [`Snapshot::stop_seq`].
+    stop_seq: u64,
+    /// Subscribers to [`SessionEvent`], shared with the io pair.
+    watchers: Watchers,
 }
 
 impl Inner {
@@ -616,6 +719,7 @@ impl Inner {
         symbols: Arc<dyn Symbols>,
         io: Arc<DebugIo>,
         snapshot: Arc<Mutex<Snapshot>>,
+        watchers: Watchers,
     ) -> Result<Self> {
         Ok(Self {
             target: target::native(io)?,
@@ -634,6 +738,8 @@ impl Inner {
             pending: Pending::default(),
             unwinders: HashMap::new(),
             frame_sp: None,
+            stop_seq: 0,
+            watchers,
         })
     }
 
@@ -651,10 +757,20 @@ impl Inner {
             breakpoints: self.breakpoints(),
             frames,
             bias: self.bias,
+            stop_seq: self.stop_seq,
         };
         if let Ok(mut s) = self.snapshot.lock() {
-            *s = snap;
+            *s = snap.clone();
         }
+        self.watchers
+            .notify(&SessionEvent::Snapshot { snapshot: snap });
+    }
+
+    /// Record a stop as the session's latest and count it, so a subscriber can
+    /// tell a stop from the same stop arriving again.
+    fn record_stop(&mut self, stop: Stop) {
+        self.stop_seq += 1;
+        self.last_full = Some(stop);
     }
 
     /// The debuggee pid, or [`Error::NotRunning`].
@@ -700,7 +816,7 @@ impl Inner {
             reason: StopReason::Started,
             registers,
         };
-        self.last_full = Some(stop.clone());
+        self.record_stop(stop.clone());
         self.publish();
         Ok(stop)
     }
@@ -724,7 +840,7 @@ impl Inner {
             reason: StopReason::Started,
             registers,
         };
-        self.last_full = Some(stop.clone());
+        self.record_stop(stop.clone());
         self.publish();
         Ok(stop)
     }
@@ -1334,7 +1450,7 @@ impl Inner {
                 }
             }
         };
-        self.last_full = Some(stop.clone());
+        self.record_stop(stop.clone());
         Ok(stop)
     }
 

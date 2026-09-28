@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ActivityBar } from "@/components/ActivityBar";
@@ -10,6 +10,9 @@ import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { ProjectScreen } from "@/components/ProjectScreen";
 import { Sidebar } from "@/components/Sidebar";
 import { StatusBar } from "@/components/StatusBar";
+import { useResizableColumn } from "@/components/ui/resizable-column";
+import { CHAT_DEFAULT } from "@/lib/chatWidth";
+import { SIDEBAR_DEFAULT } from "@/lib/sidebarWidth";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useDebugStore } from "@/store/debugStore";
 import { useLlmStore } from "@/store/llmStore";
@@ -25,6 +28,14 @@ function App() {
 	const chatOpen = useUiStore((s) => s.chatOpen);
 	const setChatOpen = useUiStore((s) => s.setChatOpen);
 	const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+	// The grid is state, not a ref: it is a value the layout reads during render,
+	// and a ref would put the columns in reach of it.
+	const [grid, setGrid] = useState<HTMLDivElement | null>(null);
+	// Both columns read each other off the grid, so neither has to know the other
+	// one's render order; each charges the centre's floor against the width its
+	// sibling is really holding.
+	const sidebar = useResizableColumn("sidebar", grid);
+	const chat = useResizableColumn("chat", grid);
 
 	useEffect(() => {
 		useLlmStore.getState().init();
@@ -112,23 +123,32 @@ function App() {
 				<div className="flex min-h-0 flex-1 overflow-hidden">
 					<ActivityBar />
 					<div
+						ref={setGrid}
 						className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
 						style={{
+							// The widths live in CSS variables so a drag can write
+							// them without re-rendering the panels either side; the
+							// fallbacks are what the panes start at before that.
 							gridTemplateColumns: chatOpen
-								? "260px 1fr 340px"
-								: "260px 1fr",
+								? `var(--recurse-sidebar, ${SIDEBAR_DEFAULT}px) 4px minmax(0, 1fr) 4px var(--recurse-chat, ${CHAT_DEFAULT}px)`
+								: `var(--recurse-sidebar, ${SIDEBAR_DEFAULT}px) 4px minmax(0, 1fr)`,
 						}}
 					>
 						<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-r">
 							<Sidebar />
 						</aside>
 
+						<div {...sidebar.divider} />
+
 						<CenterPanel />
 
 						{chatOpen && (
-							<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
-								<AgentChat inputRef={chatInputRef} />
-							</aside>
+							<>
+								<div {...chat.divider} />
+								<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
+									<AgentChat inputRef={chatInputRef} />
+								</aside>
+							</>
 						)}
 					</div>
 				</div>

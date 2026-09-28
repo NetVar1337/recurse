@@ -3486,6 +3486,7 @@ dependencies = [
  "glob",
  "libc",
  "md-5",
+ "object",
  "recurse-agent",
  "recurse-debug",
  "recurse-static",
