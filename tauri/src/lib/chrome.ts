@@ -10,6 +10,8 @@ export const chrome = {
 	slider: "ui-slider",
 	/** Debugger: the code leading into the program counter. */
 	past: "ui-past",
+	/** Debugger: a register that moved at the last stop. */
+	changed: "ui-changed",
 	/** Debugger: a conditional branch the cursor is about to take. */
 	taken: "ui-taken",
 	/** Debugger: a conditional branch it is about to skip. */

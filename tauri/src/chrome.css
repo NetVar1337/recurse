@@ -4,6 +4,7 @@
  *
  * --selection          quiet selected/pressed fill (not an inverted slab)
  * --past               debugger text for the code leading into the cursor
+ * --changed            a register that moved at the last stop
  * --taken              a conditional branch the cursor is about to take
  * --fall               a conditional branch it is about to skip
  * --control-h          toolbar control height
@@ -22,6 +23,7 @@
 	 * highlighted, which is what keeps a branch from reading as a wall of
 	 * "already executed" it never claimed to be. */
 	--past-foreground: #6b7280;
+	--changed: #b45309;
 	--taken: #0f766e;
 	--fall: #9a3b3b;
 	--peek-foreground: #5b6b78;
@@ -57,6 +59,7 @@
 	--selection: rgba(126, 200, 255, 0.14);
 	--selection-foreground: #e9edf3;
 	--past-foreground: #5f6873;
+	--changed: #f0b429;
 	--taken: #7fd6b0;
 	--fall: #e08b8b;
 	--peek-foreground: #8b98a5;
@@ -81,6 +84,7 @@
 	--color-selection: var(--selection);
 	--color-selection-foreground: var(--selection-foreground);
 	--color-past-foreground: var(--past-foreground);
+	--color-changed: var(--changed);
 	--color-taken: var(--taken);
 	--color-fall: var(--fall);
 	--color-peek-foreground: var(--peek-foreground);
@@ -206,6 +210,20 @@
  */
 .ui-past {
 	color: var(--past-foreground);
+}
+
+/*
+ * A register that moved at the last stop.
+ *
+ * A register pane is scanned, not read: twenty hex values hide the one or two
+ * an instruction actually changed, and the whole job of this mark is to say
+ * where to look. Amber, because it is a note rather than a state — and the
+ * legend in the pane says what it means, because a mark nobody can decode is
+ * just noise.
+ */
+.ui-changed {
+	color: var(--changed);
+	font-weight: 600;
 }
 
 /* The branch the cursor is on, and the way it is about to go. */

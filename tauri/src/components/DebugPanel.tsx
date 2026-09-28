@@ -6,10 +6,11 @@ import { DebugCpu } from "@/components/DebugCpu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { X86_FLAG_BITS } from "@/lib/branches";
+import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
-import { isLiveState, useDebugStore } from "@/store/debugStore";
-import type { DebugStopReason, DebugTraceEntry } from "@/types";
+import { isLastStopView, isLiveState, useDebugStore } from "@/store/debugStore";
+import type { DebugStopReason } from "@/types";
 
 function fmtAddr(a?: number | null): string {
 	return typeof a === "number" ? `0x${a.toString(16)}` : "";
@@ -66,15 +67,23 @@ function PaneHeader({ children }: { children: ReactNode }) {
 	);
 }
 
-/** One editable register: click the value to write a new one. */
+/**
+ * One editable register: click the value to write a new one.
+ *
+ * `changed` marks a register whose value moved at the last stop. It is the one
+ * affordance that makes this pane worth scanning: the eye goes to the amber
+ * value and the other eighteen can be ignored.
+ */
 function RegisterRow({
 	name,
 	value,
 	emphasis,
+	changed,
 }: {
 	name: string;
 	value: number;
 	emphasis?: boolean;
+	changed?: boolean;
 }) {
 	const run = useDebugStore((s) => s.run);
 	const [editing, setEditing] = useState(false);
@@ -104,10 +113,15 @@ function RegisterRow({
 			) : (
 				<button
 					className={cn(
-						"min-w-0 truncate hover:underline",
-						emphasis && "text-primary",
+						"nums min-w-0 truncate text-right hover:underline",
+						emphasis && !changed && "text-primary",
+						changed && chrome.changed,
 					)}
-					title="Click to edit"
+					title={
+						changed
+							? "changed at this stop — click to edit"
+							: "Click to edit"
+					}
 					onClick={() => {
 						setDraft(fmtAddr(value));
 						setEditing(true);
@@ -120,27 +134,76 @@ function RegisterRow({
 	);
 }
 
-/** Right column, top: general registers and flags. */
+/** The registers with a row of their own above the grid. */
+const SPECIALS = ["rip", "rsp", "rbp"];
+
+/** Right column, top: general registers and flags, marked with what moved. */
 function RegistersPane() {
 	const regs = useDebugStore((s) => s.registers);
-	const skip = new Set(["rip", "eflags", "orig_rax", "pc", "sp"]);
+	const changed = useDebugStore((s) => s.changedRegisters);
+	const stale = isLastStopView(useDebugStore((s) => s.state));
+	// Reported by the backend under their own names as well as through
+	// `pc`/`sp`/`fp`, and rendered above from those — so the grid skips them, or
+	// each would be printed twice. `eflags` is decoded into the flags line and
+	// `orig_rax` is noise; neither gets a row, so neither is counted as changed
+	// either — a count that names a register with nowhere to show it is worse
+	// than no count. Both spellings are listed, since the aarch64 backend calls
+	// the first two `pc` and `sp`.
+	const skip = new Set([
+		"rip",
+		"rsp",
+		"rbp",
+		"pc",
+		"sp",
+		"eflags",
+		"orig_rax",
+	]);
 	const gp = (regs ? Object.entries(regs.values) : []).filter(
 		([k]) => !skip.has(k),
 	);
+	const changedShown = [...SPECIALS, ...gp.map(([k]) => k)].filter((name) =>
+		changed.has(name),
+	).length;
+	const row = (name: string, value: number, emphasis?: boolean) => (
+		<RegisterRow
+			name={name}
+			value={value}
+			emphasis={emphasis}
+			changed={changed.has(name)}
+		/>
+	);
 	return (
 		<div className="flex min-h-0 flex-col">
-			<PaneHeader>Registers</PaneHeader>
+			<PaneHeader>
+				Registers
+				{stale && (
+					<span
+						className="ml-2 font-normal normal-case opacity-70"
+						title="The target is running: these are its registers at the last stop, not a live reading"
+					>
+						last stop
+					</span>
+				)}
+				{changedShown > 0 && (
+					<span
+						className={cn(
+							"ml-2 font-normal normal-case",
+							chrome.changed,
+						)}
+					>
+						{changedShown} changed
+					</span>
+				)}
+			</PaneHeader>
 			{!regs ? (
 				<Empty label="no registers" />
 			) : (
 				<div className="scroll-host max-h-72 overflow-auto p-2 font-mono text-xs">
-					<RegisterRow name="rip" value={regs.pc} emphasis />
-					<RegisterRow name="rsp" value={regs.sp} />
-					<RegisterRow name="rbp" value={regs.fp} />
+					{row("rip", regs.pc, true)}
+					{row("rsp", regs.sp)}
+					{row("rbp", regs.fp)}
 					<div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
-						{gp.map(([k, v]) => (
-							<RegisterRow key={k} name={k} value={v} />
-						))}
+						{gp.map(([k, v]) => row(k, v))}
 					</div>
 					<div className="text-muted-foreground mt-1.5">
 						flags{" "}
@@ -271,7 +334,7 @@ function BottomTabs() {
 		pid: number | null;
 		ids: number[];
 	}>({ pid: null, ids: [] });
-	const [trace, setTrace] = useState<DebugTraceEntry[]>([]);
+	const trace = useDebugStore((s) => s.trace);
 
 	useEffect(() => {
 		if (tab !== "threads" || !live) return;
@@ -285,24 +348,6 @@ function BottomTabs() {
 			cancelled = true;
 		};
 	}, [tab, live, pid]);
-
-	useEffect(() => {
-		if (tab !== "trace") return;
-		let cancelled = false;
-		const poll = () => {
-			api.debugTrace()
-				.then((t) => {
-					if (!cancelled) setTrace(t);
-				})
-				.catch(() => {});
-		};
-		poll();
-		const id = setInterval(poll, 1000);
-		return () => {
-			cancelled = true;
-			clearInterval(id);
-		};
-	}, [tab]);
 
 	const threadIds = threads.pid === pid ? threads.ids : [];
 
@@ -322,7 +367,10 @@ function BottomTabs() {
 	);
 
 	return (
-		<div className="flex min-h-0 flex-col">
+		// `h-full` so the scroll host below has a definite height to fill: a
+		// flex-1 child of an auto-height parent is sized by its content, and a
+		// long call stack would then spill past the pane into the one below.
+		<div className="flex h-full min-h-0 flex-col">
 			<div className="border-border flex items-center border-b px-1">
 				{tabButton("stack", "Call stack", frames.length)}
 				{tabButton("breakpoints", "Breakpoints", breakpoints.length)}
@@ -386,11 +434,7 @@ function BottomTabs() {
 							</span>
 							<button
 								className="hover:text-foreground"
-								onClick={() =>
-									void api
-										.debugTraceClear()
-										.then(() => setTrace([]))
-								}
+								onClick={() => void api.debugTraceClear()}
 							>
 								Clear
 							</button>
@@ -427,10 +471,9 @@ function BottomTabs() {
  * call-stack / breakpoint / thread tabs. All state is shared with the agent.
  */
 export function DebugPanel() {
-	const active = useDebugStore((s) => s.active);
 	const pid = useDebugStore((s) => s.pid);
 	const state = useDebugStore((s) => s.state);
-	// Run/Step/Break need a live debuggee; `active` only means a session exists.
+	// Run/Step/Break need a live debuggee; a session can outlive its process.
 	const live = isLiveState(state);
 	const stop = useDebugStore((s) => s.stop);
 	const output = useDebugStore((s) => s.output);
@@ -439,26 +482,24 @@ export function DebugPanel() {
 	const follow = useDebugStore((s) => s.follow);
 	const run = useDebugStore((s) => s.run);
 	const sendStdin = useDebugStore((s) => s.sendStdin);
-	const pollOutput = useDebugStore((s) => s.pollOutput);
-	const pollSnapshot = useDebugStore((s) => s.pollSnapshot);
+	const connect = useDebugStore((s) => s.connect);
+	const disconnect = useDebugStore((s) => s.disconnect);
 	const setFollow = useDebugStore((s) => s.setFollow);
 	const [attachPid, setAttachPid] = useState("");
 	const [breakAt, setBreakAt] = useState("");
 	const [stdin, setStdin] = useState("");
 	const outputRef = useRef<HTMLDivElement>(null);
 
+	// One channel for the life of the view: the session pushes a view of itself
+	// at every stop and the debuggee's output as it is printed, so there is no
+	// interval here to tune and nothing to keep running while a `continue` is
+	// blocked.
 	useEffect(() => {
-		if (!active && !follow) return;
-		const id = setInterval(() => void pollOutput(), 400);
-		return () => clearInterval(id);
-	}, [active, follow, pollOutput]);
-
-	useEffect(() => {
-		if (!follow) return;
-		void pollSnapshot();
-		const id = setInterval(() => void pollSnapshot(), 500);
-		return () => clearInterval(id);
-	}, [follow, pollSnapshot]);
+		void connect();
+		return () => {
+			void disconnect();
+		};
+	}, [connect, disconnect]);
 
 	useEffect(() => {
 		if (outputRef.current) {
@@ -640,10 +681,10 @@ export function DebugPanel() {
 				</div>
 			)}
 
-			<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px]">
+			<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] grid-rows-[minmax(0,1fr)]">
 				<div className="flex min-h-0 flex-col border-r">
 					<DebugCpu />
-					<div className="border-border h-44 border-t">
+					<div className="border-border h-44 shrink-0 overflow-hidden border-t">
 						<BottomTabs />
 					</div>
 				</div>

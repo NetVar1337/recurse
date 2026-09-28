@@ -1,6 +1,9 @@
 import { create } from "zustand";
 
+import { Channel } from "@tauri-apps/api/core";
 import { api } from "../api";
+import { pltSlot, shortName } from "../lib/debugCalls";
+import { moduleAt, nearestSymbol } from "../lib/debugModules";
 import { appendOutput, type OutputChunk } from "../lib/debugOutput";
 import {
 	countForward,
@@ -11,11 +14,17 @@ import {
 } from "../lib/debugDisasm";
 import type {
 	DebugBreakpoint,
+	DebugEvent,
 	DebugFrame,
 	DebugInsn,
+	DebugModule,
+	DebugModuleSymbol,
 	DebugRegisters,
+	DebugSnapshot,
 	DebugStatus,
 	DebugStop,
+	DebugTraceEntry,
+	Import,
 } from "../types";
 
 /** Ops whose result is a fresh stop (registers + reason). */
@@ -26,6 +35,9 @@ const SESSION_OPS = new Set(["launch", "attach"]);
 
 /** Stop reasons that mean the debuggee is gone for good. */
 const TERMINAL_REASONS = new Set(["exited", "killed"]);
+
+/** Stops kept in the timeline, oldest first, matching the host's own bound. */
+const MAX_TRACE = 500;
 
 /**
  * Whether a process state still has a live debuggee behind it, i.e. whether
@@ -40,6 +52,31 @@ const TERMINAL_REASONS = new Set(["exited", "killed"]);
  */
 export function isLiveState(state: string): boolean {
 	return state === "stopped" || state === "running";
+}
+
+/**
+ * Whether the register and CPU panes are a photograph of the last stop rather
+ * than a live reading.
+ *
+ * A running debuggee has no readable registers and no readable pc: the ptrace
+ * stop that made them readable is long gone, and nothing is published again
+ * until the next stop. So while the target runs those panes show where it
+ * *was* — and the output pane, which is live, will have moved on. A pane that
+ * does not say which it is showing reads as a desync rather than as a stale
+ * view, and the analyst ends up looking for a `read` in an instruction that was
+ * never going to be one.
+ *
+ * ```
+ * isLastStopView("stopped")  // => false
+ * isLastStopView("running")  // => true
+ * isLastStopView("exited")   // => false — nothing is claimed at all
+ * ```
+ *
+ * @param state - The session's lifecycle state.
+ * @returns True while the target is running on past the last stop.
+ */
+export function isLastStopView(state: string): boolean {
+	return state === "running";
 }
 
 /**
@@ -106,6 +143,66 @@ interface DebugState {
 	disasm: DisasmCache;
 	/** Anchors with a `disasm` fetch already in flight, so steps cannot pile up. */
 	disasmPending: ReadonlySet<number>;
+	/**
+	 * How many stops the session has reached, as last published.
+	 *
+	 * A view is pushed for all sorts of reasons and several of them leave the
+	 * registers alone, so this — not the registers — is what says the program
+	 * moved.
+	 */
+	stopSeq: number;
+	/**
+	 * Registers that moved at the last stop, by the name the register pane shows.
+	 *
+	 * The point of a register pane is to be scanned, not read: twenty hex values
+	 * hide the one or two the instruction actually changed. A debugger that marks
+	 * them is telling you where to look, and the mark is honest only if it is
+	 * cleared by the *next* stop rather than by the next repaint of the same one.
+	 */
+	changedRegisters: ReadonlySet<string>;
+	/** Every stop this session made, oldest first, as they are made. */
+	trace: DebugTraceEntry[];
+	/**
+	 * GOT slot (static address) to the import it forwards to.
+	 *
+	 * Keyed by static address so it lines up with the analysis engine's, which
+	 * does not know about the load bias.
+	 */
+	callNames: Map<number, string>;
+	/** Whether this session's call targets have been resolved yet. */
+	callNamesDone: boolean;
+	/** Whether a resolution is in flight, so a re-render does not start another. */
+	callNamesPending: boolean;
+	/**
+	 * The files mapped into the debuggee, with the ranges they occupy.
+	 *
+	 * What a call target is attributed to when it is not in the debuggee's own
+	 * binary — a dynamically linked program spends most of its calls inside
+	 * libc, and `libc` is more use than the raw address.
+	 */
+	modules: DebugModule[];
+	/**
+	 * Library addresses already resolved to a name, keyed by runtime address.
+	 *
+	 * Only the addresses a call in the visible window actually reached, so this
+	 * stays small however many symbols a library has.
+	 */
+	moduleNames: Map<number, string>;
+	/**
+	 * Which session the pushed events on screen belong to.
+	 *
+	 * A forwarder can have an event in flight when a relaunch replaces the
+	 * session under it, and the transcript is per process: this is what stops
+	 * the previous run's output arriving under the next one.
+	 */
+	eventGen: number;
+	/**
+	 * Whether a channel is registered, so a remount does not stack two up.
+	 *
+	 * Part of the state rather than a module flag because the session it belongs
+	 * to is: a relaunch has to be able to register a fresh one.
+	 */
+	connected: boolean;
 
 	/** Run one debugger op and fold its result into the store. */
 	run: (op: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -114,12 +211,23 @@ interface DebugState {
 	 * already, and merge the result in.
 	 */
 	ensureDisasm: (pc: number) => Promise<void>;
+	ensureCallNames: (imports: Import[]) => Promise<void>;
+	ensureModuleNames: (addrs: number[]) => Promise<void>;
 	/** Send text to the debuggee's stdin. */
 	sendStdin: (text: string) => Promise<void>;
-	/** Drain the debuggee's captured output into `output`. */
-	pollOutput: () => Promise<void>;
-	/** Pull the live snapshot (follow-along). */
-	pollSnapshot: () => Promise<void>;
+	/**
+	 * Listen to the session instead of polling it.
+	 *
+	 * Registers one channel for the life of the view. The session pushes a view
+	 * of itself at every stop and the debuggee's output as it is printed, so
+	 * nothing here has an interval: there is no "how late can this be" to
+	 * choose, and a long `continue` costs nothing while it runs.
+	 */
+	connect: () => Promise<void>;
+	/** Stop listening. */
+	disconnect: () => Promise<void>;
+	/** Pull the session's view once, for a view that has just opened. */
+	refreshSnapshot: () => Promise<void>;
 	setFollow: (b: boolean) => void;
 	launch: (path: string) => Promise<void>;
 	attach: (pid: number) => Promise<void>;
@@ -147,6 +255,16 @@ const initial = {
 	follow: false,
 	disasm: new Map() as DisasmCache,
 	disasmPending: new Set<number>(),
+	stopSeq: 0,
+	changedRegisters: new Set<string>(),
+	trace: [] as DebugTraceEntry[],
+	callNames: new Map<number, string>(),
+	callNamesDone: false,
+	callNamesPending: false,
+	modules: [] as DebugModule[],
+	moduleNames: new Map<number, string>(),
+	eventGen: 0,
+	connected: false,
 };
 
 /**
@@ -191,6 +309,52 @@ async function refreshFrames(): Promise<void> {
 }
 
 /**
+ * The registers whose values differ between two stops, by the name the register
+ * pane shows them under.
+ *
+ * The pane prints `pc`, `sp` and `fp` as `rip`, `rsp` and `rbp` and then
+ * everything else under its own name, so the diff is keyed the same way: a
+ * consumer asks "did `rbp` change?" and gets an answer without knowing that the
+ * snapshot calls it `fp`.
+ *
+ * A register that appears on one side only counts as changed, which is what a
+ * register does the first time a target reports it.
+ *
+ * ```
+ * const a = { pc: 0x401000, sp: 0x7ffd00, fp: 0, values: { rax: 1, rbx: 2 } };
+ * const b = { pc: 0x401005, sp: 0x7ffd00, fp: 0, values: { rax: 1, rbx: 3 } };
+ * [...changedRegisters(a, b)].sort()   // => ["rax", "rbx", "rip"]
+ * changedRegisters(a, a).size          // => 0
+ * ```
+ *
+ * @param before - The registers at the previous stop.
+ * @param after - The registers now.
+ * @returns The names that moved, and nothing else.
+ */
+export function changedRegisters(
+	before: DebugRegisters | null,
+	after: DebugRegisters | null,
+): ReadonlySet<string> {
+	const changed = new Set<string>();
+	if (before === null || after === null) return changed;
+	if (before.pc !== after.pc) changed.add("rip");
+	if (before.sp !== after.sp) changed.add("rsp");
+	if (before.fp !== after.fp) changed.add("rbp");
+	// A target that reports no general-purpose registers is still worth marking
+	// the three specials on, so the map is treated as optional rather than as a
+	// reason to mark nothing at all.
+	const beforeValues = before.values ?? {};
+	const afterValues = after.values ?? {};
+	for (const name of new Set([
+		...Object.keys(beforeValues),
+		...Object.keys(afterValues),
+	])) {
+		if (beforeValues[name] !== afterValues[name]) changed.add(name);
+	}
+	return changed;
+}
+
+/**
  * Fold a register set in.
  *
  * A null register set means there is no live debuggee. `lastPc` is deliberately
@@ -203,6 +367,79 @@ function applyRegisters(regs: DebugRegisters | null): void {
 		return;
 	}
 	useDebugStore.setState({ registers: regs, lastPc: regs.pc });
+}
+
+/**
+ * Fold a published view of the session into the store.
+ *
+ * A view arrives for every change the session publishes, not only for stops, so
+ * what a stop is has to be counted rather than inferred: the register diff is
+ * recomputed when `stop_seq` moves and left alone when it does not, which is
+ * what stops a repeated view of one stop from clearing a mark that is still
+ * true.
+ *
+ * @param snapshot - The session's view of itself.
+ */
+function applySnapshot(snapshot: DebugSnapshot): void {
+	const isNewStop =
+		(snapshot.stop_seq ?? 0) > useDebugStore.getState().stopSeq;
+	const before = useDebugStore.getState().registers;
+	// A snapshot means a session exists, whether or not its process is still
+	// alive: keying `active` off the pid used to make the whole debugger vanish
+	// the moment a process exited.
+	useDebugStore.setState({
+		active: true,
+		pid: snapshot.pid ?? null,
+		state: snapshot.state,
+		stop: snapshot.stop ?? null,
+		breakpoints: snapshot.breakpoints ?? [],
+		frames: snapshot.frames ?? [],
+		bias: snapshot.bias ?? 0,
+		stopSeq: snapshot.stop_seq ?? 0,
+	});
+	applyRegisters(
+		isLiveState(snapshot.state) ? (snapshot.stop?.registers ?? null) : null,
+	);
+	if (!isNewStop) return;
+	const after = useDebugStore.getState().registers;
+	useDebugStore.setState({
+		changedRegisters: changedRegisters(before, after),
+	});
+}
+
+/**
+ * Fold one pushed event into the store.
+ *
+ * @param event - What the session or the host said.
+ */
+function applyEvent(event: DebugEvent): void {
+	// A push from a session that has been replaced is not this session's news.
+	// The host stamps each new session and sends that stamp with the session's
+	// own first view, from the same command that started it, so a straggler from
+	// the previous one is already out of date by the time it can arrive.
+	if (event.gen < useDebugStore.getState().eventGen) return;
+	if (event.gen > useDebugStore.getState().eventGen) {
+		useDebugStore.setState({ eventGen: event.gen });
+	}
+	switch (event.event) {
+		case "snapshot":
+			applySnapshot(event.snapshot);
+			return;
+		case "output":
+			if (!event.text) return;
+			useDebugStore.setState((s) => ({
+				output: appendOutput(s.output, event.text),
+			}));
+			return;
+		case "trace_appended":
+			useDebugStore.setState((s) => ({
+				trace: [...s.trace, event.entry].slice(-MAX_TRACE),
+			}));
+			return;
+		case "trace_cleared":
+			useDebugStore.setState({ trace: [] });
+			return;
+	}
 }
 
 /**
@@ -232,6 +469,14 @@ function clearProcessState(): void {
 		output: [],
 		disasm: new Map(),
 		disasmPending: new Set<number>(),
+		trace: [],
+		changedRegisters: new Set<string>(),
+		stopSeq: 0,
+		callNames: new Map<number, string>(),
+		callNamesDone: false,
+		callNamesPending: false,
+		modules: [],
+		moduleNames: new Map<number, string>(),
 		sessionGen: s.sessionGen + 1,
 	}));
 }
@@ -355,6 +600,138 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 		}
 	},
 
+	/**
+	 * Resolve which import each GOT slot forwards to, once per session.
+	 *
+	 * A PIE reaches libc through `call qword ptr [rip + x]`, where `x` names a
+	 * slot in the GOT and the instruction itself says nothing about which
+	 * function that is. The PLT stub does: it is a `jmp qword ptr [rip + y]`
+	 * whose `y` is the slot for its own import, so reading six bytes per stub
+	 * gives the slot-to-name table the disassembly needs to say `; scanf`.
+	 *
+	 * Reading the GOT slot itself would not do: the dynamic linker patches it to
+	 * the resolved libc address the first time the import is called, and there
+	 * are no symbols for that.
+	 */
+	ensureCallNames: async (imports) => {
+		// Once per session. Re-resolving on every re-render would be a read per
+		// stub per keystroke elsewhere in the window, and a session that has no
+		// live process would only produce failures.
+		if (get().callNamesDone || get().callNamesPending) return;
+		const stubs = imports.filter(
+			(imp): imp is Import & { plt: number; name: string } =>
+				typeof imp.plt === "number" && typeof imp.name === "string",
+		);
+		if (stubs.length === 0) {
+			set({ callNamesDone: true });
+			return;
+		}
+		set({ callNamesPending: true });
+		// The stubs are static addresses; the debuggee's are the same plus bias.
+		const bias = get().bias;
+		try {
+			const resolved = await Promise.all(
+				stubs.map(async (imp) => {
+					try {
+						const read = (await api.debugCommand("read", {
+							addr: imp.plt + bias,
+							len: 6,
+						})) as { hex?: string } | null;
+						const slot = read?.hex
+							? pltSlot(imp.plt + bias, read.hex)
+							: null;
+						// Static, so it can be compared with a call's target without
+						// knowing the bias again.
+						return slot === null
+							? null
+							: ([slot - bias, imp.name] as const);
+					} catch {
+						// One unreadable stub costs that import its name and nothing
+						// else: a name is an annotation, not the disassembly itself.
+						return null;
+					}
+				}),
+			);
+			const names = new Map<number, string>();
+			for (const entry of resolved) {
+				if (entry) names.set(entry[0], shortName(entry[1]));
+			}
+			set({ callNames: names, callNamesDone: true });
+		} finally {
+			set({ callNamesPending: false });
+		}
+	},
+
+	/**
+	 * Name library addresses a call in the window reached, by reading the
+	 * symbol table of the file they are mapped from.
+	 *
+	 * The debuggee's own calls are named from the analysis engine; this is for
+	 * the ones it has no name for, which is mostly libc — a different file with
+	 * a different symbol table, so a call into it needs that file read. Once per
+	 * file, and only for a file the visible window actually calls into.
+	 *
+	 * The module list comes from the kernel, so a heap or stack address is
+	 * attributed to nothing rather than to whichever file happens to sit below
+	 * it in the map.
+	 */
+	ensureModuleNames: async (addrs) => {
+		const unresolved = addrs.filter((a) => !get().moduleNames.has(a));
+		if (unresolved.length === 0) return;
+		// The map comes first: whether an address belongs to a file at all is the
+		// kernel's answer, and there is nowhere else to learn it.
+		let modules = get().modules;
+		if (modules.length === 0) {
+			const pid = get().pid;
+			if (pid == null) return;
+			try {
+				modules = await api.debugModules(pid);
+			} catch {
+				// No map, no names. The disassembly is unaffected.
+				return;
+			}
+			set({ modules });
+		}
+		// An address in no file — a heap, a stack — is named by nothing.
+		const wanted = unresolved.filter((a) => moduleAt(modules, a) !== null);
+		if (wanted.length === 0) return;
+		// One read per distinct module, not per address: a window full of calls
+		// into libc reads libc once.
+		const byPath = new Map<string, DebugModule>();
+		for (const addr of wanted) {
+			const mod = moduleAt(modules, addr);
+			if (mod) byPath.set(mod.path, mod);
+		}
+		const resolved = new Map(get().moduleNames);
+		await Promise.all(
+			[...byPath.values()].map(async (mod) => {
+				let symbols: DebugModuleSymbol[];
+				try {
+					symbols = await api.debugModuleSymbols(mod.path);
+				} catch {
+					return;
+				}
+				for (const addr of wanted) {
+					if (resolved.has(addr)) continue;
+					if (moduleAt(modules, addr)?.path !== mod.path) continue;
+					const hit = nearestSymbol(symbols, addr - mod.base);
+					if (hit === null) continue;
+					// A name is only worth showing when it is the whole story: a
+					// call into the middle of a function is that function plus an
+					// offset, and the offset is the part that is actually known.
+					resolved.set(
+						addr,
+						hit.offset === 0
+							? hit.name
+							: `${hit.name}+0x${hit.offset.toString(16)}`,
+					);
+				}
+			}),
+		);
+		if (resolved.size > get().moduleNames.size)
+			set({ moduleNames: resolved });
+	},
+
 	sendStdin: async (text) => {
 		// Stamped for the same reason as `pollOutput`: a send that lands after the
 		// process was replaced must not echo into the new one's transcript.
@@ -376,43 +753,34 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 		}
 	},
 
-	pollOutput: async () => {
-		// The poll reads whichever debugger the host currently holds, so a reply
-		// that was already in flight when the process changed belongs to the old
-		// run. Stamped before the await, it is dropped rather than appended to the
-		// new process's pane.
-		const gen = get().sessionGen;
+	connect: async () => {
+		if (get().connected) return;
+		set({ connected: true });
 		try {
-			const out = (await api.debugCommand("output")) as {
-				text?: string;
-			};
-			if (get().sessionGen !== gen) return;
-			const text = (out?.text ?? "").replace(/\r/g, "");
-			if (text) set((s) => ({ output: appendOutput(s.output, text) }));
-		} catch {
-			/* the worker may be busy; try again next tick */
+			// One channel for the life of the view. It has to be a real
+			// `Channel`: the host deserializes this argument as one, and a bare
+			// callback is rejected — which would leave the view with no pushes at
+			// all and no sign of why, so the failure is shown rather than eaten.
+			const channel = new Channel<DebugEvent>();
+			channel.onmessage = (event) => applyEvent(event);
+			await api.debugSubscribe(channel);
+			await get().refreshSnapshot();
+		} catch (e) {
+			set({
+				connected: false,
+				error: `debug event channel: ${errText(e)}`,
+			});
 		}
 	},
 
-	pollSnapshot: async () => {
+	disconnect: async () => {
+		set({ connected: false });
+	},
+
+	refreshSnapshot: async () => {
 		try {
-			const s = await api.debugSnapshot();
-			if (!s) return;
-			// A snapshot means a session exists, whether or not its process is
-			// still alive: keying `active` off the pid used to make the whole
-			// debugger vanish the moment a process exited.
-			set({
-				active: true,
-				pid: s.pid ?? null,
-				state: s.state,
-				stop: s.stop ?? null,
-				breakpoints: s.breakpoints ?? [],
-				frames: s.frames ?? [],
-				bias: s.bias ?? 0,
-			});
-			applyRegisters(
-				isLiveState(s.state) ? (s.stop?.registers ?? null) : null,
-			);
+			const snapshot = await api.debugSnapshot();
+			if (snapshot) applySnapshot(snapshot);
 		} catch {
 			/* no session yet */
 		}

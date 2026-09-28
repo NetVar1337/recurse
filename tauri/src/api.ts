@@ -10,6 +10,9 @@ import type {
 	CallGraph,
 	ChatMessage,
 	DataRegions,
+	DebugEvent,
+	DebugModule,
+	DebugModuleSymbol,
 	DebugSnapshot,
 	DebugTraceEntry,
 	DecompileResult,
@@ -51,6 +54,20 @@ export const api = {
 	debugCommand: (op: string, args?: Record<string, unknown>) =>
 		invoke<unknown>("debug_command", { op, args: args ?? null }),
 	debugSnapshot: () => invoke<DebugSnapshot | null>("debug_snapshot"),
+	/**
+	 * Listen to the debugger instead of asking it. One channel, registered for
+	 * the life of the view: the session pushes a view of itself at every stop
+	 * and the debuggee's output as it is printed.
+	 */
+	// A `Channel`, not a bare callback: the host side is typed
+	// `tauri::ipc::Channel<Envelope>`, and a plain function does not deserialize
+	// into one. The call rejects, so nothing is ever pushed.
+	debugSubscribe: (onEvent: Channel<DebugEvent>) =>
+		invoke<void>("debug_subscribe", { onEvent }),
+	debugModules: (pid: number) =>
+		invoke<DebugModule[]>("debug_modules", { pid }),
+	debugModuleSymbols: (path: string) =>
+		invoke<DebugModuleSymbol[]>("debug_module_symbols", { path }),
 	recon: () => invoke<Recon>("recon"),
 	analysisProgress: () =>
 		invoke<{ function_count: number; indexing: boolean }>(

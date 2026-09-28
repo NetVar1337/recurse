@@ -3,6 +3,8 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod debug;
+pub mod debug_events;
+pub mod debug_modules;
 pub mod debug_trace;
 pub mod engine;
 pub mod export;
@@ -66,6 +68,9 @@ pub struct AppState {
     /// timeline distinct from the live single-stop `Snapshot`. Capped at
     /// [`debug_trace::MAX_TRACE_ENTRIES`]; older entries drop first.
     pub debug_trace: Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
+    /// The window's end of the debugger's push surface: a channel it
+    /// registers once, and the session a forwarding thread belongs to.
+    pub debug_events: crate::debug_events::Events,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -105,6 +110,7 @@ pub fn run() {
             current_session: Mutex::new(None),
             debug: Arc::new(Mutex::new(None)),
             debug_trace: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            debug_events: crate::debug_events::Events::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::open_binary,
@@ -115,6 +121,8 @@ pub fn run() {
             commands::rename_function,
             commands::analysis_progress,
             commands::debug_command,
+            commands::debug_modules,
+            commands::debug_module_symbols,
             commands::debug_snapshot,
             commands::recon,
             commands::disassemble,
@@ -177,6 +185,7 @@ pub fn run() {
             crate::export::import_project,
             crate::debug_trace::debug_trace,
             crate::debug_trace::debug_trace_clear,
+            crate::debug_events::debug_subscribe,
         ]);
 
     die_on_failure(builder.run(tauri::generate_context!()));

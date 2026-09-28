@@ -6,16 +6,53 @@ vi.mock("../api", () => ({
 	api: {
 		debugCommand: vi.fn(),
 		debugSnapshot: vi.fn(),
+		debugSubscribe: vi.fn(),
+		debugModules: vi.fn(),
+		debugModuleSymbols: vi.fn(),
 	},
 }));
 
-import { isLiveState, isTerminalStop, useDebugStore } from "./debugStore";
+import {
+	changedRegisters,
+	isLastStopView,
+	isLiveState,
+	isTerminalStop,
+	useDebugStore,
+} from "./debugStore";
+import { Channel } from "@tauri-apps/api/core";
+import { deliverTauriCallback } from "../../vitest.setup";
 import { api } from "../api";
 import { DISASM_MIN_FORWARD, DISASM_WINDOW } from "../lib/debugDisasm";
 import { outputText } from "../lib/debugOutput";
-import type { DebugInsn, DebugRegisters, DebugStop } from "../types";
+import type {
+	DebugEvent,
+	DebugEventBody,
+	DebugInsn,
+	DebugRegisters,
+	DebugSnapshot,
+	DebugStop,
+	DebugTraceEntry,
+} from "../types";
 
 const mocked = vi.mocked(api);
+
+/** Whatever the last `debugSubscribe` call was handed, so a test can push. */
+let channel: Channel<DebugEvent> | null = null;
+
+/**
+ * Deliver a pushed event the way the host would: through the channel the view
+ * registered, not by reaching into the store.
+ *
+ * Stamped with the generation of the session on screen, which is what the host
+ * does. A test that wants to be a session running late says which one.
+ */
+function push(
+	event: DebugEventBody,
+	gen = useDebugStore.getState().eventGen,
+): void {
+	if (channel === null) return;
+	deliverTauriCallback(channel.id, { ...event, gen });
+}
 
 /** A stop carrying just a pc, which is all the cache logic reads. */
 function stopAt(pc: number): DebugStop {
@@ -50,6 +87,26 @@ const EXIT_BODY: DebugInsn[] = [
 	{ addr: 0x80480a1, bytes: "cd80", text: "int 0x80" },
 ];
 
+/** A full stop at `pc`, with nothing but the three specials set. */
+function stopWith(pc: number): DebugStop {
+	return {
+		pid: 4242,
+		thread: 1,
+		reason: { reason: "breakpoint" },
+		registers: { pc, sp: 0, fp: 0, values: {} } as DebugRegisters,
+	} as DebugStop;
+}
+
+/** A stop timeline entry: a stop, with the registers it happened at. */
+function entry(pc: number): DebugTraceEntry {
+	return {
+		pid: 4242,
+		thread: 1,
+		reason: { reason: "breakpoint" },
+		registers: { pc } as DebugRegisters,
+	} as DebugTraceEntry;
+}
+
 /** A window long enough that the pc is never near its forward edge. */
 const LONG_WINDOW: DebugInsn[] = Array.from({ length: 64 }, (_, i) => ({
 	addr: 0x8048060 + i,
@@ -77,11 +134,35 @@ function mockSession(
 	return { calls: () => calls };
 }
 
-beforeEach(() => {
+/**
+ * Every test starts with a view connected, because that is how events arrive:
+ * the panel registers one channel on mount and everything after that is pushed.
+ */
+beforeEach(async () => {
 	useDebugStore.getState().reset();
 	mocked.debugCommand.mockReset();
 	mocked.debugSnapshot.mockReset();
+	mocked.debugSubscribe.mockReset();
+	channel = null;
+	mocked.debugSubscribe.mockImplementation(async (onEvent) => {
+		channel = onEvent;
+	});
+	await useDebugStore.getState().connect();
 });
+
+/** A published view of the session, as the debugger would send it. */
+function snapshotOf(over: Partial<DebugSnapshot> = {}): DebugSnapshot {
+	return {
+		pid: 4242,
+		state: "stopped",
+		stop: stopAt(0x804809d),
+		breakpoints: [],
+		frames: [],
+		bias: 0,
+		stop_seq: 1,
+		...over,
+	};
+}
 
 describe("ensureDisasm", () => {
 	it("fetches a window and keeps it in the session cache", async () => {
@@ -168,12 +249,11 @@ describe("process exit", () => {
 			if (op === "backtrace") return [];
 			if (op === "breakpoints")
 				return [{ id: 1, addr: 0x804809d, enabled: true }];
-			if (op === "output") return { text: "hello from the debuggee\n" };
 			if (op === "continue") return exitedStop(9);
 			return stopAt(0x804809d);
 		});
 		await useDebugStore.getState().run("launch", { path: "/bin/true" });
-		await useDebugStore.getState().pollOutput();
+		push({ event: "output", text: "hello from the debuggee\n" });
 		await useDebugStore.getState().ensureDisasm(0x804809d);
 	}
 
@@ -247,17 +327,17 @@ describe("process exit", () => {
 		expect(ops).not.toContain("disasm");
 	});
 
-	it("survives follow-mode snapshots of the finished session", async () => {
+	it("survives a pushed view of the finished session", async () => {
 		await runIntoLiveSession();
-		mocked.debugSnapshot.mockResolvedValue({
-			pid: null,
-			state: "exited",
-			stop: exitedStop(9),
-			breakpoints: [{ id: 1, addr: 0x804809d, enabled: true }],
-			frames: [],
-			bias: 0,
+		push({
+			event: "snapshot",
+			snapshot: snapshotOf({
+				pid: null,
+				state: "exited",
+				stop: exitedStop(9),
+				stop_seq: 2,
+			}),
 		});
-		await useDebugStore.getState().pollSnapshot();
 		const s = useDebugStore.getState();
 		expect(s.active).toBe(true);
 		expect(s.state).toBe("exited");
@@ -272,12 +352,11 @@ describe("relaunching after an exit", () => {
 		mocked.debugCommand.mockImplementation(async (op: string) => {
 			if (op === "disasm") return EXIT_BODY;
 			if (op === "backtrace" || op === "breakpoints") return [];
-			if (op === "output") return { text: "first run\n" };
 			if (op === "continue") return exitedStop(9);
 			return stopAt(0x804809d);
 		});
 		await useDebugStore.getState().run("launch", { path: "/bin/first" });
-		await useDebugStore.getState().pollOutput();
+		push({ event: "output", text: "first run\n" });
 		await useDebugStore.getState().ensureDisasm(0x804809d);
 		await useDebugStore.getState().run("continue");
 	});
@@ -324,12 +403,11 @@ describe("relaunching after an exit", () => {
 
 	it("shows the new run's own stdout, not a mix", async () => {
 		mocked.debugCommand.mockImplementation(async (op: string) => {
-			if (op === "output") return { text: "second run\n" };
 			if (op === "breakpoints" || op === "backtrace") return [];
 			return stopAt(0x400500);
 		});
 		await useDebugStore.getState().run("launch", { path: "/bin/second" });
-		await useDebugStore.getState().pollOutput();
+		push({ event: "output", text: "second run\n" });
 		const s = useDebugStore.getState();
 		expect(outputText(s.output)).toBe("second run\n");
 		expect(outputText(s.output)).not.toContain("first run");
@@ -407,7 +485,6 @@ describe("isTerminalStop", () => {
 describe("stdout is per process", () => {
 	beforeEach(() => {
 		mocked.debugCommand.mockImplementation(async (op: string) => {
-			if (op === "output") return { text: "run output\n" };
 			if (op === "breakpoints" || op === "backtrace") return [];
 			if (op === "continue") return exitedStop(0);
 			return stopAt(0x804809d);
@@ -416,7 +493,7 @@ describe("stdout is per process", () => {
 
 	it("stays readable after the process exits", async () => {
 		await useDebugStore.getState().run("launch", { path: "/bin/first" });
-		await useDebugStore.getState().pollOutput();
+		push({ event: "output", text: "run output\n" });
 		await useDebugStore.getState().run("continue");
 		// The finished session keeps its own output on screen.
 		expect(outputText(useDebugStore.getState().output)).toBe(
@@ -426,7 +503,7 @@ describe("stdout is per process", () => {
 
 	it("is dropped when the session is killed", async () => {
 		await useDebugStore.getState().run("launch", { path: "/bin/first" });
-		await useDebugStore.getState().pollOutput();
+		push({ event: "output", text: "run output\n" });
 		await useDebugStore.getState().run("kill");
 		expect(outputText(useDebugStore.getState().output)).toBe("");
 	});
@@ -438,26 +515,19 @@ describe("stdout is per process", () => {
 		expect(useDebugStore.getState().log.length).toBeGreaterThan(before);
 	});
 
-	it("discards an output poll that was in flight across a relaunch", async () => {
+	it("discards output still in flight from a session that has been replaced", async () => {
 		await useDebugStore.getState().run("launch", { path: "/bin/first" });
-
-		// A poll issued for the first process, whose reply lands only after the
-		// second process has replaced it.
-		let release: (v: { text?: string }) => void = () => undefined;
-		mocked.debugCommand.mockImplementationOnce(
-			() =>
-				new Promise<{ text?: string }>(
-					(resolve) => (release = resolve),
-				),
-		);
-		const inFlight = useDebugStore.getState().pollOutput();
-
 		await useDebugStore.getState().run("launch", { path: "/bin/second" });
-		release({ text: "late output from the first run\n" });
-		await inFlight;
 
-		// Dropped: it belongs to a process that is no longer the current one.
-		expect(outputText(useDebugStore.getState().output)).toBe("");
+		// A relaunch tells the window the new session's generation with it, so a
+		// straggler from the session it replaced is recognisable the moment it
+		// lands — and the transcript belongs to the process on screen.
+		push({ event: "snapshot", snapshot: snapshotOf({ stop_seq: 2 }) }, 2);
+		push({ event: "output", text: "late output from the first run\n" }, 1);
+		push({ event: "output", text: "second run\n" }, 2);
+		expect(outputText(useDebugStore.getState().output)).toBe(
+			"second run\n",
+		);
 	});
 
 	it("advances the generation on every process boundary", async () => {
@@ -473,12 +543,11 @@ describe("stdout is per process", () => {
 describe("stdin echo", () => {
 	beforeEach(async () => {
 		mocked.debugCommand.mockImplementation(async (op: string) => {
-			if (op === "output") return { text: "Let's start the CTF:\n" };
 			if (op === "breakpoints" || op === "backtrace") return [];
 			return stopAt(0x804809d);
 		});
 		await useDebugStore.getState().run("launch", { path: "/bin/first" });
-		await useDebugStore.getState().pollOutput();
+		push({ event: "output", text: "Let's start the CTF:\n" });
 	});
 
 	it("shows what was sent, so the pane reflects the input", async () => {
@@ -536,5 +605,437 @@ describe("stdin echo", () => {
 		expect(outputText(useDebugStore.getState().output)).not.toContain(
 			"AAAA",
 		);
+	});
+});
+
+describe("resolving what a call goes to", () => {
+	/**
+	 * `ff 25 10 00 00 00` is a PLT stub at 0x1080: a jump six bytes long, rip
+	 * past it, plus 0x10, so the slot it forwards through is 0x1096.
+	 */
+	const SCANF_STUB = "ff2510000000";
+
+	beforeEach(() => {
+		useDebugStore.setState({ bias: 0 });
+		mocked.debugCommand.mockImplementation(
+			async (op: string, args?: unknown) => {
+				if (op === "breakpoints" || op === "backtrace") return [];
+				if (op === "read") {
+					const addr = (args as { addr: number }).addr;
+					// The stub is read at its runtime address, bias applied, so the
+					// fixture matches the low bits rather than one fixed address.
+					const low = addr % 0x10000;
+					return {
+						addr,
+						len: 6,
+						hex: low === 0x1080 ? SCANF_STUB : "554889e5",
+					};
+				}
+				return stopAt(0x804809d);
+			},
+		);
+	});
+
+	it("maps a GOT slot to the import its stub forwards to", async () => {
+		await useDebugStore
+			.getState()
+			.ensureCallNames([{ name: "scanf", plt: 0x1080 }]);
+		expect(useDebugStore.getState().callNames.get(0x1096)).toBe("scanf");
+	});
+
+	it("reads the stub at the debuggee's address, not the static one", async () => {
+		// A PIE's PLT is mapped somewhere else entirely; reading the static
+		// address would fail or, worse, read some other mapping.
+		useDebugStore.setState({ bias: 0x7f000000 });
+		await useDebugStore
+			.getState()
+			.ensureCallNames([{ name: "scanf", plt: 0x1080 }]);
+		// The stored key stays static so a call's target can be compared with it.
+		expect(useDebugStore.getState().callNames.get(0x1096)).toBe("scanf");
+		expect(mocked.debugCommand).toHaveBeenCalledWith("read", {
+			addr: 0x7f001080,
+			len: 6,
+		});
+	});
+
+	it("names an import without the engine's imp. prefix", async () => {
+		await useDebugStore
+			.getState()
+			.ensureCallNames([{ name: "imp.puts", plt: 0x1080 }]);
+		expect(useDebugStore.getState().callNames.get(0x1096)).toBe("puts");
+	});
+
+	it("resolves once per session, however often it is asked", async () => {
+		const imports = [{ name: "scanf", plt: 0x1080 }];
+		await useDebugStore.getState().ensureCallNames(imports);
+		await useDebugStore.getState().ensureCallNames(imports);
+		const reads = mocked.debugCommand.mock.calls.filter(
+			([op]) => op === "read",
+		);
+		expect(reads).toHaveLength(1);
+	});
+
+	it("resolves again for a new session, whose GOT is somewhere else", async () => {
+		await useDebugStore
+			.getState()
+			.ensureCallNames([{ name: "scanf", plt: 0x1080 }]);
+		await useDebugStore.getState().run("launch", { path: "/bin/second" });
+		expect(useDebugStore.getState().callNames.size).toBe(0);
+	});
+
+	it("leaves an import unnamed when its stub cannot be read", async () => {
+		mocked.debugCommand.mockImplementation(async (op: string) => {
+			if (op === "read") throw new Error("no debuggee is running");
+			if (op === "breakpoints" || op === "backtrace") return [];
+			return stopAt(0x804809d);
+		});
+		await useDebugStore
+			.getState()
+			.ensureCallNames([{ name: "scanf", plt: 0x1080 }]);
+		// A missing name costs an annotation, nothing else.
+		expect(useDebugStore.getState().callNames.size).toBe(0);
+		expect(useDebugStore.getState().callNamesDone).toBe(true);
+	});
+
+	it("does nothing for a binary whose engine reported no stubs", async () => {
+		await useDebugStore.getState().ensureCallNames([{ name: "scanf" }]);
+		expect(mocked.debugCommand).not.toHaveBeenCalledWith(
+			"read",
+			expect.anything(),
+		);
+		expect(useDebugStore.getState().callNamesDone).toBe(true);
+	});
+});
+
+describe("naming a call into a library", () => {
+	const LIB = "/lib/libc.so.6";
+	// The debuggee is mapped at 0x555555554000 and libc at 0x7f000000, so a
+	// call at 0x7f001234 is 0x1234 into libc.
+	const LIBC_CALL = 0x7f001234;
+
+	beforeEach(() => {
+		useDebugStore.setState({ bias: 0, pid: 4242 });
+		mocked.debugCommand.mockReset();
+		mocked.debugModules.mockReset();
+		mocked.debugModuleSymbols.mockReset();
+		mocked.debugModules.mockResolvedValue([
+			{ path: "/bin/target", base: 0x555555554000, end: 0x555555555000 },
+			{ path: LIB, base: 0x7f000000, end: 0x7f100000 },
+		]);
+		// A launch stops at the entry point, so the op has to answer with a stop.
+		mocked.debugCommand.mockImplementation(async (op: string) => {
+			if (op === "breakpoints" || op === "backtrace") return [];
+			return stopAt(0x804809d);
+		});
+		mocked.debugModuleSymbols.mockResolvedValue([
+			{ addr: 0x1000, name: "close_near", is_func: true },
+			{ addr: 0x1100, name: "read", is_func: true },
+			{ addr: 0x1108, name: "read.local", is_func: false },
+		]);
+	});
+
+	it("names a library address from that library's own symbols", async () => {
+		await useDebugStore.getState().ensureModuleNames([LIBC_CALL]);
+		expect(useDebugStore.getState().moduleNames.get(LIBC_CALL)).toBe(
+			"read+0x134",
+		);
+		expect(mocked.debugModuleSymbols).toHaveBeenCalledWith(LIB);
+	});
+
+	it("names an exact entry with no offset", async () => {
+		await useDebugStore.getState().ensureModuleNames([0x7f001100]);
+		console.log(
+			"DBG calls:",
+			mocked.debugModules.mock.calls.length,
+			mocked.debugModuleSymbols.mock.calls.length,
+		);
+		expect(useDebugStore.getState().moduleNames.get(0x7f001100)).toBe(
+			"read",
+		);
+	});
+
+	it("reads the library once however many of its calls are in view", async () => {
+		await useDebugStore
+			.getState()
+			.ensureModuleNames([0x7f001100, 0x7f001234, 0x7f001300]);
+		expect(mocked.debugModuleSymbols).toHaveBeenCalledTimes(1);
+		expect(mocked.debugModules).toHaveBeenCalledTimes(1);
+	});
+
+	it("claims nothing for an address no module covers", async () => {
+		// A heap or stack address is in no file, so there is nothing to read and
+		// nothing to name: a garbage pointer must not inherit a name from
+		// whichever module happens to sit below it. The map is still consulted,
+		// because that is the only way to know it covers nothing.
+		await useDebugStore.getState().ensureModuleNames([0x7ffd3dc96000]);
+		expect(useDebugStore.getState().moduleNames.size).toBe(0);
+		expect(mocked.debugModuleSymbols).not.toHaveBeenCalled();
+	});
+
+	it("skips an address it has already named", async () => {
+		await useDebugStore.getState().ensureModuleNames([0x7f001100]);
+		await useDebugStore.getState().ensureModuleNames([0x7f001100]);
+		expect(mocked.debugModuleSymbols).toHaveBeenCalledTimes(1);
+	});
+
+	it("reads nothing when there is no process to read from", async () => {
+		useDebugStore.setState({ pid: null });
+		await useDebugStore.getState().ensureModuleNames([LIBC_CALL]);
+		expect(mocked.debugModules).not.toHaveBeenCalled();
+	});
+
+	it("survives a module map it cannot read", async () => {
+		mocked.debugModules.mockRejectedValue(new Error("no such process"));
+		await useDebugStore.getState().ensureModuleNames([LIBC_CALL]);
+		expect(useDebugStore.getState().moduleNames.size).toBe(0);
+	});
+
+	it("survives a symbol table it cannot read", async () => {
+		mocked.debugModuleSymbols.mockRejectedValue(
+			new Error("permission denied"),
+		);
+		await useDebugStore.getState().ensureModuleNames([LIBC_CALL]);
+		expect(useDebugStore.getState().moduleNames.size).toBe(0);
+	});
+
+	it("keeps what it already named when a later read fails", async () => {
+		await useDebugStore.getState().ensureModuleNames([0x7f001100]);
+		mocked.debugModuleSymbols.mockRejectedValue(new Error("gone"));
+		await useDebugStore.getState().ensureModuleNames([0x7f001300]);
+		expect(useDebugStore.getState().moduleNames.get(0x7f001100)).toBe(
+			"read",
+		);
+	});
+
+	it("forgets the map with the session, whose libraries are different ones", async () => {
+		await useDebugStore.getState().ensureModuleNames([0x7f001100]);
+		await useDebugStore.getState().run("launch", { path: "/bin/second" });
+		expect(useDebugStore.getState().modules).toEqual([]);
+		expect(useDebugStore.getState().moduleNames.size).toBe(0);
+	});
+});
+
+describe("isLastStopView", () => {
+	it("is only true while the target is running", () => {
+		expect(isLastStopView("running")).toBe(true);
+		expect(isLastStopView("stopped")).toBe(false);
+		// A finished session has no live reading either, but it is claiming
+		// nothing: the exit strip already says the process is gone.
+		expect(isLastStopView("exited")).toBe(false);
+		expect(isLastStopView("idle")).toBe(false);
+	});
+});
+
+describe("a running target keeps the last stop's view", () => {
+	beforeEach(() => {
+		mocked.debugCommand.mockImplementation(async (op: string) => {
+			if (op === "breakpoints" || op === "backtrace") return [];
+			return stopAt(0x804809d);
+		});
+	});
+
+	/**
+	 * The output pane is live and the register pane is not, so while the target
+	 * runs they describe two different moments. The register values are kept —
+	 * they are the last thing known — and `isLastStopView` is what the panes
+	 * read to say so, instead of leaving the analyst to read a stale pc as the
+	 * instruction the program is sitting in.
+	 */
+	it("holds the last stop's registers while the session runs", async () => {
+		// Two stops, so there is a previous stop to have marked something
+		// against; the first stop of a session has nothing to compare to.
+		push({ event: "snapshot", snapshot: snapshotOf({ stop_seq: 1 }) });
+		push({
+			event: "snapshot",
+			snapshot: snapshotOf({
+				stop_seq: 2,
+				stop: stopWith(2),
+			}),
+		});
+		const atStop = useDebugStore.getState().registers;
+		expect(atStop?.pc).toBe(2);
+
+		await useDebugStore.getState().run("continue");
+		push({
+			event: "snapshot",
+			snapshot: snapshotOf({
+				state: "running",
+				stop_seq: 2,
+				stop: stopWith(2),
+			}),
+		});
+
+		expect(isLastStopView(useDebugStore.getState().state)).toBe(true);
+		expect(useDebugStore.getState().registers).toEqual(atStop);
+		// The same stop, republished: the change marks stand rather than being
+		// recomputed against themselves.
+		expect(useDebugStore.getState().changedRegisters.has("rip")).toBe(true);
+	});
+});
+
+describe("register change marking", () => {
+	/** A register set, with the general-purpose registers spelled out. */
+	function regs(
+		pc: number,
+		sp: number,
+		fp: number,
+		values: Record<string, number> = {},
+	): DebugRegisters {
+		return { pc, sp, fp, values } as DebugRegisters;
+	}
+
+	it("names the specials and the general-purpose registers that moved", () => {
+		const before = regs(0x401000, 0x7ffd00, 0x7ffcf0, { rax: 1, rbx: 2 });
+		const after = regs(0x401005, 0x7ffd00, 0x7ffcf0, { rax: 1, rbx: 3 });
+		expect([...changedRegisters(before, after)].sort()).toEqual([
+			"rbx",
+			"rip",
+		]);
+	});
+
+	it("marks the stack and frame pointers when the call moved", () => {
+		const before = regs(0x401000, 0x7ffd00, 0x7ffcf0);
+		const after = regs(0x401000, 0x7ffd10, 0x7ffce0);
+		expect([...changedRegisters(before, after)].sort()).toEqual([
+			"rbp",
+			"rsp",
+		]);
+	});
+
+	it("marks a register the first time a target reports one", () => {
+		expect([
+			...changedRegisters(regs(1, 2, 3), regs(1, 2, 3, { rax: 0 })),
+		]).toEqual(["rax"]);
+	});
+
+	it("marks nothing when nothing moved", () => {
+		const same = regs(0x401000, 0x7ffd00, 0x7ffcf0, { rax: 1 });
+		expect(changedRegisters(same, same).size).toBe(0);
+	});
+
+	it("marks nothing when there is no previous stop to compare against", () => {
+		expect(changedRegisters(null, regs(1, 2, 3)).size).toBe(0);
+		expect(changedRegisters(regs(1, 2, 3), null).size).toBe(0);
+	});
+
+	it("recomputes the marks when a new stop arrives", () => {
+		push({ event: "snapshot", snapshot: snapshotOf({ stop_seq: 1 }) });
+		push({
+			event: "snapshot",
+			snapshot: snapshotOf({
+				stop_seq: 2,
+				stop: {
+					pid: 4242,
+					registers: regs(0x804809e, 1, 2),
+				} as DebugStop,
+			}),
+		});
+		expect(useDebugStore.getState().changedRegisters.has("rip")).toBe(true);
+	});
+
+	it("keeps the marks when the same stop is published again", () => {
+		const first = {
+			pid: 4242,
+			registers: regs(0x804809d, 1, 2),
+		} as DebugStop;
+		const second = {
+			pid: 4242,
+			registers: regs(0x804809e, 1, 2),
+		} as DebugStop;
+		push({
+			event: "snapshot",
+			snapshot: snapshotOf({ stop_seq: 4, stop: first }),
+		});
+		push({
+			event: "snapshot",
+			snapshot: snapshotOf({ stop_seq: 5, stop: second }),
+		});
+		expect(useDebugStore.getState().changedRegisters.has("rip")).toBe(true);
+		// A view published for a reason that leaves the registers alone: a
+		// breakpoint was added, say. Same stop, so the marks still stand.
+		push({
+			event: "snapshot",
+			snapshot: snapshotOf({ stop_seq: 5, stop: second }),
+		});
+		expect(useDebugStore.getState().changedRegisters.has("rip")).toBe(true);
+	});
+});
+
+describe("pushed trace", () => {
+	beforeEach(() => {
+		mocked.debugCommand.mockImplementation(async (op: string) => {
+			if (op === "breakpoints" || op === "backtrace") return [];
+			return stopAt(0x804809d);
+		});
+	});
+
+	it("grows as stops are made", () => {
+		push({ event: "trace_appended", entry: entry(0x804809d) });
+		push({ event: "trace_appended", entry: entry(0x804809e) });
+		expect(
+			useDebugStore.getState().trace.map((e) => e.registers.pc),
+		).toEqual([0x804809d, 0x804809e]);
+	});
+
+	it("is cleared when the timeline is cleared", () => {
+		push({ event: "trace_appended", entry: entry(0x804809d) });
+		// The host clears it from its own side, then says so.
+		push({ event: "trace_cleared" });
+		expect(useDebugStore.getState().trace).toEqual([]);
+	});
+
+	it("drops the trace when the session is replaced", async () => {
+		push({ event: "trace_appended", entry: entry(0x804809d) });
+		await useDebugStore.getState().run("launch", { path: "/bin/second" });
+		expect(useDebugStore.getState().trace).toEqual([]);
+	});
+});
+
+describe("the push channel", () => {
+	it("registers a channel the host can answer, not a bare callback", async () => {
+		// The host side is `tauri::ipc::Channel<Envelope>`, and a plain function
+		// does not deserialize into one: the command rejects and the view gets
+		// nothing at all, silently. So the argument has to be a real Channel.
+		expect(channel).toBeInstanceOf(Channel);
+		expect(typeof channel?.onmessage).toBe("function");
+	});
+
+	it("folds an event the host delivers through the channel", () => {
+		push({ event: "output", text: "hello from the debuggee\n" });
+		expect(outputText(useDebugStore.getState().output)).toBe(
+			"hello from the debuggee\n",
+		);
+	});
+
+	it("says so when the channel cannot be registered", async () => {
+		mocked.debugSubscribe.mockRejectedValueOnce(
+			new Error("invalid args `onEvent` for command `debug_subscribe`"),
+		);
+		await useDebugStore.getState().disconnect();
+		await useDebugStore.getState().connect();
+		// A dead channel looks exactly like a hung program otherwise: no output,
+		// no trace, and a running target nobody can see.
+		expect(useDebugStore.getState().error).toContain("debug event channel");
+		expect(useDebugStore.getState().connected).toBe(false);
+	});
+
+	it("registers once, however often the view connects", async () => {
+		mocked.debugSubscribe.mockClear();
+		await useDebugStore.getState().connect();
+		await useDebugStore.getState().connect();
+		expect(mocked.debugSubscribe).toHaveBeenCalledTimes(0);
+		await useDebugStore.getState().disconnect();
+		await useDebugStore.getState().connect();
+		expect(mocked.debugSubscribe).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps working through a snapshot the view asks for itself", async () => {
+		mocked.debugSnapshot.mockResolvedValue(snapshotOf({ stop_seq: 3 }));
+		await useDebugStore.getState().refreshSnapshot();
+		expect(useDebugStore.getState().stopSeq).toBe(3);
+		// The channel is still the one from the connect: the pull must not have
+		// replaced it, or pushes would silently stop arriving.
+		push({ event: "trace_appended", entry: entry(1) });
+		expect(useDebugStore.getState().trace).toHaveLength(1);
 	});
 });

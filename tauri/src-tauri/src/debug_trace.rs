@@ -33,6 +33,12 @@ pub fn record_if_stop(state: &crate::AppState, value: &Value) {
     while trace.len() > MAX_TRACE_ENTRIES {
         trace.pop_front();
     }
+    drop(trace);
+    state
+        .debug_events
+        .send(crate::debug_events::DebugEvent::TraceAppended {
+            entry: value.clone(),
+        });
 }
 
 /// The trace so far, oldest first.
@@ -49,11 +55,16 @@ pub fn debug_trace(state: tauri::State<'_, crate::AppState>) -> Result<Vec<Value
 /// by appending; this is for an explicit "clear" action in the UI).
 #[tauri::command]
 pub fn debug_trace_clear(state: tauri::State<'_, crate::AppState>) -> Result<(), String> {
-    let mut trace = state
-        .debug_trace
-        .lock()
-        .map_err(|e| format!("debug_trace lock poisoned: {e}"))?;
-    trace.clear();
+    {
+        let mut trace = state
+            .debug_trace
+            .lock()
+            .map_err(|e| format!("debug_trace lock poisoned: {e}"))?;
+        trace.clear();
+    }
+    state
+        .debug_events
+        .send(crate::debug_events::DebugEvent::TraceCleared);
     Ok(())
 }
 
@@ -86,6 +97,7 @@ mod tests {
             current_session: Mutex::new(None),
             debug: Arc::new(Mutex::new(None)),
             debug_trace: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            debug_events: crate::debug_events::Events::new(),
         }
     }
 

@@ -304,7 +304,26 @@ pub async fn debug_command(
     .map_err(|e| format!("debug task failed: {e}"))??;
     let value: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
     crate::debug_trace::record_if_stop(&state, &value);
+    state.debug_events.ensure_forwarding(&state);
     Ok(value)
+}
+
+/// The files mapped into the debuggee, with the ranges they occupy.
+///
+/// The kernel's own answer, so a runtime address can be attributed to the file
+/// it came from — which is the first half of naming a call that goes into libc.
+#[tauri::command]
+pub fn debug_modules(pid: u32) -> Result<Value, String> {
+    serde_json::to_value(crate::debug_modules::modules(pid)?).map_err(|e| e.to_string())
+}
+
+/// The functions a mapped file defines, sorted by address.
+///
+/// A symbol table, not an analysis pass: a call target is a function entry, and
+/// reading the table takes milliseconds where analysing libc takes seconds.
+#[tauri::command]
+pub fn debug_module_symbols(path: String) -> Result<Value, String> {
+    serde_json::to_value(crate::debug_modules::symbols(&path)?).map_err(|e| e.to_string())
 }
 
 /// Live snapshot of the debug session (pid, state, last stop, breakpoints,
