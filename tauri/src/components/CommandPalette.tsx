@@ -1,181 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api, pickBinary } from "@/api";
+import { buildCommands, gotoQuery, type Entry } from "@/lib/commands";
 import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
-import { useDebugStore } from "@/store/debugStore";
-import { useProjectStore } from "@/store/projectStore";
-import { useSettingsStore } from "@/store/settingsStore";
-import { useUiStore } from "@/store/uiStore";
-import type { CenterTab, Function } from "@/types";
 
 function fmtAddr(a: number): string {
 	return `0x${a.toString(16)}`;
 }
-
-interface Command {
-	id: string;
-	title: string;
-	hint?: string;
-	run: () => void;
-}
-
-const TAB_LABEL: Record<CenterTab, string> = {
-	recon: "Recon",
-	disasm: "Disassembly",
-	callgraph: "Call Graph",
-	strings: "Strings",
-	imports: "Imports",
-	findings: "Findings",
-	hex: "Hex view",
-	debug: "Debug",
-	console: "Console",
-};
-
-/** Every command the palette can run, resolved from the stores at open time. */
-function buildCommands(): Command[] {
-	const ui = useUiStore.getState();
-	const bin = useBinaryStore.getState();
-	const dbg = useDebugStore.getState();
-	const settings = useSettingsStore.getState();
-
-	const cmds: Command[] = [
-		{
-			id: "open",
-			title: "Open binary…",
-			hint: "Ctrl+O",
-			run: () => {
-				void pickBinary().then((p) => {
-					if (p) void bin.openBinary(p);
-				});
-			},
-		},
-		{
-			id: "model-picker",
-			title: "Switch model / provider…",
-			run: () => ui.setModelPickerOpen(true),
-		},
-	];
-	if (!bin.binary) {
-		cmds.push({
-			id: "new-project",
-			title: "New project…",
-			run: () => ui.setNewProjectOpen(true),
-		});
-	}
-	if (bin.binary) {
-		cmds.push({
-			id: "close",
-			title: "Close project",
-			run: () => void useProjectStore.getState().close(),
-		});
-		for (const tab of Object.keys(TAB_LABEL) as CenterTab[]) {
-			cmds.push({
-				id: `tab-${tab}`,
-				title: `Go to ${TAB_LABEL[tab]}`,
-				run: () => ui.setTab(tab),
-			});
-		}
-		cmds.push({
-			id: "chat",
-			title: "Toggle agent chat",
-			hint: "Ctrl+L",
-			run: () => ui.toggleChat(),
-		});
-	}
-	cmds.push(
-		{
-			id: "engine-native",
-			title: "Analysis engine: native (pure Rust)",
-			run: () => void settings.setBackend("native"),
-		},
-		{
-			id: "engine-r2",
-			title: "Analysis engine: r2",
-			run: () => void settings.setBackend("r2"),
-		},
-		{
-			id: "toggle-theme",
-			title: "Toggle light / dark theme",
-			run: () => settings.toggleTheme(),
-		},
-	);
-
-	if (dbg.active) {
-		cmds.push(
-			{
-				id: "dbg-run",
-				title: "Debug: Run",
-				hint: "F9",
-				run: () => void dbg.run("continue"),
-			},
-			{
-				id: "dbg-pause",
-				title: "Debug: Pause",
-				run: () => void dbg.run("interrupt"),
-			},
-			{
-				id: "dbg-into",
-				title: "Debug: Step into",
-				hint: "F7",
-				run: () => void dbg.run("step", { kind: "into" }),
-			},
-			{
-				id: "dbg-over",
-				title: "Debug: Step over",
-				hint: "F8",
-				run: () => void dbg.run("step", { kind: "over" }),
-			},
-			{
-				id: "dbg-out",
-				title: "Debug: Step out",
-				run: () => void dbg.run("step", { kind: "out" }),
-			},
-			{
-				id: "dbg-detach",
-				title: "Debug: Detach",
-				run: () => void dbg.run("detach"),
-			},
-		);
-	}
-
-	return cmds;
-}
-
-/** Resolve a typed address/symbol and select the function containing it. */
-function gotoQuery(query: string): void {
-	const q = query.trim();
-	if (!q) return;
-	const addr = /^0x[0-9a-f]+$/i.test(q)
-		? Number.parseInt(q.slice(2), 16)
-		: /^\d+$/.test(q)
-			? Number.parseInt(q, 10)
-			: null;
-	const analysis = useAnalysisStore.getState();
-	if (addr != null) {
-		api.functionAt(addr)
-			.then((f) => {
-				if (f) analysis.selectFn(f);
-				else useUiStore.getState().setTab("disasm");
-			})
-			.catch(() => {});
-		return;
-	}
-	// A symbol: the analysis engine resolves names through the same store path
-	// the agent uses, so a function whose name matches is enough.
-	const match = analysis.funcs.find(
-		(f) =>
-			(f.name ?? "").toLowerCase() === q.toLowerCase() ||
-			(f.name ?? "").toLowerCase().includes(q.toLowerCase()),
-	);
-	if (match) analysis.selectFn(match);
-}
-
-type Entry =
-	| { kind: "command"; command: Command }
-	| { kind: "function"; fn: Function };
 
 /**
  * Ctrl+K command palette: open a binary, jump to a tab or function, drive the
@@ -329,7 +162,7 @@ export function CommandPalette() {
 										{entry.fn.name ??
 											`sub_${entry.fn.addr.toString(16)}`}
 									</span>
-									<span className="text-muted-foreground ml-auto font-mono text-2xs">
+									<span className="text-muted-foreground text-2xs ml-auto font-mono">
 										{fmtAddr(entry.fn.addr)}
 									</span>
 								</>

@@ -1,19 +1,8 @@
-import { useEffect, useState } from "react";
-import { ChevronRight, Moon, Sun } from "lucide-react";
+import { useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DebuggerSettingsDialog } from "@/components/DebuggerSettingsDialog";
-import { LogoMark } from "@/components/Logo";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuLabel,
-	DropdownMenuSeparator,
-	DropdownMenuShortcut,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useBinaryStore } from "@/store/binaryStore";
@@ -28,36 +17,20 @@ export function Header() {
 	const close = useProjectStore((s) => s.close);
 	const chatOpen = useUiStore((s) => s.chatOpen);
 	const toggleChat = useUiStore((s) => s.toggleChat);
-	const zoomLevel = useSettingsStore((s) => s.zoomLevel);
-	const zoomIn = useSettingsStore((s) => s.zoomIn);
-	const zoomOut = useSettingsStore((s) => s.zoomOut);
-	const resetZoom = useSettingsStore((s) => s.resetZoom);
-	const backend = useSettingsStore((s) => s.backend);
-	const setBackend = useSettingsStore((s) => s.setBackend);
 	const initBackend = useSettingsStore((s) => s.initBackend);
-	const theme = useSettingsStore((s) => s.theme);
-	const toggleTheme = useSettingsStore((s) => s.toggleTheme);
-	const [debuggerOpen, setDebuggerOpen] = useState(false);
+	const debuggerSettingsOpen = useUiStore((s) => s.debuggerSettingsOpen);
+	const setDebuggerSettingsOpen = useUiStore(
+		(s) => s.setDebuggerSettingsOpen,
+	);
 
 	useEffect(() => {
 		void initBackend();
 	}, [initBackend]);
 
-	const zoomPct = Math.round(Math.pow(1.2, zoomLevel) * 100);
-
+	if (!binary) return null;
 	return (
 		<header className="border-border bg-card ui-bar border-b px-3">
-			<div className="flex min-w-0 items-center gap-2">
-				<LogoMark className="h-5 w-auto" />
-				<span className="text-sm font-semibold tracking-wide">
-					Recurse
-				</span>
-				<span className="text-muted-foreground text-xs">
-					agentic reverse engineering
-				</span>
-			</div>
-
-			{binary && project && (
+			{project && (
 				<div className="flex min-w-0 flex-1 items-center overflow-hidden px-3">
 					<Badge variant="outline" className="font-mono">
 						{project.name}
@@ -65,8 +38,15 @@ export function Header() {
 				</div>
 			)}
 
-			<div className={cn("ml-auto", chrome.headerActions)}>
-				{binary && (
+			{/* Its own element, empty: a drag region on the header itself would
+			    make every button in the header a place to drag the window from. */}
+			<div
+				data-tauri-drag-region
+				className="min-w-4 flex-1 self-stretch"
+			/>
+
+			{binary && (
+				<div className={cn("ml-auto", chrome.headerActions)}>
 					<Button
 						variant="toolbar"
 						size="sm"
@@ -77,8 +57,6 @@ export function Header() {
 					>
 						Chat
 					</Button>
-				)}
-				{binary && (
 					<Button
 						variant="toolbar"
 						size="sm"
@@ -88,96 +66,12 @@ export function Header() {
 					>
 						Close
 					</Button>
-				)}
-				{binary && <span className={chrome.sep} aria-hidden="true" />}
-				<Button
-					variant="ghost"
-					size="icon"
-					className="rounded-[2px]"
-					aria-label="Toggle theme"
-					onClick={toggleTheme}
-					title={
-						theme === "dark"
-							? "Switch to light theme"
-							: "Switch to dark theme"
-					}
-				>
-					{theme === "dark" ? <Sun /> : <Moon />}
-				</Button>
-				<DropdownMenu>
-					<DropdownMenuTrigger asChild>
-						<Button
-							variant="toolbar"
-							size="sm"
-							className="rounded-[2px]"
-							aria-label="Open settings"
-						>
-							Settings
-						</Button>
-					</DropdownMenuTrigger>
-					<DropdownMenuContent align="end" className="min-w-56">
-						<DropdownMenuLabel>
-							Zoom
-							<span className={chrome.kbd}>{zoomPct}%</span>
-						</DropdownMenuLabel>
-						<DropdownMenuItem onClick={zoomIn}>
-							Zoom in
-							<DropdownMenuShortcut>Ctrl +</DropdownMenuShortcut>
-						</DropdownMenuItem>
-						<DropdownMenuItem onClick={zoomOut}>
-							Zoom out
-							<DropdownMenuShortcut>Ctrl −</DropdownMenuShortcut>
-						</DropdownMenuItem>
-						<DropdownMenuItem onClick={resetZoom}>
-							Reset zoom
-							<DropdownMenuShortcut>Ctrl 0</DropdownMenuShortcut>
-						</DropdownMenuItem>
-						<DropdownMenuSeparator />
-						<DropdownMenuLabel>Analysis engine</DropdownMenuLabel>
-						<DropdownMenuItem
-							className={cn(
-								backend === "native" && chrome.selected,
-							)}
-							onClick={() => void setBackend("native")}
-						>
-							<span className="flex-1">Native</span>
-							<span className="text-2xs opacity-70">default</span>
-						</DropdownMenuItem>
-						<DropdownMenuItem
-							className={cn(backend === "r2" && chrome.selected)}
-							onClick={() => void setBackend("r2")}
-						>
-							<span className="flex-1">radare2</span>
-							<span className="text-2xs opacity-70">opt-in</span>
-						</DropdownMenuItem>
-						<DropdownMenuItem
-							className={cn(backend === "ida" && chrome.selected)}
-							onClick={() => void setBackend("ida")}
-						>
-							<span className="flex-1">IDA Pro</span>
-							<span className="text-2xs opacity-70">
-								Hex-Rays
-							</span>
-						</DropdownMenuItem>
-						<DropdownMenuSeparator />
-						<DropdownMenuItem
-							// Opened on the next tick, not inline: the menu restores
-							// focus to this trigger as it closes, which would
-							// immediately yank focus back out of the new dialog.
-							onSelect={() =>
-								setTimeout(() => setDebuggerOpen(true), 0)
-							}
-							className="justify-between"
-						>
-							Debugger
-							<ChevronRight className="opacity-60" />
-						</DropdownMenuItem>
-					</DropdownMenuContent>
-				</DropdownMenu>
-			</div>
+				</div>
+			)}
+
 			<DebuggerSettingsDialog
-				open={debuggerOpen}
-				onOpenChange={setDebuggerOpen}
+				open={debuggerSettingsOpen}
+				onOpenChange={setDebuggerSettingsOpen}
 			/>
 		</header>
 	);

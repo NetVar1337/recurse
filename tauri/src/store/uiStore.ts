@@ -16,6 +16,8 @@ interface UiState {
 	setNewProjectOpen: (b: boolean) => void;
 	modelPickerOpen: boolean;
 	setModelPickerOpen: (b: boolean) => void;
+	debuggerSettingsOpen: boolean;
+	setDebuggerSettingsOpen: (b: boolean) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -32,4 +34,7 @@ export const useUiStore = create<UiState>((set) => ({
 	setNewProjectOpen: (newProjectOpen) => set({ newProjectOpen }),
 	modelPickerOpen: false,
 	setModelPickerOpen: (modelPickerOpen) => set({ modelPickerOpen }),
+	debuggerSettingsOpen: false,
+	setDebuggerSettingsOpen: (debuggerSettingsOpen) =>
+		set({ debuggerSettingsOpen }),
 }));

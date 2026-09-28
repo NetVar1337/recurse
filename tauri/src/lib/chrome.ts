@@ -19,6 +19,15 @@ export const chrome = {
 	/** Debugger: the code a taken branch is about to land in. */
 	peek: "ui-peek",
 	composer: "ui-composer",
+	/** The window's own minimise, maximise and close, at the end of the header. */
+	windowControls: "ui-window-controls",
+	windowButton: "ui-window-button",
+	/** The close button, which is the one that reads as a way out. */
+	windowClose: "ui-window-close",
+	/** The row of menus across the top of the window. */
+	menuBar: "ui-menu-bar",
+	/** One menu's name in that row. */
+	menuItem: "ui-menu-item",
 	menuLabel: "ui-menu-label",
 	kbd: "ui-kbd",
 	panelTitle: "ui-panel-title",

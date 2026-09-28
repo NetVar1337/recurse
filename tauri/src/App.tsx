@@ -7,6 +7,7 @@ import { CenterPanel } from "@/components/CenterPanel";
 import { CommandPalette } from "@/components/CommandPalette";
 import { Header } from "@/components/Header";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
+import { MenuBar } from "@/components/MenuBar";
 import { ProjectScreen } from "@/components/ProjectScreen";
 import { Sidebar } from "@/components/Sidebar";
 import { StatusBar } from "@/components/StatusBar";
@@ -102,6 +103,9 @@ function App() {
 
 	return (
 		<div className="flex h-full flex-col">
+			{/* The bar is the top row, where the title bar was: a window's menus sit
+			    above its content, not below a heading. */}
+			<MenuBar />
 			<Header />
 
 			{err && (
@@ -157,7 +161,6 @@ function App() {
 			{binary && <StatusBar />}
 			<CommandPalette />
 			<NewProjectDialog />
-			<CommandPalette />
 		</div>
 	);
 }

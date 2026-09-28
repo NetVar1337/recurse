@@ -234,6 +234,78 @@ body.dragging-suppress-select-row {
 	min-height: var(--chrome-h);
 }
 
+/* The menu bar. A row of words rather than a row of buttons, because every one
+   of them opens something and a button per menu is eight affordances to look at
+   before reading a single line. The row is thin: it is a place you go, not a
+   place you stay. */
+/* The window's own controls. Flush with the right edge of the window and the full
+   height of the bar, the way a title bar's controls are: no box around the group,
+   no inset, no gap before the last one. The three buttons are the same width, so
+   the marks they hold are evenly spaced, and the hit area is wider than the mark
+   because a 8px target is a target people miss. */
+.ui-window-controls {
+	display: flex;
+	align-items: stretch;
+	align-self: stretch;
+	margin-inline-start: auto;
+}
+
+.ui-window-button {
+	display: grid;
+	place-items: center;
+	width: 32px;
+	color: var(--muted-foreground);
+	background: transparent;
+	border: 0;
+	transition:
+		color 120ms ease,
+		background 120ms ease;
+}
+
+.ui-window-button:hover {
+	color: var(--foreground);
+	background: color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
+.ui-window-button:focus-visible {
+	outline: 1px solid var(--ring);
+	outline-offset: -2px;
+}
+
+.ui-window-close:hover {
+	color: var(--foreground);
+	background: color-mix(in srgb, var(--destructive) 82%, transparent);
+}
+
+/* The menu bar. A row of words rather than a row of buttons, because every one
+   of them opens something and a button per menu is eight affordances to look at
+   before reading a single line. The row is thin: it is a place you go, not a
+   place you stay. */
+.ui-menu-bar {
+	display: flex;
+	align-items: stretch;
+	gap: 0;
+	height: var(--control-h);
+	padding-inline: var(--space-1);
+	background: var(--card);
+	border-bottom: 1px solid var(--border);
+}
+
+.ui-menu-item {
+	padding-inline: var(--space-2);
+	font-size: var(--text-xs);
+	color: var(--muted-foreground);
+	background: transparent;
+	border: 0;
+	cursor: default;
+}
+
+.ui-menu-item:hover,
+.ui-menu-item[data-state="open"] {
+	color: var(--foreground);
+	background: color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
 .ui-header-actions {
 	display: flex;
 	align-items: center;

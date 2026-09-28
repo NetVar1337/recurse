@@ -2,6 +2,7 @@ import { ChevronRight, FilePlus2, Loader2, X } from "lucide-react";
 import {
 	lazy,
 	Suspense,
+	useCallback,
 	useEffect,
 	useLayoutEffect,
 	useMemo,
@@ -11,15 +12,6 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuCheckboxItem,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuLabel,
-	DropdownMenuSeparator,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { DebugPanel } from "@/components/DebugPanel";
 import {
@@ -42,6 +34,8 @@ import {
 	formatInstructionBytes,
 	splitComment,
 } from "@/lib/disasm";
+import { disasmMenuSections } from "@/lib/disasmMenu";
+import { clearSections, publishSections } from "@/lib/menuRegistry";
 import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
@@ -137,138 +131,6 @@ function highlight(
 		i = j;
 	}
 	return spans;
-}
-
-const DISPLAY_TOGGLES: { key: keyof DisasmViewOptions; label: string }[] = [
-	{ key: "showRawBytes", label: "Section bytes (hex)" },
-	{ key: "showAscii", label: "ASCII column" },
-	{ key: "showAddresses", label: "Virtual addresses" },
-	{ key: "showInstructionBytes", label: "Instruction bytes" },
-	{ key: "showComments", label: "Comments" },
-	{ key: "showFunctionMarkers", label: "Function markers" },
-	{ key: "showSectionHeaders", label: "Section / segment metadata" },
-	{ key: "wideSpacing", label: "Horizontal whitespace" },
-];
-
-/**
- * Keep every disassembly control in one compact menu so the toolbar remains
- * readable at high zoom levels. View switches, output filters, and one-shot
- * analysis actions share the same affordance without changing their behavior.
- *
- * @example
- * <DisasmActionsMenu viewMode="linear" onViewModeChange={setViewMode} />
- */
-function DisasmActionsMenu({
-	viewMode,
-	viewOptions,
-	selected,
-	canDecompile,
-	decompiling,
-	xrefsOpen,
-	toolBusy,
-	asmLoading,
-	onViewModeChange,
-	onOptionChange,
-	onDecompile,
-	onToggleXrefs,
-	onGenerateSignature,
-	onShowSimilar,
-	onIndexBinary,
-	onRefresh,
-}: {
-	viewMode: "linear" | "graph";
-	viewOptions: DisasmViewOptions;
-	selected: boolean;
-	canDecompile: boolean;
-	decompiling: boolean;
-	xrefsOpen: boolean;
-	toolBusy: boolean;
-	asmLoading: boolean;
-	onViewModeChange: (mode: "linear" | "graph") => void;
-	onOptionChange: (key: keyof DisasmViewOptions, value: boolean) => void;
-	onDecompile: () => void;
-	onToggleXrefs: () => void;
-	onGenerateSignature: () => void;
-	onShowSimilar: () => void;
-	onIndexBinary: () => void;
-	onRefresh: () => void;
-}) {
-	return (
-		<DropdownMenu>
-			<DropdownMenuTrigger asChild>
-				<Button
-					variant="toolbar"
-					size="sm"
-					title="Disassembly view and actions"
-				>
-					View
-				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" className="w-56">
-				<DropdownMenuLabel>View</DropdownMenuLabel>
-				<DropdownMenuItem
-					aria-checked={viewMode === "linear"}
-					onSelect={() => onViewModeChange("linear")}
-				>
-					<span className="text-brand w-3">
-						{viewMode === "linear" ? "✓" : ""}
-					</span>
-					Linear
-				</DropdownMenuItem>
-				<DropdownMenuItem
-					aria-checked={viewMode === "graph"}
-					onSelect={() => onViewModeChange("graph")}
-				>
-					<span className="text-brand w-3">
-						{viewMode === "graph" ? "✓" : ""}
-					</span>
-					Graph
-				</DropdownMenuItem>
-				<DropdownMenuSeparator />
-				<DropdownMenuLabel>Output filters</DropdownMenuLabel>
-				{DISPLAY_TOGGLES.map(({ key, label }) => (
-					<DropdownMenuCheckboxItem
-						key={key}
-						checked={viewOptions[key]}
-						onCheckedChange={(checked) =>
-							onOptionChange(key, checked === true)
-						}
-					>
-						{label}
-					</DropdownMenuCheckboxItem>
-				))}
-				<DropdownMenuSeparator />
-				<DropdownMenuLabel>Actions</DropdownMenuLabel>
-				<DropdownMenuItem
-					disabled={!canDecompile || !selected || decompiling}
-					onSelect={onDecompile}
-				>
-					{decompiling ? "Decompiling…" : "Decompile"}
-				</DropdownMenuItem>
-				<DropdownMenuItem disabled={!selected} onSelect={onToggleXrefs}>
-					{xrefsOpen ? "Hide xrefs" : "Show xrefs"}
-				</DropdownMenuItem>
-				<DropdownMenuItem
-					disabled={!selected || toolBusy}
-					onSelect={onGenerateSignature}
-				>
-					Generate signature
-				</DropdownMenuItem>
-				<DropdownMenuItem
-					disabled={!selected || toolBusy}
-					onSelect={onShowSimilar}
-				>
-					Find similar
-				</DropdownMenuItem>
-				<DropdownMenuItem disabled={toolBusy} onSelect={onIndexBinary}>
-					Index binary
-				</DropdownMenuItem>
-				<DropdownMenuItem disabled={asmLoading} onSelect={onRefresh}>
-					{asmLoading ? "Reloading…" : "Reload"}
-				</DropdownMenuItem>
-			</DropdownMenuContent>
-		</DropdownMenu>
-	);
 }
 
 /**
@@ -529,7 +391,7 @@ export function CenterPanel() {
 	} | null>(null);
 	const [toolBusy, setToolBusy] = useState(false);
 
-	const runGenerateSignature = async () => {
+	const runGenerateSignature = useCallback(async () => {
 		if (!selected) return;
 		setToolBusy(true);
 		try {
@@ -546,9 +408,9 @@ export function CenterPanel() {
 		} finally {
 			setToolBusy(false);
 		}
-	};
+	}, [selected]);
 
-	const runIndexBinary = async () => {
+	const runIndexBinary = useCallback(async () => {
 		setToolBusy(true);
 		try {
 			const res = await api.semanticIndex();
@@ -563,9 +425,9 @@ export function CenterPanel() {
 		} finally {
 			setToolBusy(false);
 		}
-	};
+	}, []);
 
-	const runShowSimilar = async () => {
+	const runShowSimilar = useCallback(async () => {
 		if (!selected) return;
 		setToolBusy(true);
 		try {
@@ -590,7 +452,8 @@ export function CenterPanel() {
 		} finally {
 			setToolBusy(false);
 		}
-	};
+	}, [selected]);
+
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
 	const [consoleMounted, setConsoleMounted] = useState(false);
@@ -636,17 +499,24 @@ export function CenterPanel() {
 	const rawBytesLoading = rawKey !== null && rawState.key !== rawKey;
 	const rawBytesError = rawState.key === rawKey ? rawState.error : null;
 
-	const updateViewOption = (key: keyof DisasmViewOptions, value: boolean) => {
-		setViewOptions((current) => {
-			const next = { ...current, [key]: value };
-			storeDisasmView(next);
-			return next;
-		});
-	};
+	const updateViewOption = useCallback(
+		(key: keyof DisasmViewOptions, value: boolean) => {
+			setViewOptions((current) => {
+				const next = { ...current, [key]: value };
+				storeDisasmView(next);
+				return next;
+			});
+		},
+		[],
+	);
 
 	useEffect(() => {
 		setRawByteLimit(RAW_BYTE_PREVIEW);
 	}, [selectedAddr]);
+
+	// Withdrawn when the panel goes, so the View menu stops offering commands that
+	// act on a disassembly that is no longer on screen.
+	useEffect(() => clearSections, []);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -752,7 +622,7 @@ export function CenterPanel() {
 		scrollRef.current?.scrollTo({ top: 0 });
 	}, [selectedAddr]);
 
-	const loadXrefs = async () => {
+	const loadXrefs = useCallback(async () => {
 		if (!selected) return;
 		const addr = selected.addr;
 		setXrefsAddress(addr);
@@ -770,16 +640,70 @@ export function CenterPanel() {
 		} finally {
 			setXrefsLoading(false);
 		}
-	};
+	}, [selected]);
 
-	const toggleXrefs = () => {
+	const toggleXrefs = useCallback(() => {
 		if (xrefsOpen && xrefsAddress === selectedAddr) {
 			setXrefsOpen(false);
 			return;
 		}
 		setXrefsOpen(true);
 		void loadXrefs();
-	};
+	}, [xrefsOpen, xrefsAddress, selectedAddr, loadXrefs]);
+
+	// The commands live in the bar at the top of the window, and they answer to
+	// what this panel is holding: which function is selected, which tool is busy,
+	// which columns are on. Publishing on every render is a field assignment and
+	// nothing more, and the bar reads it only when a menu is opened — so the
+	// alternative, a store written from an effect, would buy a re-render nobody
+	// asked for.
+	useEffect(() => {
+		// Only while the disassembly is the thing on screen: a menu offering to
+		// decompile the function under a cursor that is showing a list of strings
+		// is offering to act on nothing.
+		if (tab !== "disasm") {
+			publishSections([]);
+			return;
+		}
+		publishSections(
+			disasmMenuSections({
+				viewMode,
+				viewOptions,
+				canDecompile: capabilities?.decompile !== false,
+				decompiling,
+				xrefsOpen,
+				toolBusy,
+				asmLoading,
+				hasSelection: !!selected,
+				onViewModeChange: setViewMode,
+				onOptionChange: updateViewOption,
+				onDecompile: () => void decompile(),
+				onToggleXrefs: () => toggleXrefs(),
+				onGenerateSignature: () => void runGenerateSignature(),
+				onShowSimilar: () => void runShowSimilar(),
+				onIndexBinary: () => void runIndexBinary(),
+				onRefresh: () => void refreshDisasm(),
+			}),
+		);
+	}, [
+		tab,
+		viewMode,
+		viewOptions,
+		capabilities?.decompile,
+		decompiling,
+		xrefsOpen,
+		toolBusy,
+		asmLoading,
+		selected,
+		setViewMode,
+		updateViewOption,
+		decompile,
+		toggleXrefs,
+		runGenerateSignature,
+		runShowSimilar,
+		runIndexBinary,
+		refreshDisasm,
+	]);
 
 	const currentXrefs = xrefsAddress === selectedAddr ? xrefs : [];
 	const currentXrefsError = xrefsAddress === selectedAddr ? xrefsError : null;
@@ -870,28 +794,6 @@ export function CenterPanel() {
 							</span>
 						</>
 					)}
-					<div className="ml-auto flex items-center gap-1">
-						<DisasmActionsMenu
-							viewMode={viewMode}
-							viewOptions={viewOptions}
-							selected={!!selected}
-							canDecompile={capabilities?.decompile !== false}
-							decompiling={decompiling}
-							xrefsOpen={xrefsOpen}
-							toolBusy={toolBusy}
-							asmLoading={asmLoading}
-							onViewModeChange={setViewMode}
-							onOptionChange={updateViewOption}
-							onDecompile={() => void decompile()}
-							onToggleXrefs={toggleXrefs}
-							onGenerateSignature={() =>
-								void runGenerateSignature()
-							}
-							onShowSimilar={() => void runShowSimilar()}
-							onIndexBinary={() => void runIndexBinary()}
-							onRefresh={() => void refreshDisasm()}
-						/>
-					</div>
 				</div>
 			)}
 			{toolResult && (
