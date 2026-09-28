@@ -6,6 +6,7 @@ import { FunctionList } from "@/components/FunctionList";
 import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
+import { useBinaryStore } from "@/store/binaryStore";
 
 /** One panel the sidebar can show. */
 type SidebarTab = "functions" | "data";
@@ -21,7 +22,11 @@ type SidebarTab = "functions" | "data";
  */
 export function Sidebar() {
 	const [tab, setTab] = useState<SidebarTab>("functions");
-	// A live count, so the data tab says how much is in it before it is opened.
+	// Live counts, so each tab says how much is behind it before it is opened. The
+	// functions count grows a "+" while indexing is still running, which is the
+	// one thing the number alone cannot say.
+	const functionCount = useAnalysisStore((s) => s.funcs.length);
+	const indexing = useBinaryStore((s) => s.indexing);
 	const regionCount = useAnalysisStore(
 		(s) => s.dataRegions.sections.length + s.dataRegions.boundaries.length,
 	);
@@ -30,14 +35,23 @@ export function Sidebar() {
 		id: SidebarTab;
 		label: string;
 		icon: typeof ListTree;
-		count?: number;
+		/** A count is text, not a number: the functions count can be "21+". */
+		count?: string;
 	}[] = [
-		{ id: "functions", label: "Functions", icon: ListTree },
+		{
+			id: "functions",
+			label: "Functions",
+			icon: ListTree,
+			count:
+				functionCount > 0
+					? `${functionCount}${indexing ? "+" : ""}`
+					: undefined,
+		},
 		{
 			id: "data",
 			label: "Data",
 			icon: Database,
-			count: regionCount || undefined,
+			count: regionCount ? String(regionCount) : undefined,
 		},
 	];
 

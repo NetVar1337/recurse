@@ -115,16 +115,10 @@ export function FunctionList() {
 
 	return (
 		<>
-			<Pane
-				title="Functions"
-				count={
-					funcs.length > 0
-						? `${funcs.length}${indexing ? "+" : ""}`
-						: undefined
-				}
-				scroll={false}
-				bodyClassName="flex min-h-0 flex-col"
-			>
+			{/* No pane title: the sidebar's tab above already says "Functions" and
+			    how many, and a second label for the same list is the same fact twice.
+			    The count lives on the tab, where the Data tab's does. */}
+			<Pane scroll={false} bodyClassName="flex min-h-0 flex-col">
 				<div className="px-2 py-1.5">
 					<Input
 						placeholder="Filter functions…"
