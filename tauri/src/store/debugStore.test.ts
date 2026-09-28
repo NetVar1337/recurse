@@ -134,70 +134,15 @@ describe("ensureDisasm", () => {
 	});
 });
 
-describe("visited program counters", () => {
-	it("records the pc of every stop", async () => {
-		mockSession(0x8048060);
-		await useDebugStore.getState().run("launch", { path: "/bin/true" });
-		expect(useDebugStore.getState().visited.has(0x8048060)).toBe(true);
-	});
-
-	it("accumulates across steps, so earlier instructions stay marked", async () => {
-		// Each step advances one instruction, the way the real backend does.
-		const path = [0x804809d, 0x804809e, 0x80480a0];
-		mockSession(
-			(n) => path[Math.min(n, path.length) - 1] ?? 0x80480a0,
-			EXIT_BODY,
-		);
-
-		for (let i = 0; i < 3; i++) {
-			await useDebugStore.getState().run("step");
-		}
-		const visited = useDebugStore.getState().visited;
-		expect(visited.has(0x804809d)).toBe(true);
-		expect(visited.has(0x804809e)).toBe(true);
-		expect(visited.has(0x80480a0)).toBe(true);
-	});
-
-	it("follow-mode snapshots mark the pc too", async () => {
-		mocked.debugSnapshot.mockResolvedValue({
-			pid: 4242,
-			state: "stopped",
-			stop: stopAt(0x804809d),
-			breakpoints: [],
-			frames: [],
-			bias: 0,
-		});
-		await useDebugStore.getState().pollSnapshot();
-		expect(useDebugStore.getState().visited.has(0x804809d)).toBe(true);
-	});
-
-	it("does not grow on a repeated poll of the same pc", async () => {
-		mocked.debugSnapshot.mockResolvedValue({
-			pid: 4242,
-			state: "stopped",
-			stop: stopAt(0x804809d),
-			breakpoints: [],
-			frames: [],
-			bias: 0,
-		});
-		await useDebugStore.getState().pollSnapshot();
-		const first = useDebugStore.getState().visited;
-		await useDebugStore.getState().pollSnapshot();
-		expect(useDebugStore.getState().visited).toBe(first);
-	});
-});
-
 describe("reset", () => {
-	it("drops the disassembly cache and the visited history with the session", async () => {
+	it("drops the disassembly cache with the session", async () => {
 		mockSession(0x8048060, LONG_WINDOW);
 		await useDebugStore.getState().run("launch", { path: "/bin/true" });
 		await useDebugStore.getState().ensureDisasm(0x8048060);
 		expect(useDebugStore.getState().disasm.size).toBeGreaterThan(0);
-		expect(useDebugStore.getState().visited.size).toBeGreaterThan(0);
 
 		useDebugStore.getState().reset();
 		expect(useDebugStore.getState().disasm.size).toBe(0);
-		expect(useDebugStore.getState().visited.size).toBe(0);
 	});
 
 	it("clears the cache on kill, so a new session does not inherit addresses", async () => {
@@ -206,7 +151,6 @@ describe("reset", () => {
 		await useDebugStore.getState().ensureDisasm(0x8048060);
 		await useDebugStore.getState().run("kill");
 		expect(useDebugStore.getState().disasm.size).toBe(0);
-		expect(useDebugStore.getState().visited.size).toBe(0);
 	});
 });
 
@@ -245,7 +189,6 @@ describe("process exit", () => {
 		expect(s.active).toBe(true);
 		expect(s.state).toBe("exited");
 		expect(s.disasm.size).toBe(EXIT_BODY.length);
-		expect(s.visited.has(0x804809d)).toBe(true);
 		expect(s.breakpoints).toHaveLength(1);
 		expect(outputText(s.output)).toContain("hello from the debuggee");
 		expect(s.log.length).toBeGreaterThan(0);
@@ -351,7 +294,7 @@ describe("relaunching after an exit", () => {
 
 	it("does not leak the previous process's addresses into the new one", async () => {
 		// The relaunched process reports a different pc, so the old one can only
-		// still be present if the previous session's history survived.
+		// still be present if the previous session's disassembly survived.
 		mocked.debugCommand.mockImplementation(async (op: string) => {
 			if (op === "breakpoints" || op === "backtrace") return [];
 			return stopAt(0x400500);
@@ -359,9 +302,6 @@ describe("relaunching after an exit", () => {
 		await useDebugStore.getState().run("launch", { path: "/bin/second" });
 		const s = useDebugStore.getState();
 		expect(s.disasm.size).toBe(0);
-		expect(s.visited.has(0x804809d)).toBe(false);
-		// Only the new process's own pc is marked.
-		expect([...s.visited]).toEqual([0x400500]);
 		expect(s.lastPc).toBe(0x400500);
 	});
 

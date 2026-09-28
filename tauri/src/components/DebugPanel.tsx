@@ -5,6 +5,7 @@ import { api, pickBinary } from "@/api";
 import { DebugCpu } from "@/components/DebugCpu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { X86_FLAG_BITS } from "@/lib/branches";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { isLiveState, useDebugStore } from "@/store/debugStore";
@@ -16,19 +17,7 @@ function fmtAddr(a?: number | null): string {
 
 /** x86-64 RFLAGS, as the set flag names. */
 function flagsOf(eflags: number): string {
-	const bits: [string, number][] = [
-		["CF", 0],
-		["PF", 2],
-		["AF", 4],
-		["ZF", 6],
-		["SF", 7],
-		["TF", 8],
-		["IF", 9],
-		["DF", 10],
-		["OF", 11],
-	];
-	return bits
-		.filter(([, bit]) => (eflags >> bit) & 1)
+	return X86_FLAG_BITS.filter(([, bit]) => (eflags >> bit) & 1)
 		.map(([name]) => name)
 		.join(" ");
 }

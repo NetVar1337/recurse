@@ -2,7 +2,19 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
 import { chrome } from "@/lib/chrome";
-import { DISASM_AFTER, windowAround } from "@/lib/debugDisasm";
+import {
+	branchVerdict,
+	classifyInsn,
+	peekTarget,
+	verdictText,
+	x86Flags,
+} from "@/lib/branches";
+import {
+	DISASM_AFTER,
+	DISASM_PEEK,
+	windowAround,
+	type DisasmPeek,
+} from "@/lib/debugDisasm";
 import { cn } from "@/lib/utils";
 import { useDebugStore, isLiveState } from "@/store/debugStore";
 import { useSettingsStore } from "@/store/settingsStore";
@@ -17,18 +29,21 @@ function fmtAddr(a?: number | null): string {
  *
  * Addresses here are *runtime* addresses (the loader, a JIT page, or the main
  * binary), so the disassembly is what is actually mapped and needs no static
- * mapping. Each row has a breakpoint gutter (click to toggle) and a marker
- * column: `▶` on the instruction about to run, `·` on one the program counter
- * has already been observed at.
+ * mapping. It is a code window anchored on the cursor: the instructions leading
+ * into it are dimmed as context, and the cursor row is the only one marked.
  *
- * The rows come out of the session's disassembly cache rather than a single
- * fetch anchored at the pc, so stepping never clears the view. Moving into the
- * next function leaves the instructions already on screen above the cursor, and
- * the `·`/tinted rows mark the run the program has already made.
+ * The rows above the cursor are *not* a record of what ran, and deliberately do
+ * not pretend to be. A debugger only observes the program between stops, so on a
+ * loop the code sitting just above the cursor is the middle of a body the run
+ * may have left several laps ago — reading it as history is what turns a
+ * backward branch into an invisible one. What actually happened is on the
+ * cursor's own instruction, and it is shown there: a conditional branch is
+ * labelled `taken`/`not taken` with the flag condition that decides it, and when
+ * it is going to be taken its target is spliced in underneath with `↳`, so
+ * standing on a loop's back edge shows the whole iteration right there.
  *
- * Only the last `debugHistory` already-executed instructions are shown, set
- * from Settings > Debugger; older ones stay in the cache, so raising it
- * scrolls them back into view without refetching.
+ * `debugContext` (Settings > Debugger) sets how many instructions of context
+ * stay above the cursor.
  *
  * A `; ...` suffix is split out and rendered by [`DisasmComment`], so the live
  * view colours comments exactly as the static views do.
@@ -36,21 +51,21 @@ function fmtAddr(a?: number | null): string {
 export function DebugCpu() {
 	const livePc = useDebugStore((s) => s.registers?.pc ?? null);
 	const lastPc = useDebugStore((s) => s.lastPc);
+	const registers = useDebugStore((s) => s.registers);
 	const state = useDebugStore((s) => s.state);
 	const disasm = useDebugStore((s) => s.disasm);
-	const visited = useDebugStore((s) => s.visited);
 	const pending = useDebugStore((s) => s.disasmPending);
 	const breakpoints = useDebugStore((s) => s.breakpoints);
 	const active = useDebugStore((s) => s.active);
 	const error = useDebugStore((s) => s.disasmError);
 	const run = useDebugStore((s) => s.run);
 	const ensureDisasm = useDebugStore((s) => s.ensureDisasm);
-	const history = useSettingsStore((s) => s.debugHistory);
+	const context = useSettingsStore((s) => s.debugContext);
 	const pcRow = useRef<HTMLTableRowElement | null>(null);
 
 	const live = isLiveState(state);
 	// Once the process is gone there is no live pc, so the view stays anchored on
-	// the last one and every row reads as already executed.
+	// the last one and there are no registers left to judge a branch by.
 	const anchor = livePc ?? lastPc;
 
 	useEffect(() => {
@@ -60,18 +75,48 @@ export function DebugCpu() {
 		void ensureDisasm(livePc);
 	}, [livePc, live, ensureDisasm]);
 
-	// Anchored at the pc, reaching back through the cache, and showing only the
-	// last `history` already-executed rows above it.
-	const ops = useMemo(
-		() => windowAround(disasm, anchor, history, DISASM_AFTER),
-		[disasm, anchor, history],
+	// The cursor's own instruction is what carries the branch verdict, and the
+	// verdict is what decides whether there is a target to peek.
+	const cursor = anchor == null ? null : (disasm.get(anchor) ?? null);
+	const branch = useMemo(
+		() => (cursor ? classifyInsn(cursor.text) : null),
+		[cursor],
+	);
+	const verdict = useMemo(
+		() =>
+			branch
+				? branchVerdict(
+						branch,
+						x86Flags(registers?.values.eflags),
+						registers?.values.rcx ?? 0,
+					)
+				: null,
+		[branch, registers],
+	);
+	const peek = useMemo<DisasmPeek | null>(() => {
+		const at = peekTarget(branch, verdict);
+		return at == null ? null : { addr: at, lines: DISASM_PEEK };
+	}, [branch, verdict]);
+
+	// Anchored at the cursor: context above it, the straight decode below, or the
+	// branch target when the cursor is on a branch that is about to be taken.
+	const rows = useMemo(
+		() => windowAround(disasm, anchor, context, DISASM_AFTER, peek),
+		[disasm, anchor, context, peek],
+	);
+
+	// Where the cursor sits in the list, which is a row identity rather than an
+	// address: a peek splices in code the window may already show elsewhere.
+	const cursorAt = useMemo(
+		() => rows.findIndex((r) => r.role === "cursor"),
+		[rows],
 	);
 
 	// Keep the cursor on screen as the window slides, without yanking the view
 	// when it is already visible.
 	useEffect(() => {
 		pcRow.current?.scrollIntoView({ block: "nearest" });
-	}, [anchor, ops.length]);
+	}, [anchor, rows.length, cursorAt]);
 
 	// Breakpoints are runtime addresses, matching these rows directly.
 	const bpAt = useMemo(() => {
@@ -103,30 +148,29 @@ export function DebugCpu() {
 			)}
 			<table className="w-full border-collapse">
 				<tbody>
-					{ops.map((op) => {
+					{rows.map((row, i) => {
 						// The `; ...` suffix is a comment, not assembly, so it is
 						// split out and styled like every other view rather than
 						// tokenized as operands.
-						const { instr, comment } = splitComment(op.text);
-						const isPc = live && op.addr === anchor;
-						const seen = visited.has(op.addr);
-						const hasBp = bpAt.has(op.addr);
+						const { instr, comment } = splitComment(row.insn.text);
+						const isPc = live && row.role === "cursor";
+						const hasBp = bpAt.has(row.addr);
 						return (
 							<tr
-								key={op.addr}
+								// Positional: a peek repeats addresses the window may
+								// already show, so an address is not a key here.
+								key={i}
 								ref={isPc ? pcRow : undefined}
 								className={cn(
 									"hover:bg-accent/40",
-									// Instructions the program has already been at,
-									// tinted and ruled so a run of them reads as one
-									// block of history behind the cursor.
-									seen && chrome.executed,
+									row.role === "past" && chrome.past,
+									row.role === "peek" && chrome.peek,
 									isPc && chrome.selected,
 								)}
 							>
 								<td
 									className="w-4 cursor-pointer px-1 text-center select-none"
-									onClick={() => toggle(op.addr)}
+									onClick={() => toggle(row.addr)}
 									title="Toggle breakpoint"
 								>
 									<span
@@ -141,36 +185,53 @@ export function DebugCpu() {
 								<td
 									className={cn(
 										"w-3 text-center select-none",
-										isPc
+										row.role === "cursor"
 											? "text-primary"
 											: "text-muted-foreground",
 									)}
 									title={
-										isPc
-											? "about to execute"
-											: seen
-												? "already executed"
+										row.role === "peek"
+											? "where this branch is about to land"
+											: row.role === "cursor"
+												? "about to execute"
 												: undefined
 									}
 								>
-									{isPc ? "▶" : seen ? "·" : ""}
+									{row.marker === "pc"
+										? "▶"
+										: row.marker === "peek"
+											? "↳"
+											: ""}
 								</td>
 								<td className="nums text-asm-addr min-w-[9ch] px-1 whitespace-nowrap">
-									{fmtAddr(op.addr)}
+									{fmtAddr(row.addr)}
 								</td>
 								<td className="text-asm-bytes min-w-[16ch] px-1 whitespace-nowrap">
-									{op.bytes}
+									{row.insn.bytes}
 								</td>
 								<td className="px-1 whitespace-nowrap">
 									<DisasmInstr text={instr} />
 									<DisasmComment comment={comment} />
+									{isPc && verdict && (
+										<span
+											className={cn(
+												"pl-3",
+												verdict.taken
+													? chrome.taken
+													: chrome.fall,
+											)}
+											title="Decided by the flags at this stop"
+										>
+											{verdictText(verdict)}
+										</span>
+									)}
 								</td>
 							</tr>
 						);
 					})}
 				</tbody>
 			</table>
-			{ops.length === 0 && (
+			{rows.length === 0 && (
 				<div className="text-muted-foreground p-3 text-xs">
 					{!live
 						? "process has exited — no disassembly decoded"

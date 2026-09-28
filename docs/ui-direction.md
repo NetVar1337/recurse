@@ -90,7 +90,10 @@ run/step/break, switch backend — we already have every store for it.
 address/bytes/text align; a soft full-width current-line bar with a left
 accent (not a hard `bg-primary/25` block); clickable `0x…` and `[rip+X]`
 operands; a breakpoint gutter with a right-click menu (enable/disable,
-condition, log); kind-coloured `→ 0x…` jump links.
+condition, log); kind-coloured `→ 0x…` jump links. The live debugger variant
+marks **only** the cursor: the code above it recedes, the branch it sits on
+reads `taken [C || Z]`, and a taken branch splices its target in underneath —
+so a loop shows its own edge and its own body instead of a tinted wall.
 
 **Graph** — a left accent per block kind (entry/exit/loop); edge labels as
 pills; dim non-neighbour edges on hover; mini-map on large graphs; a "centre

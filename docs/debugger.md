@@ -262,6 +262,19 @@ the existing "verify, don't guess" framing.
 - **Breakpoints in the disassembly**: a gutter affordance on each instruction
   row to toggle a breakpoint; the store keeps the set; the row shows a red dot.
   Clicking a backtrace frame selects the function and highlights the line.
+- **The CPU view is a code window, not a history**: the rows above the cursor
+  are the instructions leading into it, dimmed as context. A debugger only
+  observes the program between stops, so a row at a lower address is not a row
+  that ran — and on a loop it is a branch forward to code that has not run yet,
+  which is exactly how an address-ordered "history" makes a backward branch
+  invisible. Marking those rows as executed was the bug, not the fix.
+- **The branch the cursor is on is where the answer is**: a conditional branch
+  reads as `taken`/`not taken` with the flag condition that decides it
+  (`lib/branches.ts` evaluates the x86 conditions against the live `eflags`),
+  and when it is going to be taken the target is spliced in underneath with `↳`.
+  That is what makes a loop legible from the inside: standing on the back edge,
+  the whole iteration is right there. `debugContext` (Settings > Debugger) sets
+  how many instructions of context stay above the cursor.
 - `FunctionList` / disasm: optionally annotate functions with a breakpoint count.
 
 ## Milestones

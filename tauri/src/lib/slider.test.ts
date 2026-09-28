@@ -10,9 +10,11 @@ describe("sliderFill", () => {
 	});
 
 	it("measures from min, not from zero", () => {
-		// The debugger history range starts at 1, so the minimum is not 0%.
+		// The zoom range is negative, so zero is the middle of the track and the
+		// ends are not 0% and 100%.
 		expect(sliderFill(1, 1, 500)).toBe("0%");
 		expect(sliderFill(500, 1, 500)).toBe("100%");
+		expect(sliderFill(0, -5, 8)).toBe(`${(5 / 13) * 100}%`);
 	});
 
 	it("clamps out-of-range values to the track", () => {
