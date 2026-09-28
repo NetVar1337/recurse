@@ -51,6 +51,9 @@ export const api = {
 	functions: () => invoke<Function[]>("functions"),
 	renameFunction: (addr: number, name: string) =>
 		invoke<void>("rename_function", { addr, name }),
+	renameVariable: (func: number, key: string, name: string) =>
+		invoke<void>("rename_variable", { func, key, name }),
+	variableNames: () => invoke<Record<string, string>>("variable_names"),
 	debugCommand: (op: string, args?: Record<string, unknown>) =>
 		invoke<unknown>("debug_command", { op, args: args ?? null }),
 	debugSnapshot: () => invoke<DebugSnapshot | null>("debug_snapshot"),

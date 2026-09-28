@@ -112,6 +112,107 @@
 	padding-inline: var(--space-2);
 }
 
+/* A row whose name and its metadata cannot share one line. A name, a type, an
+   address, a size and a file offset have no column order that fits a narrow
+   pane, and squeezing the name out is the one thing that must not happen — so
+   the name goes on top and the metadata beneath. Once the sidebar is wide
+   enough for one line, the container query collapses this back to a single
+   line: widening the panel should be rewarded with the denser layout, not
+   leave the analyst reading a two-line row in a column that no longer needs
+   one. */
+/* The parts are *not* given a width of their own. In this column they are
+   stretched by `align-items`, and in the one-line grid each is sized by its
+   column — a part claiming 100% would fight whichever layout it is in, which is
+   how the two of them ended up overprinting each other. */
+.data-row-2 {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 1px;
+	min-height: calc(var(--row-h) * 2 - var(--space-1));
+	padding-block: var(--space-1);
+	padding-inline: var(--space-2);
+}
+
+@container (min-width: 460px) {
+	/* A grid, not a row of flex: the two parts are wrappers sized by the layout
+	   they are in, and as flex items each would claim the whole width and
+	   overprint the other. Two columns — the name and its type, then the
+	   metadata — is what actually puts them on one line. */
+	.data-row-2 {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: var(--space-2);
+		min-height: var(--row-h);
+		padding-block: 0;
+		white-space: nowrap;
+	}
+	.data-row-2 > [data-part="meta"] {
+		justify-content: flex-end;
+	}
+}
+
+/* While a divider is being dragged: the pointer is crossing rows of names and
+   addresses, and a browser would helpfully select all of it. The divider owns
+   the pointer, so the selection is an accident of the path, not a request. The
+   rule is keyed to the class `lib/dragSelect.ts` puts on the body, because the
+   selection happens in the elements the pointer crosses rather than in the
+   divider itself. */
+/* A divider between two panels. The element is a 4px grab area — a divider you
+   have to hit on one pixel is a divider nobody moves — and the *line* is 1px, so
+   highlighting it says "this is the edge" rather than painting a band down the
+   window. Transparent until hovered, focused or dragged, because a permanently
+   visible rule between two panels is a border the layout already has. */
+.ui-col-divider,
+.ui-row-divider {
+	position: relative;
+	background: transparent;
+}
+
+.ui-col-divider::after,
+.ui-row-divider::after {
+	content: "";
+	position: absolute;
+	background: transparent;
+	transition: background 120ms ease;
+}
+
+.ui-col-divider::after {
+	inset-block: 0;
+	inset-inline-start: 50%;
+	width: 1px;
+	transform: translateX(-50%);
+}
+
+.ui-row-divider::after {
+	inset-inline: 0;
+	inset-block-start: 50%;
+	height: 1px;
+	transform: translateY(-50%);
+}
+
+.ui-col-divider:hover::after,
+.ui-col-divider:focus-visible::after,
+.ui-col-divider[data-dragging]::after,
+.ui-row-divider:hover::after,
+.ui-row-divider:focus-visible::after,
+.ui-row-divider[data-dragging]::after {
+	background: var(--brand);
+}
+
+body.dragging-suppress-select {
+	user-select: none;
+	-webkit-user-select: none;
+	cursor: col-resize;
+}
+
+body.dragging-suppress-select-row {
+	user-select: none;
+	-webkit-user-select: none;
+	cursor: row-resize;
+}
+
 /* Numbers in a column must line up: addresses, sizes, offsets, registers. */
 .nums {
 	font-variant-numeric: tabular-nums;

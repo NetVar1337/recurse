@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
 	Background,
 	Controls,
@@ -19,6 +19,7 @@ import dagre from "@dagrejs/dagre";
 import { api } from "@/api";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
+import { VarNameChip } from "@/components/VarNameChip";
 import {
 	DisasmComment,
 	DisasmInstr,
@@ -38,7 +39,22 @@ function fmtAddr(a?: number | null) {
 }
 
 type BlockOp = GraphOp & { target?: Function | null };
-type BlockData = { addr: string; ops: BlockOp[] };
+type BlockData = {
+	addr: string;
+	ops: BlockOp[];
+	/**
+	 * The function this block belongs to, for its variable names: a block has an
+	 * address of its own, and `[rbp - 0x18]` is only a slot once you know which
+	 * frame it is in.
+	 */
+	func: number;
+	/**
+	 * The function's instructions, flattened out of the blocks. Needed because
+	 * how a function addresses its frame — `rbp` or `rsp`, and how deep — is a
+	 * property of the whole body, not of the one block a node shows.
+	 */
+	insns: { text?: string; disasm?: string }[];
+};
 type BlockNode = Node<BlockData, "cfgnode">;
 
 // Columns are sized per node from its own content (see `blockColumns`) so
@@ -96,6 +112,15 @@ function blockWidth(ops: BlockOp[]): number {
 }
 
 function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
+	const frameOps = useMemo(
+		() =>
+			data.insns.map((i) => ({
+				addr: 0,
+				bytes: "",
+				text: i.text ?? i.disasm ?? "",
+			})),
+		[data.insns],
+	);
 	const cols = blockColumns(data.ops);
 	return (
 		<div className="border-border bg-card text-2xs rounded border font-mono shadow-lg">
@@ -165,6 +190,11 @@ function BlockNodeComponent({ data }: NodeProps<BlockNode>) {
 							>
 								{instr && <DisasmInstr text={instr} />}
 								<DisasmComment comment={comment} />
+								<VarNameChip
+									func={data.func}
+									insns={frameOps}
+									text={instr}
+								/>
 							</span>
 						</div>
 					);
@@ -212,7 +242,12 @@ function toGraph(
 		return {
 			id: String(b.addr),
 			type: "cfgnode",
-			data: { addr: fmtAddr(b.addr), ops },
+			data: {
+				addr: fmtAddr(b.addr),
+				ops,
+				func: graph.addr,
+				insns: (graph.blocks ?? []).flatMap((blk) => blk.ops ?? []),
+			},
 			position: { x: 0, y: 0 },
 			width: blockWidth(ops),
 			height: HEADER_H + COL_H + ops.length * LINE_H + 6,

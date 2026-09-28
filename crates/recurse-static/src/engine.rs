@@ -277,6 +277,51 @@ pub struct DataSection {
     pub executable: bool,
     /// True when the section occupies no file bytes (`.bss` and friends).
     pub uninitialized: bool,
+    /// Where the section's bytes start in the file, as opposed to in memory.
+    ///
+    /// The two diverge the moment a segment is page-aligned to a size the
+    /// section is not, which is the normal case: the difference is what tells an
+    /// analyst that a file offset and a virtual address cannot be interchanged.
+    pub file_offset: u64,
+    /// Bytes the section's contents must be aligned to, as the header says.
+    pub align: u64,
+    /// The section type as the object file spells it (`PROGBITS`, `NOBITS`,
+    /// `NOTE`, `RELA`, `DYNAMIC`, …).
+    pub section_type: String,
+    /// Raw header flags, kept so a view can show bits the coarse access flags
+    /// above do not cover (`MERGE`, `STRINGS`, `TLS`, `COMPRESSED`).
+    pub flags: u32,
+}
+
+/// One loadable segment of the image: an entry in the program header table.
+///
+/// The two views of an image disagree, and both are worth having. Sections are
+/// the linker's: one per purpose, with names an analyst reasons about. Segments
+/// are the kernel's: what it is actually willing to map, and a `PT_LOAD` with
+/// write and execute both set is the fact behind a writable-code finding that no
+/// section list can show. A segment also draws the line between bytes that come
+/// from the file and bytes the kernel zero-fills, which is how `.bss` is
+/// accounted for.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DataSegment {
+    /// Segment type as the object file spells it (`LOAD`, `DYNAMIC`, `NOTE`,
+    /// `GNU_STACK`, `GNU_RELRO`, …).
+    pub kind: String,
+    /// Virtual address the segment is mapped at.
+    pub addr: u64,
+    /// Bytes the segment occupies in memory.
+    pub mem_size: u64,
+    /// Bytes the segment takes from the file. Less than `mem_size` for a
+    /// segment whose tail is zero-filled.
+    pub file_size: u64,
+    /// Offset of the segment's bytes in the file.
+    pub file_offset: u64,
+    /// Required alignment.
+    pub align: u64,
+    /// Whether the segment can be read / written / executed.
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
 }
 
 /// A linker-provided marker for a region boundary, such as `_end`,
@@ -306,6 +351,8 @@ pub struct DataRegions {
     pub sections: Vec<DataSection>,
     /// Linker boundary markers, ordered by address.
     pub boundaries: Vec<BoundarySymbol>,
+    /// Loadable segments, ordered by address — the kernel's view of the image.
+    pub segments: Vec<DataSegment>,
 }
 
 /// One disassembled instruction.

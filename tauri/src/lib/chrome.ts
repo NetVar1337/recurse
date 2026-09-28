@@ -24,6 +24,17 @@ export const chrome = {
 	panelTitle: "ui-panel-title",
 	/** One row in any data list. */
 	row: "data-row",
+	/**
+	 * A row too wide for one line: the name on top, its metadata beneath, which
+	 * is the only way a narrow pane can show both without truncating either.
+	 */
+	row2: "data-row-2",
+	/**
+	 * A draggable divider between two panels. The element is the grab area; the
+	 * line drawn inside it is one pixel, however wide the grab is.
+	 */
+	colDivider: "ui-col-divider",
+	rowDivider: "ui-row-divider",
 	/** Uppercase micro-heading for pane titles. */
 	label: "label",
 	/** Tabular numerals for columns of numbers. */

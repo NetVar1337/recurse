@@ -4,6 +4,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { api } from "../api";
 import { pltSlot, shortName } from "../lib/debugCalls";
 import { moduleAt, nearestSymbol } from "../lib/debugModules";
+import { printableAt, STRING_WINDOW } from "../lib/debugModules";
 import { appendOutput, type OutputChunk } from "../lib/debugOutput";
 import {
 	countForward,
@@ -18,6 +19,7 @@ import type {
 	DebugFrame,
 	DebugInsn,
 	DebugModule,
+	DebugMemory,
 	DebugModuleSymbol,
 	DebugRegisters,
 	DebugSnapshot,
@@ -182,6 +184,15 @@ interface DebugState {
 	 */
 	modules: DebugModule[];
 	/**
+	 * What a `[rip + x]` operand points at, keyed by the operand's address.
+	 *
+	 * The comment the disassembly shows for such a reference: an import's GOT
+	 * slot, a named global, or the text of a string that is really there.
+	 */
+	dataNames: Map<number, string>;
+	/** Whether a resolution is in flight, so a re-render does not start another. */
+	dataNamesPending: boolean;
+	/**
 	 * Library addresses already resolved to a name, keyed by runtime address.
 	 *
 	 * Only the addresses a call in the visible window actually reached, so this
@@ -213,6 +224,7 @@ interface DebugState {
 	ensureDisasm: (pc: number) => Promise<void>;
 	ensureCallNames: (imports: Import[]) => Promise<void>;
 	ensureModuleNames: (addrs: number[]) => Promise<void>;
+	ensureDataNames: (targets: number[]) => Promise<void>;
 	/** Send text to the debuggee's stdin. */
 	sendStdin: (text: string) => Promise<void>;
 	/**
@@ -261,6 +273,8 @@ const initial = {
 	callNames: new Map<number, string>(),
 	callNamesDone: false,
 	callNamesPending: false,
+	dataNames: new Map<number, string>(),
+	dataNamesPending: false,
 	modules: [] as DebugModule[],
 	moduleNames: new Map<number, string>(),
 	eventGen: 0,
@@ -443,6 +457,21 @@ function applyEvent(event: DebugEvent): void {
 }
 
 /**
+ * Read `len` bytes of the debuggee's memory, or null when it cannot be read.
+ *
+ * An annotation reads the process to find out what a pointer means, and an
+ * unreadable range is an ordinary outcome — the mapping may be gone, or the
+ * process may have exited — so it is a null rather than an error. The view it
+ * decorates is unaffected either way.
+ */
+async function readBytes(addr: number): Promise<DebugMemory | null> {
+	return (await api.debugCommand("read", {
+		addr,
+		len: STRING_WINDOW,
+	})) as DebugMemory | null;
+}
+
+/**
  * Drop everything tied to one debuggee, keeping the session's op transcript.
  *
  * Used when a new process is launched or attached: its addresses, registers,
@@ -475,6 +504,8 @@ function clearProcessState(): void {
 		callNames: new Map<number, string>(),
 		callNamesDone: false,
 		callNamesPending: false,
+		dataNames: new Map<number, string>(),
+		dataNamesPending: false,
 		modules: [],
 		moduleNames: new Map<number, string>(),
 		sessionGen: s.sessionGen + 1,
@@ -730,6 +761,47 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 		);
 		if (resolved.size > get().moduleNames.size)
 			set({ moduleNames: resolved });
+	},
+
+	/**
+	 * Say what each `[rip + x]` operand in view points at.
+	 *
+	 * Three sources, in the order that can be trusted: a GOT slot names the
+	 * import it forwards to; a slot with no import may be text, which is read
+	 * out of the debuggee and shown if it is really text; anything else is left
+	 * alone rather than guessed at. A displacement on its own is meaningless —
+	 * it is an offset from the end of the instruction — so an unresolvable
+	 * operand is a number, and a number the analyst has to add up by hand.
+	 */
+	ensureDataNames: async (targets) => {
+		const wanted = targets.filter((t) => !get().dataNames.has(t));
+		if (wanted.length === 0 || get().dataNamesPending) return;
+		set({ dataNamesPending: true });
+		try {
+			const bias = get().bias;
+			const slots = get().callNames;
+			const resolved = new Map(get().dataNames);
+			for (const addr of wanted) {
+				const imported = slots.get(addr - bias);
+				if (imported !== undefined) {
+					resolved.set(addr, imported);
+					continue;
+				}
+				// Only a slot the PLT table does not account for can be text, and
+				// only text in the debuggee's own mapping can be read as such: a
+				// library's address is somebody else's file to name.
+				if (moduleAt(get().modules, addr) !== null) continue;
+				const text = await printableAt(
+					(where) => readBytes(where),
+					addr,
+				);
+				if (text !== null) resolved.set(addr, `"${text}"`);
+			}
+			if (resolved.size > get().dataNames.size)
+				set({ dataNames: resolved });
+		} finally {
+			set({ dataNamesPending: false });
+		}
 	},
 
 	sendStdin: async (text) => {

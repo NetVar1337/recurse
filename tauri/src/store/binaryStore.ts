@@ -85,10 +85,15 @@ export const useBinaryStore = create<BinaryState>((set) => ({
 				sections: [],
 				boundaries: [],
 			}));
+			// Variable names are the analyst's, like function renames: fetched
+			// with the rest and never required, so a backend without them still
+			// opens.
+			const variableNames = await api.variableNames().catch(() => ({}));
 			useAnalysisStore.getState().setAll({
 				funcs: f ?? [],
 				strings: s ?? [],
 				imports: i ?? [],
+				variableNames,
 				dataRegions,
 			});
 			await useSessionStore.getState().ensure();

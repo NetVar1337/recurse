@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { callTarget, pltSlot, shortName } from "./debugCalls";
+import {
+	callTarget,
+	frameOffsetIn,
+	frameOffsetOf,
+	pltSlot,
+	ripTarget,
+	shortName,
+} from "./debugCalls";
 import type { DebugInsn } from "../types";
 
 /** A decoded instruction with a known length, so rip arithmetic is checkable. */
@@ -58,6 +65,106 @@ describe("callTarget", () => {
 
 	it("ignores an absolute address in a comment", () => {
 		expect(callTarget(insn(0x401000, "nop ; 0xdeadbeef", "90"))).toBeNull();
+	});
+});
+
+describe("ripTarget", () => {
+	it("resolves a data operand's displacement to an address", () => {
+		// `push qword ptr [rip + 0x200af2]`, six bytes on, is 0x601008: which is
+		// a real GOT slot, and not something the displacement says on its own.
+		expect(
+			ripTarget(
+				insn(
+					0x400510,
+					"push qword ptr [rip + 0x200af2]",
+					"ff35f2f20a00",
+				),
+			),
+		).toBe(0x601008);
+	});
+
+	it("resolves any instruction, not only a branch", () => {
+		// A store to a global and a lea of an address are both references, and
+		// both are just as opaque as a call.
+		expect(
+			ripTarget(
+				insn(
+					0x400649,
+					"mov byte ptr [rip + 0x2009fe], 1",
+					"c605fe09200001",
+				),
+			),
+		).toBe(0x60104e);
+		expect(
+			ripTarget(
+				insn(0x400640, "lea rdx, [rip + 0x2006ae]", "488d15ae062000"),
+			),
+		).toBe(0x600cf5);
+	});
+
+	it("handles a negative displacement", () => {
+		expect(
+			ripTarget(
+				insn(
+					0x400510,
+					"mov eax, dword ptr [rip - 0x20]",
+					"8b05e0ffffff",
+				),
+			),
+		).toBe(0x400516 - 0x20);
+	});
+
+	it("has no target for an instruction that references no address", () => {
+		expect(ripTarget(insn(0x400510, "mov rax, rax", "4889c0"))).toBeNull();
+		expect(
+			ripTarget(insn(0x400510, "mov eax, dword ptr [rbp - 8]", "8b4508")),
+		).toBeNull();
+	});
+});
+
+describe("frameOffsetOf", () => {
+	it("reads the frame slot an operand names", () => {
+		expect(
+			frameOffsetOf(
+				insn(0x1004, "mov rax, qword ptr [rbp - 0x8]", "488b45f8"),
+			),
+		).toBe(-8);
+		expect(
+			frameOffsetOf(
+				insn(0x1004, "mov rax, qword ptr [rbp + 0x10]", "488b4510"),
+			),
+		).toBe(0x10);
+	});
+
+	it("has no offset without a frame pointer", () => {
+		// `rsp`-relative is a frame, but not one with offsets anyone names, and
+		// guessing which it is would put the wrong name on the operand.
+		expect(
+			frameOffsetOf(
+				insn(0x1004, "mov rax, qword ptr [rsp + 0x10]", "488b442410"),
+			),
+		).toBeNull();
+	});
+
+	it("has no offset for an instruction that names no slot", () => {
+		expect(
+			frameOffsetOf(insn(0x1004, "mov rax, rax", "4889c0")),
+		).toBeNull();
+	});
+});
+
+describe("frameOffsetIn", () => {
+	it("reads the slot out of a line of disassembly, with no instruction object", () => {
+		// The static views have a rendered line and nothing else, and they ask
+		// the same question: which name goes beside this slot?
+		expect(frameOffsetIn("mov dword ptr [rbp - 4], 0xbadf00d")).toBe(-4);
+		expect(
+			frameOffsetIn("cmp dword ptr [rbp - 0x20], 0xc0ff33 ; local_20"),
+		).toBe(-0x20);
+	});
+
+	it("has no offset without a frame pointer", () => {
+		expect(frameOffsetIn("mov rax, qword ptr [rsp + 0x10]")).toBeNull();
 	});
 });
 

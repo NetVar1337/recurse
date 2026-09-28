@@ -20,6 +20,19 @@ const DIRECT = /^(?:call|jmp)\s+(?:qword\s+ptr\s+)?0x([0-9a-f]+)/i;
 const RIP_RELATIVE =
 	/^(?:call|jmp)\b.*?\[\s*rip\s*([+-])\s*0x([0-9a-f]+)\s*\]/i;
 
+/** Any `[rip ± 0x…]` operand, whatever the instruction does with it. */
+const RIP_OPERAND = /\[\s*rip\s*([+-])\s*0x([0-9a-f]+)\s*\]/i;
+
+/**
+ * `[rbp - 0x18]`, `[rbp + 8]`, `[rbp - 4]`.
+ *
+ * The offset is printed in whichever base the decoder chose, and a small frame
+ * slot usually comes out decimal — `[rbp - 4]` is a loop counter, not a
+ * `[rbp - 0x4]` — so both spellings have to be read or the most common variable
+ * in a function is the one that never gets a name.
+ */
+const FRAME_SLOT = /\[\s*rbp\s*([+-])\s*(0x[0-9a-f]+|\d+)\s*\]/i;
+
 /**
  * The destination of a `call` or `jmp`, as an address in the debuggee's own
  * address space.
@@ -57,6 +70,86 @@ export function callTarget(insn: DebugInsn): CallTarget | null {
 	const direct = DIRECT.exec(text);
 	if (direct) return { kind: "direct", addr: Number.parseInt(direct[1], 16) };
 	return null;
+}
+
+/**
+ * The address a `[rip + x]` operand points at.
+ *
+ * Every data reference the compiler makes position-independently looks like
+ * this — a GOT slot, a string in rodata, a global, a jump table — and the
+ * displacement means nothing on its own: it is an offset from the end of this
+ * instruction, so only adding it to that end says what is being read. Which is
+ * exactly what the operand is for, and why a view that shows the raw
+ * displacement without this says nothing about the value.
+ *
+ * The lookup is one per instruction rather than per operand, which is all the
+ * x86-64 forms in practice need: an instruction with two rip-relative operands
+ * does not exist in the ISA.
+ *
+ * ```
+ * ripTarget({ addr: 0x400510, bytes: "ff35f2f20a00", text: "push qword ptr [rip + 0x200af2]" })
+ *   // => 0x601008   // six bytes on, then the displacement
+ * ripTarget({ addr: 0x400510, bytes: "4889c0", text: "mov rax, rax" })
+ *   // => null
+ * ```
+ *
+ * @param insn - The decoded instruction.
+ * @returns The address the operand refers to, or null when there is none.
+ */
+export function ripTarget(insn: DebugInsn): number | null {
+	const m = RIP_OPERAND.exec(insn.text);
+	if (!m) return null;
+	const disp = Number.parseInt(m[2], 16) * (m[1] === "-" ? -1 : 1);
+	return insn.addr + insnSize(insn) + disp;
+}
+
+/**
+ * The frame offset a `[rbp - 0x18]` operand refers to.
+ *
+ * The same question [`ripTarget`] answers for a position-independent reference,
+ * asked of the frame pointer instead: where in the frame is this variable, and
+ * therefore which name belongs beside it.
+ *
+ * ```
+ * frameOffsetOf({ addr: 0x1004, bytes: "488b45e8", text: "mov rax, qword ptr [rbp - 0x8]" })
+ *   // => -8
+ * frameOffsetOf({ addr: 0x1004, bytes: "488b442410", text: "mov rax, qword ptr [rsp + 0x10]" })
+ *   // => null — no frame pointer, so no frame to be relative to
+ * ```
+ *
+ * @param insn - The decoded instruction.
+ * @returns The offset, or null when the instruction names no frame slot.
+ */
+export function frameOffsetOf(insn: DebugInsn): number | null {
+	return frameOffsetIn(insn.text);
+}
+
+/**
+ * The frame offset named anywhere in an instruction's text.
+ *
+ * Split out from [`frameOffsetOf`] because the static views have a line of
+ * disassembly and nothing else: they never decoded an instruction object, and
+ * the question they are asking — which name goes beside this `[rbp - 0x18]` — is
+ * the same one.
+ *
+ * ```
+ * frameOffsetIn("mov dword ptr [rbp - 4], 0xbadf00d")
+ * // => -4
+ * frameOffsetIn("mov rax, qword ptr [rsp + 0x10]")
+ * // => null
+ * ```
+ *
+ * @param text - The instruction, or the operand part of it.
+ * @returns The offset, or null when the text names no frame slot.
+ */
+export function frameOffsetIn(text: string): number | null {
+	const m = FRAME_SLOT.exec(text);
+	if (!m) return null;
+	const raw = m[2];
+	const magnitude = raw.startsWith("0x")
+		? Number.parseInt(raw.slice(2), 16)
+		: Number.parseInt(raw, 10);
+	return m[1] === "-" ? -magnitude : magnitude;
 }
 
 /**

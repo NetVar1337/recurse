@@ -815,6 +815,102 @@ describe("naming a call into a library", () => {
 	});
 });
 
+describe("saying what a [rip + x] operand points at", () => {
+	// `push qword ptr [rip + 0x1d15e]` at 0x400510: six bytes on, then the
+	// displacement, lands on 0x60106e.
+	const SLOT = 0x60106e;
+	/** `"Give Me Your Flag\0"` */
+	const FLAG = "47697665204d6520596f757220466c616700";
+
+	beforeEach(() => {
+		useDebugStore.setState({ bias: 0, pid: 4242, modules: [] });
+		mocked.debugCommand.mockReset();
+		mocked.debugCommand.mockImplementation(
+			async (op: string, args?: unknown) => {
+				if (op === "breakpoints" || op === "backtrace") return [];
+				if (op === "read") {
+					const addr = (args as { addr: number }).addr;
+					return {
+						addr,
+						len: 64,
+						hex: addr === SLOT ? FLAG : "0011223344556677",
+					};
+				}
+				return stopAt(0x804809d);
+			},
+		);
+	});
+
+	it("spells out the text a reference points at", async () => {
+		await useDebugStore.getState().ensureDataNames([SLOT]);
+		expect(useDebugStore.getState().dataNames.get(SLOT)).toBe(
+			'"Give Me Your Flag"',
+		);
+	});
+
+	it("names an import's GOT slot without reading it", async () => {
+		// The PLT table already says which import owns the slot, so there is
+		// nothing to read and nothing to guess.
+		useDebugStore.setState({ callNames: new Map([[SLOT, "scanf"]]) });
+		await useDebugStore.getState().ensureDataNames([SLOT]);
+		expect(useDebugStore.getState().dataNames.get(SLOT)).toBe("scanf");
+		expect(mocked.debugCommand).not.toHaveBeenCalledWith(
+			"read",
+			expect.anything(),
+		);
+	});
+
+	it("claims nothing for a reference that is not text", async () => {
+		const other = 0x601100;
+		await useDebugStore.getState().ensureDataNames([other]);
+		expect(useDebugStore.getState().dataNames.has(other)).toBe(false);
+	});
+
+	it("does not read the same address twice", async () => {
+		await useDebugStore.getState().ensureDataNames([SLOT]);
+		await useDebugStore.getState().ensureDataNames([SLOT]);
+		const reads = mocked.debugCommand.mock.calls.filter(
+			([op]) => op === "read",
+		);
+		expect(reads).toHaveLength(1);
+	});
+
+	it("does not read an address in a library, whose bytes are not text here", async () => {
+		// The words in a GOT slot are a pointer into libc. They are not a string,
+		// and the file they belong to is named by its own symbol table instead.
+		const inLibc = 0x7f001000;
+		useDebugStore.setState({
+			modules: [
+				{ path: "/lib/libc.so.6", base: 0x7f000000, end: 0x7f100000 },
+			],
+		});
+		await useDebugStore.getState().ensureDataNames([inLibc]);
+		expect(useDebugStore.getState().dataNames.has(inLibc)).toBe(false);
+		expect(mocked.debugCommand).not.toHaveBeenCalledWith(
+			"read",
+			expect.anything(),
+		);
+	});
+
+	it("survives an unreadable address", async () => {
+		mocked.debugCommand.mockImplementation(async (op: string) => {
+			if (op === "read") throw new Error("no debuggee is running");
+			if (op === "breakpoints" || op === "backtrace") return [];
+			return stopAt(0x804809d);
+		});
+		await useDebugStore.getState().ensureDataNames([SLOT]);
+		expect(useDebugStore.getState().dataNames.size).toBe(0);
+		// The view keeps working, so the in-flight guard has to be released.
+		expect(useDebugStore.getState().dataNamesPending).toBe(false);
+	});
+
+	it("forgets the names with the session, whose addresses mean nothing next time", async () => {
+		await useDebugStore.getState().ensureDataNames([SLOT]);
+		await useDebugStore.getState().run("launch", { path: "/bin/second" });
+		expect(useDebugStore.getState().dataNames.size).toBe(0);
+	});
+});
+
 describe("isLastStopView", () => {
 	it("is only true while the target is running", () => {
 		expect(isLastStopView("running")).toBe(true);

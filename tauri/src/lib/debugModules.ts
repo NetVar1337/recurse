@@ -1,4 +1,67 @@
-import type { DebugModule, DebugModuleSymbol } from "../types";
+import type { DebugMemory, DebugModule, DebugModuleSymbol } from "../types";
+
+/** How far a string operand is read before giving up on it. */
+export const STRING_WINDOW = 64;
+
+/** Longest string spelled out in a comment, as the static views do. */
+const STRING_MAX = 48;
+
+/**
+ * Shortest run of text worth spelling out.
+ *
+ * The same threshold the static string scan uses, and for the same reason: a
+ * handful of printable bytes followed by a zero is what almost every table of
+ * small numbers looks like, so a one-character "string" is noise rather than
+ * information.
+ */
+const STRING_MIN = 4;
+
+/**
+ * The text at `addr`, if that is what is there.
+ *
+ * Read from the live debuggee, because in a running program the only honest
+ * source for what a pointer means is the bytes the pointer is pointing at. A
+ * C string is printable bytes ended by a NUL, and the test is deliberately
+ * strict: a word of text is spelled out, and anything that is not text is left
+ * to be an address, since a wrong `; "..."` is worse than none.
+ *
+ * A read can fail — the range may be unmapped, or the process may have exited —
+ * which is reported as no text rather than as an error: this decorates a view,
+ * and it is not allowed to disturb it.
+ *
+ * @param read - Reads bytes at an address, as `debugCommand("read")` does.
+ * @param addr - Where to look.
+ * @returns The text without its terminator, or null if it is not text.
+ */
+export async function printableAt(
+	read: (addr: number) => Promise<DebugMemory | null>,
+	addr: number,
+): Promise<string | null> {
+	let bytes: DebugMemory | null;
+	try {
+		bytes = await read(addr);
+	} catch {
+		return null;
+	}
+	const raw = bytes?.hex;
+	if (!raw) return null;
+	const octets: number[] = [];
+	for (let i = 0; i + 1 < raw.length; i += 2) {
+		octets.push(Number.parseInt(raw.slice(i, i + 2), 16));
+	}
+	// Everything read must be printable: a run that runs into a non-text byte
+	// is data that happens to start with letters, and is not a string.
+	const out: number[] = [];
+	for (const byte of octets) {
+		if (byte === 0) break;
+		if (byte < 0x20 || byte > 0x7e) return null;
+		out.push(byte);
+	}
+	if (out.length < STRING_MIN) return null;
+	// A string with no terminator in the window is not one either.
+	if (out.length === octets.length) return null;
+	return String.fromCharCode(...out).slice(0, STRING_MAX);
+}
 
 /**
  * The module an address is mapped from, if any.

@@ -25,6 +25,14 @@ interface AnalysisState {
 	strings: R2String[];
 	imports: Import[];
 	/**
+	 * Analyst names for locals and arguments, as `"<func>:<key>" -> name`.
+	 *
+	 * The key is the frame offset for a local and the register for an argument,
+	 * scoped by function: two functions may both use `-0x18` for entirely
+	 * different things, so a name belongs to one of them and not the other.
+	 */
+	variableNames: Record<string, string>;
+	/**
 	 * The image's non-executable regions. Empty until a binary is opened, and
 	 * for a backend that does not report them at all.
 	 */
@@ -34,11 +42,14 @@ interface AnalysisState {
 	decompileError: string | null;
 	decompiling: boolean;
 
+	/** Record one variable's name, or drop it when the name is blank. */
+	setVariableName: (func: number, key: string | number, name: string) => void;
 	beginOpen: () => void;
 	setAll: (data: {
 		funcs: Function[];
 		strings: R2String[];
 		imports: Import[];
+		variableNames: Record<string, string>;
 		dataRegions: DataRegions;
 	}) => void;
 	setFunctions: (funcs: Function[]) => void;
@@ -62,6 +73,7 @@ const initial = {
 	asmLoading: false,
 	strings: [] as R2String[],
 	imports: [] as Import[],
+	variableNames: {} as Record<string, string>,
 	dataRegions: { sections: [], boundaries: [] } as DataRegions,
 	decompiled: null as string | null,
 	decompiledAnnotations: [] as DecompileAnnotation[],
@@ -76,8 +88,18 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
 
 	beginOpen: () => set({ ...initial }),
 
-	setAll: ({ funcs, strings, imports, dataRegions }) =>
-		set({ funcs, strings, imports, dataRegions }),
+	setAll: ({ funcs, strings, imports, variableNames, dataRegions }) =>
+		set({ funcs, strings, imports, variableNames, dataRegions }),
+	/** Record one variable's name, or drop it when the name is blank. */
+	setVariableName: (func: number, key: string | number, name: string) =>
+		set((s) => {
+			const record = `${func}:${key}`;
+			const next = { ...s.variableNames };
+			const trimmed = name.trim();
+			if (trimmed) next[record] = trimmed;
+			else delete next[record];
+			return { variableNames: next };
+		}),
 
 	setFunctions: (funcs) =>
 		set((state) => ({

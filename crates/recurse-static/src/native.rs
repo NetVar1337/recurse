@@ -46,9 +46,9 @@ use serde_json::json;
 
 use crate::arch;
 use crate::engine::{
-    BackendKind, BasicBlock, BoundarySymbol, Capabilities, DataRegions, DataSection, Decompilation,
-    Disassembly, Engine, FunctionGraph, FunctionInfo, Import, Instruction, StringRef, Target, Xref,
-    XrefDirection,
+    BackendKind, BasicBlock, BoundarySymbol, Capabilities, DataRegions, DataSection, DataSegment,
+    Decompilation, Disassembly, Engine, FunctionGraph, FunctionInfo, Import, Instruction,
+    StringRef, Target, Xref, XrefDirection,
 };
 
 /// Maximum functions discovered per binary; guards recursive descent and caps
@@ -901,7 +901,12 @@ fn section_access(kind: SectionKind, flags: object::SectionFlags) -> (bool, bool
 /// image it does (that is where `.bss` begins); in a hand-written one it can sit
 /// past the last section entirely, which is exactly the case where it is the
 /// only description of where the image stops.
-fn data_regions(file: &object::File<'_>) -> DataRegions {
+fn data_regions(file: &object::File<'_>, data: &[u8]) -> DataRegions {
+    // Read from the headers rather than inferred from the format-agnostic
+    // `SectionKind`, which folds `.dynsym`, `.dynstr` and `.note.*` into one
+    // `metadata` bucket: an analyst needs to tell a table of relocations from a
+    // table of strings, and `RELA` against `DYNSYM` says which.
+    let section_types = elf_section_types(data);
     let mut sections: Vec<DataSection> = file
         .sections()
         .filter(|s| s.kind() != SectionKind::Text && s.size() > 0)
@@ -913,10 +918,14 @@ fn data_regions(file: &object::File<'_>) -> DataRegions {
             }
             // A section that occupies no file bytes (`.bss`) is still part of
             // the image; `file_range` is what distinguishes the two.
-            let file_len = s.file_range().map(|(_, len)| len).unwrap_or(0);
+            let (file_offset, file_len) = s.file_range().unwrap_or((0, 0));
             let name = s.name().unwrap_or("<unnamed>").to_string();
             Some(DataSection {
                 kind: section_kind_label(&name, s.kind()).to_string(),
+                section_type: section_types
+                    .get(&s.address())
+                    .map(|t| (*t).to_string())
+                    .unwrap_or_else(|| section_kind_name(s.kind()).to_string()),
                 name,
                 addr: s.address(),
                 size: s.size(),
@@ -924,6 +933,9 @@ fn data_regions(file: &object::File<'_>) -> DataRegions {
                 writable,
                 executable,
                 uninitialized: file_len == 0,
+                file_offset,
+                align: s.align(),
+                flags: section_flags(s.flags()),
             })
         })
         .collect();
@@ -948,9 +960,153 @@ fn data_regions(file: &object::File<'_>) -> DataRegions {
     boundaries.sort_by_key(|b| (b.addr, b.name.clone()));
     boundaries.dedup_by(|a, b| a.addr == b.addr && a.name == b.name);
 
+    let mut segments: Vec<DataSegment> = elf_segments(data);
+    segments.sort_by_key(|s| s.addr);
+
     DataRegions {
         sections,
         boundaries,
+        segments,
+    }
+}
+
+/// Raw `sh_flags` bits, so a view can show what the coarse access flags do not.
+fn section_flags(flags: object::SectionFlags) -> u32 {
+    match flags {
+        object::SectionFlags::Elf { sh_flags } => sh_flags as u32,
+        object::SectionFlags::Coff { characteristics } => characteristics,
+        _ => 0,
+    }
+}
+
+/// Each section's raw `sh_type`, keyed by its address, read from the ELF
+/// section headers.
+fn elf_section_types(data: &[u8]) -> std::collections::HashMap<u64, &'static str> {
+    use object::read::elf::SectionHeader;
+    macro_rules! collect {
+        ($elf:expr) => {{
+            let elf = $elf;
+            let endian = elf.endian();
+            elf.elf_section_table()
+                .iter()
+                .map(|sh| {
+                    (
+                        sh.sh_addr(endian) as u64,
+                        elf_section_type_name(sh.sh_type(endian)),
+                    )
+                })
+                .collect()
+        }};
+    }
+    if let Ok(elf) = object::read::elf::ElfFile64::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    if let Ok(elf) = object::read::elf::ElfFile32::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    std::collections::HashMap::new()
+}
+
+/// A section's type by its raw value, as the header spells it.
+fn elf_section_type_name(sh_type: u32) -> &'static str {
+    match sh_type {
+        object::elf::SHT_NULL => "NULL",
+        object::elf::SHT_PROGBITS => "PROGBITS",
+        object::elf::SHT_SYMTAB => "SYMTAB",
+        object::elf::SHT_STRTAB => "STRTAB",
+        object::elf::SHT_RELA => "RELA",
+        object::elf::SHT_HASH => "HASH",
+        object::elf::SHT_DYNAMIC => "DYNAMIC",
+        object::elf::SHT_NOTE => "NOTE",
+        object::elf::SHT_NOBITS => "NOBITS",
+        object::elf::SHT_REL => "REL",
+        object::elf::SHT_SHLIB => "SHLIB",
+        object::elf::SHT_DYNSYM => "DYNSYM",
+        object::elf::SHT_INIT_ARRAY => "INIT_ARRAY",
+        object::elf::SHT_FINI_ARRAY => "FINI_ARRAY",
+        object::elf::SHT_PREINIT_ARRAY => "PREINIT_ARRAY",
+        object::elf::SHT_GROUP => "GROUP",
+        object::elf::SHT_SYMTAB_SHNDX => "SYMTAB_SHNDX",
+        // The GNU extensions a modern toolchain emits into almost every binary.
+        0x6ffffff6 => "GNU_HASH",
+        0x6ffffffd => "GNU_VERDEF",
+        0x6ffffffe => "GNU_VERNEED",
+        0x6fffffff => "GNU_VERSYM",
+        _ => "OTHER",
+    }
+}
+
+/// The section type inferred from the format-agnostic kind, for an image whose
+/// headers are not ELF.
+fn section_kind_name(kind: SectionKind) -> &'static str {
+    match kind {
+        SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => "PROGBITS",
+        SectionKind::ReadOnlyString => "PROGBITS",
+        SectionKind::Tls => "TLS",
+        SectionKind::UninitializedData | SectionKind::UninitializedTls => "NOBITS",
+        SectionKind::Metadata | SectionKind::Note => "METADATA",
+        SectionKind::Debug => "DEBUG",
+        SectionKind::TlsVariables => "TLS",
+        // A kind this version of `object` does not name is still a type, and
+        // `OTHER` is the honest answer for it.
+        _ => "OTHER",
+    }
+}
+
+/// The image's loadable segments, from the ELF program header table.
+///
+/// Read from the header rather than through the format-agnostic accessor because
+/// the segment *type* is the point of the list — `LOAD` against `GNU_RELRO` is
+/// the difference between the ordinary and the notable — and only the header
+/// carries it. An image that is not ELF has no segments to report.
+fn elf_segments(data: &[u8]) -> Vec<DataSegment> {
+    use object::read::elf::ProgramHeader;
+    macro_rules! collect {
+        ($elf:expr) => {{
+            let elf = $elf;
+            let endian = elf.endian();
+            elf.elf_program_headers()
+                .iter()
+                .map(|ph| DataSegment {
+                    kind: segment_kind_name(ph.p_type(endian)).to_string(),
+                    addr: ph.p_vaddr(endian).into(),
+                    mem_size: ph.p_memsz(endian).into(),
+                    file_size: ph.p_filesz(endian).into(),
+                    file_offset: ph.p_offset(endian).into(),
+                    align: ph.p_align(endian).into(),
+                    readable: ph.p_flags(endian) & object::elf::PF_R != 0,
+                    writable: ph.p_flags(endian) & object::elf::PF_W != 0,
+                    executable: ph.p_flags(endian) & object::elf::PF_X != 0,
+                })
+                .collect()
+        }};
+    }
+    if let Ok(elf) = object::read::elf::ElfFile64::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    if let Ok(elf) = object::read::elf::ElfFile32::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    Vec::new()
+}
+
+/// A segment's type by its numeric value, as the header spells it.
+fn segment_kind_name(p_type: u32) -> &'static str {
+    match p_type {
+        object::elf::PT_NULL => "NULL",
+        object::elf::PT_LOAD => "LOAD",
+        object::elf::PT_DYNAMIC => "DYNAMIC",
+        object::elf::PT_INTERP => "INTERP",
+        object::elf::PT_NOTE => "NOTE",
+        object::elf::PT_SHLIB => "SHLIB",
+        object::elf::PT_PHDR => "PHDR",
+        object::elf::PT_TLS => "TLS",
+        0x6474e550 => "GNU_EH_FRAME",
+        0x6474e551 => "GNU_STACK",
+        0x6474e552 => "GNU_RELRO",
+        0x6474e553 => "GNU_PROPERTY",
+        0x6474e554 => "GNU_SFRAME",
+        _ => "OTHER",
     }
 }
 
@@ -2883,7 +3039,7 @@ impl Engine for NativeEngine {
 
     fn data_regions(&self) -> Result<DataRegions, String> {
         let file = self.parse()?;
-        Ok(data_regions(&file))
+        Ok(data_regions(&file, &self.data[..]))
     }
 
     fn strings(&self) -> Result<Vec<StringRef>, String> {
@@ -3786,11 +3942,68 @@ mod tests {
 
     /// The boundary markers a linker emits are reported as data regions, which
     /// is where an analyst can see them: they are addresses, never functions.
+    /// The two lists are the image seen two ways, and both have to be there: the
+    /// linker's sections and the kernel's segments answer different questions
+    /// and a hardening finding is a fact about the second.
+    #[test]
+    fn data_regions_report_segments_alongside_sections() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file, bytes);
+
+        assert!(
+            !regions.segments.is_empty(),
+            "an ELF image has program headers"
+        );
+        // `LOAD` is the one that is actually mapped, and it is what an analyst
+        // reads a memory layout off.
+        let load: Vec<&DataSegment> = regions
+            .segments
+            .iter()
+            .filter(|s| s.kind == "LOAD")
+            .collect();
+        assert!(!load.is_empty(), "no LOAD segment reported");
+        for seg in &load {
+            assert!(seg.readable, "a loaded segment is readable");
+            // A segment's tail is zero-filled rather than read from the file, so
+            // its memory size is the one that can exceed the file's.
+            assert!(seg.mem_size >= seg.file_size);
+            assert_eq!(seg.mem_size, seg.file_size + (seg.mem_size - seg.file_size));
+        }
+    }
+
+    /// The section type is read from the header, not guessed from a coarse kind:
+    /// the format-agnostic `SectionKind` folds `.dynsym`, `.dynstr` and
+    /// `.note.*` into one bucket, which is the difference an analyst needs.
+    #[test]
+    fn section_types_come_from_the_header() {
+        assert_eq!(elf_section_type_name(object::elf::SHT_PROGBITS), "PROGBITS");
+        assert_eq!(elf_section_type_name(object::elf::SHT_NOBITS), "NOBITS");
+        assert_eq!(elf_section_type_name(object::elf::SHT_RELA), "RELA");
+        assert_eq!(elf_section_type_name(object::elf::SHT_DYNSYM), "DYNSYM");
+        assert_eq!(elf_section_type_name(object::elf::SHT_STRTAB), "STRTAB");
+        assert_eq!(elf_section_type_name(object::elf::SHT_NOTE), "NOTE");
+        assert_eq!(elf_section_type_name(object::elf::SHT_DYNAMIC), "DYNAMIC");
+    }
+
+    #[test]
+    fn segment_types_come_from_the_header() {
+        assert_eq!(segment_kind_name(object::elf::PT_LOAD), "LOAD");
+        assert_eq!(segment_kind_name(object::elf::PT_DYNAMIC), "DYNAMIC");
+        assert_eq!(segment_kind_name(object::elf::PT_INTERP), "INTERP");
+        assert_eq!(segment_kind_name(object::elf::PT_TLS), "TLS");
+        assert_eq!(segment_kind_name(0x6474e551), "GNU_STACK");
+        assert_eq!(segment_kind_name(0x6474e552), "GNU_RELRO");
+        // An unknown type is named as such rather than dropped: a segment nobody
+        // can account for is worth seeing.
+        assert_eq!(segment_kind_name(0x1234), "OTHER");
+    }
+
     #[test]
     fn data_regions_report_the_linker_boundary_markers() {
         let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
         let file = object::File::parse(bytes).expect("parse fixture");
-        let regions = data_regions(&file);
+        let regions = data_regions(&file, bytes);
 
         let names: Vec<&str> = regions.boundaries.iter().map(|b| b.name.as_str()).collect();
         for expected in ["_end", "_edata", "__bss_start"] {
@@ -3811,7 +4024,7 @@ mod tests {
     fn data_regions_exclude_code_and_unmapped_bookkeeping() {
         let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
         let file = object::File::parse(bytes).expect("parse fixture");
-        let regions = data_regions(&file);
+        let regions = data_regions(&file, bytes);
 
         for s in &regions.sections {
             assert_ne!(s.name, ".text", "code must never be reported as data");
@@ -3868,7 +4081,7 @@ mod tests {
     fn data_region_sections_do_not_overlap() {
         let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
         let file = object::File::parse(bytes).expect("parse fixture");
-        let regions = data_regions(&file);
+        let regions = data_regions(&file, bytes);
         let mut prev_end: Option<u64> = None;
         for s in &regions.sections {
             if let Some(end) = prev_end {

@@ -119,6 +119,8 @@ pub fn run() {
             commands::binary_info,
             commands::functions,
             commands::rename_function,
+            commands::rename_variable,
+            commands::variable_names,
             commands::analysis_progress,
             commands::debug_command,
             commands::debug_modules,

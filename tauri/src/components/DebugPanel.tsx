@@ -6,6 +6,7 @@ import { DebugCpu } from "@/components/DebugCpu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { X86_FLAG_BITS } from "@/lib/branches";
+import { DebuggerVariableList } from "@/components/VariableList";
 import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
@@ -218,7 +219,41 @@ function RegistersPane() {
 }
 
 /** Right column, bottom: the words at the stack pointer, with value hints. */
-function StackPane() {
+/**
+ * The right column's lower pane: the stack, or the current function's variables.
+ *
+ * Two views of the same function, so they share a header and a switch rather
+ * than both asking for space: the stack says where the program is, the
+ * variables say what it is working on, and an analyst flipping between them is
+ * following one question.
+ */
+function LowerPane() {
+	const [tab, setTab] = useState<"stack" | "vars">("stack");
+	const button = (id: "stack" | "vars", label: string) => (
+		<button
+			className={cn(
+				"px-2 py-1 text-xs",
+				tab === id
+					? "text-foreground border-primary border-b-2"
+					: "text-muted-foreground hover:text-foreground",
+			)}
+			onClick={() => setTab(id)}
+		>
+			{label}
+		</button>
+	);
+	return (
+		<div className="flex min-h-0 flex-1 flex-col">
+			<div className="label border-border flex h-[var(--chrome-h)] shrink-0 items-center border-b px-1">
+				{button("stack", "Stack")}
+				{button("vars", "Vars")}
+			</div>
+			{tab === "stack" ? <StackBody /> : <DebuggerVariableList />}
+		</div>
+	);
+}
+
+function StackBody() {
 	const sp = useDebugStore((s) => s.registers?.sp ?? null);
 	// Reading the debuggee's memory needs a live process; a finished session has
 	// no stack left to read.
@@ -284,8 +319,7 @@ function StackPane() {
 
 	const words = sp != null && data && data.sp === sp ? data.words : [];
 	return (
-		<div className="flex min-h-0 flex-1 flex-col">
-			<PaneHeader>Stack</PaneHeader>
+		<>
 			{sp == null ? (
 				<Empty label="no stack" />
 			) : (
@@ -316,7 +350,7 @@ function StackPane() {
 					{words.length === 0 && <Empty label="unreadable" />}
 				</div>
 			)}
-		</div>
+		</>
 	);
 }
 
@@ -692,7 +726,7 @@ export function DebugPanel() {
 					<div className="border-border border-b">
 						<RegistersPane />
 					</div>
-					<StackPane />
+					<LowerPane />
 				</div>
 			</div>
 

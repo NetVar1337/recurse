@@ -16,7 +16,8 @@ import {
 	type DisasmPeek,
 } from "@/lib/debugDisasm";
 import { cn } from "@/lib/utils";
-import { callTarget, shortName } from "@/lib/debugCalls";
+import { callTarget, ripTarget, shortName } from "@/lib/debugCalls";
+import { VarNameChip } from "@/components/VarNameChip";
 import { isLastStopView, isLiveState, useDebugStore } from "@/store/debugStore";
 import { useAnalysisStore } from "@/store/analysisStore";
 import type { DebugInsn } from "@/types";
@@ -71,6 +72,8 @@ export function DebugCpu() {
 	const ensureCallNames = useDebugStore((s) => s.ensureCallNames);
 	const moduleNames = useDebugStore((s) => s.moduleNames);
 	const ensureModuleNames = useDebugStore((s) => s.ensureModuleNames);
+	const dataNames = useDebugStore((s) => s.dataNames);
+	const ensureDataNames = useDebugStore((s) => s.ensureDataNames);
 	const imports = useAnalysisStore((s) => s.imports);
 	const funcs = useAnalysisStore((s) => s.funcs);
 
@@ -171,6 +174,34 @@ export function DebugCpu() {
 		if (unnamedTargets.length === 0 || !live) return;
 		void ensureModuleNames(unnamedTargets);
 	}, [unnamedTargets, live, ensureModuleNames]);
+	// Every `[rip + x]` in the window is a reference the displacement alone does
+	// not explain, so each one is resolved: a GOT slot names its import, and
+	// anything else may be text, which is read out of the process to find out.
+	const dataTargets = useMemo(() => {
+		const out = new Set<number>();
+		for (const row of rows) {
+			const target = ripTarget(row.insn);
+			if (target !== null) out.add(target);
+		}
+		return [...out];
+	}, [rows]);
+	useEffect(() => {
+		if (dataTargets.length === 0 || !live) return;
+		void ensureDataNames(dataTargets);
+	}, [dataTargets, live, ensureDataNames]);
+	// The function the cursor is in, by its static address, which is what the
+	// names are keyed by — and the same key the static views use, so a rename in
+	// either place is the same rename.
+	const frameFunc =
+		(livePc ?? lastPc) === null ? null : (livePc ?? lastPc)! - bias;
+
+	/** What a `[rip + x]` operand points at, if it can be named. */
+	const dataName = (insn: DebugInsn): string | null => {
+		const target = ripTarget(insn);
+		if (target === null) return null;
+		return dataNames.get(target) ?? null;
+	};
+
 	/** The function a call in this row reaches, if it can be named. */
 	const callName = (insn: DebugInsn): string | null => {
 		const target = callTarget(insn);
@@ -290,7 +321,16 @@ export function DebugCpu() {
 									<DisasmInstr text={instr} />
 									<DisasmComment comment={comment} />
 									<DisasmComment
-										comment={callName(row.insn) ?? ""}
+										comment={
+											callName(row.insn) ??
+											dataName(row.insn) ??
+											""
+										}
+									/>
+									<VarNameChip
+										func={frameFunc}
+										insns={rows.map((r) => r.insn)}
+										text={row.insn.text}
 									/>
 									{isPc && verdict && (
 										<span
