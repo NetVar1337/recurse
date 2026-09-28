@@ -33,46 +33,46 @@ describe("the published sections", () => {
 		clearSections();
 	});
 
-	it("are what the panel last said, in the order it said them", () => {
-		const run = vi.fn();
-		publishSections([
-			{
-				label: "Disassembly",
-				items: [{ id: "linear", label: "Linear", run }],
-			},
-		]);
-		expect(readSections()).toHaveLength(1);
-		expect(readSections()[0].items[0].label).toBe("Linear");
+	/**
+	 * A section to publish, with its parts spelled out.
+	 *
+	 * @param label - The heading.
+	 * @param id - The one item's name.
+	 * @returns A section.
+	 */
+	const section = (label: string, id = "a") => ({
+		label,
+		items: [{ id, label: id.toUpperCase(), run: vi.fn() }],
+	});
+
+	it("are what the panel said, in the order it said them", () => {
+		publishSections("View", [section("Disassembly", "linear")]);
+		expect(readSections("View")).toHaveLength(1);
+		expect(readSections("View")[0].label).toBe("Disassembly");
+	});
+
+	it("belong to the one menu they were published to, and no other", () => {
+		// A disassembly offering "Decompile" has said so about View. Published as a
+		// bare list and read by every menu, the same section turned up under File
+		// and Go too, so three menus all listed a panel's sections.
+		publishSections("View", [section("Actions", "decompile")]);
+		expect(readSections("Go")).toEqual([]);
+		expect(readSections("File")).toEqual([]);
 	});
 
 	it("are replaced rather than added to", () => {
 		// A panel that republishes on every render would otherwise grow the menu by
 		// one copy of itself per render, and nobody would see why the View menu had
 		// four identical entries.
-		publishSections([
-			{
-				label: "Actions",
-				items: [{ id: "a", label: "A", run: vi.fn() }],
-			},
-		]);
-		publishSections([
-			{
-				label: "Actions",
-				items: [{ id: "b", label: "B", run: vi.fn() }],
-			},
-		]);
-		expect(readSections()[0].items.map((i) => i.id)).toEqual(["b"]);
+		publishSections("View", [section("Actions", "a")]);
+		publishSections("View", [section("Actions", "b")]);
+		expect(readSections("View")[0].items.map((i) => i.id)).toEqual(["b"]);
 	});
 
 	it("are withdrawn when the panel that published them goes", () => {
-		publishSections([
-			{
-				label: "Actions",
-				items: [{ id: "a", label: "A", run: vi.fn() }],
-			},
-		]);
+		publishSections("View", [section("Actions")]);
 		clearSections();
-		expect(readSections()).toEqual([]);
+		expect(readSections("View")).toEqual([]);
 	});
 });
 
@@ -142,6 +142,23 @@ describe("sectionsFor", () => {
 		// reader: one is a state, the other is a command that does a thing.
 		const [section] = sectionsFor("File", [command()], []);
 		expect(section.items[0]).not.toHaveProperty("checked");
+	});
+
+	it("keeps a menu free of another menu's sections", () => {
+		// The whole point of publishing per menu: Go lists panels, and a disassembly
+		// section under it would be a section of a menu the reader did not open.
+		publishSections("View", [
+			{
+				label: "Actions",
+				items: [{ id: "d", label: "Decompile", run: vi.fn() }],
+			},
+		]);
+		const go = sectionsFor(
+			"Go",
+			[command({ menu: "Go" })],
+			readSections("Go"),
+		);
+		expect(go.flatMap((s) => s.items).map((i) => i.id)).not.toContain("d");
 	});
 
 	it("puts a panel's sections last, so the window's own commands come first", () => {

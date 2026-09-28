@@ -26,18 +26,44 @@ export interface Command {
 }
 
 /**
+ * The menus the app has, named once.
+ *
+ * Naming them in one place is what keeps an option in one menu: a panel that
+ * publishes its commands to `MENU.view` cannot have them turn up under Go, which
+ * is what happened when the publisher was passed a list and every menu read it.
+ */
+export const MENU = {
+	file: "File",
+	view: "View",
+	go: "Go",
+	run: "Run",
+	settings: "Settings",
+} as const;
+
+/** One of the app's menus. */
+export type MenuName = (typeof MENU)[keyof typeof MENU];
+
+/**
  * The menus, in the order a bar shows them.
  *
  * The names are the ones an editor of this kind has trained everyone to expect,
- * so a menu called `View` is the one holding the switches that change what you
- * see. A menu with no commands in it is not rendered at all: a header that opens
- * onto an empty panel is worse than no header, because it says there is nothing
- * here and is right.
+ * so a menu called View is the one holding the switches that change what you see.
+ * A menu with no commands in it is not rendered at all: a header that opens onto
+ * an empty panel is worse than no header, because it says there is nothing here
+ * and is right.
+ *
+ * Settings is last, and is its own menu rather than a section under File: it is
+ * the one menu a reader goes looking for by name, and having to know that the
+ * model picker and the debugger's settings are filed under "File ▸ Settings" is
+ * the kind of thing you only know once.
  */
-export const MENU_ORDER = ["File", "View", "Go", "Run"] as const;
-
-/** One of the menus in `MENU_ORDER`. */
-export type MenuName = (typeof MENU_ORDER)[number];
+export const MENU_ORDER: readonly MenuName[] = [
+	MENU.file,
+	MENU.view,
+	MENU.go,
+	MENU.run,
+	MENU.settings,
+];
 
 /** Every centre tab, by the name the palette and the Go menu both call it. */
 export const TAB_LABEL: Record<CenterTab, string> = {
@@ -78,7 +104,7 @@ export function buildCommands(): Command[] {
 			id: "open",
 			title: "Open binary…",
 			hint: "Ctrl+O",
-			menu: "File",
+			menu: MENU.file,
 			section: "Binary",
 			run: () => {
 				void pickBinary().then((p) => {
@@ -88,16 +114,16 @@ export function buildCommands(): Command[] {
 		},
 		{
 			id: "model-picker",
-			title: "Switch model / provider…",
-			menu: "File",
-			section: "Settings",
+			title: "Model / provider…",
+			menu: MENU.settings,
+			section: "",
 			run: () => ui.setModelPickerOpen(true),
 		},
 		{
 			id: "debugger-settings",
-			title: "Debugger settings…",
-			menu: "File",
-			section: "Settings",
+			title: "Debugger…",
+			menu: MENU.settings,
+			section: "",
 			// Opened on the next tick, not inline: a menu restores focus to its
 			// trigger as it closes, which would immediately yank it back out of the
 			// dialog that just opened.
@@ -112,7 +138,7 @@ export function buildCommands(): Command[] {
 		cmds.push({
 			id: "new-project",
 			title: "New project…",
-			menu: "File",
+			menu: MENU.file,
 			section: "Binary",
 			run: () => ui.setNewProjectOpen(true),
 		});
@@ -121,7 +147,7 @@ export function buildCommands(): Command[] {
 		cmds.push({
 			id: "close",
 			title: "Close project",
-			menu: "File",
+			menu: MENU.file,
 			section: "Binary",
 			run: () => void useProjectStore.getState().close(),
 		});
@@ -129,7 +155,7 @@ export function buildCommands(): Command[] {
 			cmds.push({
 				id: `tab-${tab}`,
 				title: `Go to ${TAB_LABEL[tab]}`,
-				menu: "Go",
+				menu: MENU.go,
 				section: "Panels",
 				run: () => ui.setTab(tab),
 			});
@@ -138,7 +164,7 @@ export function buildCommands(): Command[] {
 			id: "chat",
 			title: "Toggle agent chat",
 			hint: "Ctrl+L",
-			menu: "View",
+			menu: MENU.view,
 			section: "Appearance",
 			run: () => ui.toggleChat(),
 		});
@@ -147,7 +173,7 @@ export function buildCommands(): Command[] {
 		{
 			id: "toggle-theme",
 			title: "Toggle light / dark theme",
-			menu: "View",
+			menu: MENU.view,
 			section: "Appearance",
 			run: () => settings.toggleTheme(),
 		},
@@ -155,7 +181,7 @@ export function buildCommands(): Command[] {
 			id: "zoom-in",
 			title: "Zoom in",
 			hint: "Ctrl +",
-			menu: "View",
+			menu: MENU.view,
 			section: "Zoom",
 			run: () => void settings.zoomIn(),
 		},
@@ -163,7 +189,7 @@ export function buildCommands(): Command[] {
 			id: "zoom-out",
 			title: "Zoom out",
 			hint: "Ctrl −",
-			menu: "View",
+			menu: MENU.view,
 			section: "Zoom",
 			run: () => void settings.zoomOut(),
 		},
@@ -171,15 +197,17 @@ export function buildCommands(): Command[] {
 			id: "zoom-reset",
 			title: "Reset zoom",
 			hint: "Ctrl 0",
-			menu: "View",
+			menu: MENU.view,
 			section: "Zoom",
 			run: () => void settings.resetZoom(),
 		},
 	);
 
-	// The engine in force is ticked rather than listed twice: a reader asking
-	// "which engine is this" should be able to see the answer without opening a
-	// menu and inferring it from which row is highlighted.
+	// Under Settings rather than View: an engine is a choice about how the work is
+	// done, not a switch that changes what is on screen. The titles carry "Analysis
+	// engine" rather than sitting under a heading of that name, because the palette
+	// lists these flat and a reader searching for "engine" has to find them there
+	// too. The one in force is ticked rather than listed twice.
 	for (const [backend, title] of [
 		["native", "Native (pure Rust)"],
 		["r2", "radare2"],
@@ -188,8 +216,8 @@ export function buildCommands(): Command[] {
 		cmds.push({
 			id: `engine-${backend}`,
 			title: `Analysis engine: ${title}`,
-			menu: "View",
-			section: "Analysis engine",
+			menu: MENU.settings,
+			section: "",
 			checked: settings.backend === backend,
 			run: () => void settings.setBackend(backend),
 		});
@@ -201,14 +229,14 @@ export function buildCommands(): Command[] {
 				id: "dbg-run",
 				title: "Debug: Run",
 				hint: "F9",
-				menu: "Run",
+				menu: MENU.run,
 				section: "Debug",
 				run: () => void dbg.run("continue"),
 			},
 			{
 				id: "dbg-pause",
 				title: "Debug: Pause",
-				menu: "Run",
+				menu: MENU.run,
 				section: "Debug",
 				run: () => void dbg.run("interrupt"),
 			},
@@ -216,7 +244,7 @@ export function buildCommands(): Command[] {
 				id: "dbg-into",
 				title: "Debug: Step into",
 				hint: "F7",
-				menu: "Run",
+				menu: MENU.run,
 				section: "Debug",
 				run: () => void dbg.run("step", { kind: "into" }),
 			},
@@ -224,21 +252,21 @@ export function buildCommands(): Command[] {
 				id: "dbg-over",
 				title: "Debug: Step over",
 				hint: "F8",
-				menu: "Run",
+				menu: MENU.run,
 				section: "Debug",
 				run: () => void dbg.run("step", { kind: "over" }),
 			},
 			{
 				id: "dbg-out",
 				title: "Debug: Step out",
-				menu: "Run",
+				menu: MENU.run,
 				section: "Debug",
 				run: () => void dbg.run("step", { kind: "out" }),
 			},
 			{
 				id: "dbg-detach",
 				title: "Debug: Detach",
-				menu: "Run",
+				menu: MENU.run,
 				section: "Debug",
 				run: () => void dbg.run("detach"),
 			},

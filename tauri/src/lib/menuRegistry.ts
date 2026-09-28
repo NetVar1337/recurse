@@ -55,8 +55,15 @@ export interface MenuCommand {
 	section: string;
 }
 
-/** What the disassembly panel last said its menus contain. */
-let published: MenuSection[] = [];
+/**
+ * What each menu was last told it contains, by menu name.
+ *
+ * Keyed by menu because a panel's commands belong to one menu: a disassembly
+ * offering "Decompile" has said so about the View menu, and appending it to
+ * everything is how File and Go end up listing a section of a panel that has
+ * nothing to do with either.
+ */
+let published = new Map<string, MenuSection[]>();
 
 /**
  * Say what a panel's menus contain, replacing whatever it said last.
@@ -66,16 +73,18 @@ let published: MenuSection[] = [];
  * the cost of not publishing is a menu offering a command that would fail.
  *
  * ```
- * publishSections([{ label: "Actions", items: [{ id: "reload", label: "Reload", run }] }]);
- * readSections().length // => 1
+ * publishSections("View", [{ label: "Actions", items: [{ id: "reload", label: "Reload", run }] }]);
+ * readSections("View").length // => 1
+ * readSections("Go").length   // => 0 — those commands are not the Go menu's
  * clearSections();
- * readSections().length // => 0
+ * readSections("View").length // => 0
  * ```
  *
+ * @param menu - The menu these sections belong under.
  * @param sections - The sections, in the order they should be shown.
  */
-export function publishSections(sections: MenuSection[]): void {
-	published = sections;
+export function publishSections(menu: string, sections: MenuSection[]): void {
+	published.set(menu, sections);
 }
 
 /**
@@ -85,16 +94,17 @@ export function publishSections(sections: MenuSection[]): void {
  * disassembly closed would be a menu offering to do something with nothing.
  */
 export function clearSections(): void {
-	published = [];
+	published = new Map();
 }
 
 /**
- * What a panel last published, in the order it published it.
+ * What was published for one menu, in the order it was published.
  *
- * @returns The sections, or an empty list when no panel has published.
+ * @param menu - The menu being built.
+ * @returns Its sections, or an empty list when nothing has published to it.
  */
-export function readSections(): MenuSection[] {
-	return published;
+export function readSections(menu: string): MenuSection[] {
+	return published.get(menu) ?? [];
 }
 
 /**
@@ -102,9 +112,11 @@ export function readSections(): MenuSection[] {
  *
  * A command's own `section` is what groups it, so a menu and the list a command
  * belongs in cannot disagree: there is one field saying "this is an Appearance
- * command" and both read it. A panel's published sections go last, because the
- * window's own appearance is what a reader opened the menu for and the panel's
- * commands are the specific ones.
+ * command" and both read it.
+ *
+ * `published` is whatever a panel offered *to this menu*, and nothing else. It
+ * goes last, because the window's own appearance is what a reader opened the menu
+ * for and a panel's commands are the specific ones.
  *
  * @example
  * sectionsFor("View", [{ id: "theme", title: "Dark", run, menu: "View", section: "Appearance" }], [])
@@ -112,7 +124,7 @@ export function readSections(): MenuSection[] {
  *
  * @param menu - The menu being built.
  * @param commands - Every command the app has.
- * @param published - What a panel has offered to this menu.
+ * @param published - What a panel has offered to this menu, and only this menu.
  * @returns The sections, in the order they should be rendered.
  */
 export function sectionsFor(

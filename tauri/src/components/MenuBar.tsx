@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -27,7 +29,7 @@ import {
  */
 function MenuRows({ menu }: { menu: MenuName }) {
 	const rows = groupSections(
-		sectionsFor(menu, buildCommands(), readSections()),
+		sectionsFor(menu, buildCommands(), readSections(menu)),
 	);
 	if (rows.length === 0) {
 		return <DropdownMenuItem disabled>Nothing here yet</DropdownMenuItem>;
@@ -45,7 +47,10 @@ function MenuRows({ menu }: { menu: MenuName }) {
 				if (row.kind === "rule") {
 					return <DropdownMenuSeparator key={`rule-${i}`} />;
 				}
-				return <Row key={row.item.id} item={row.item} />;
+				// Keyed by position as well as name: a menu draws from two sources —
+				// the command list and whatever a panel published — and two rows with
+				// the same name are two rows React would rather merge into one.
+				return <Row key={`${row.item.id}-${i}`} item={row.item} />;
 			})}
 		</>
 	);
@@ -75,16 +80,75 @@ function Row({ item }: { item: MenuItem }) {
 	);
 }
 
+/**
+ * How long the pointer may be off a menu before the menu closes.
+ *
+ * The dropdown is a few pixels below its trigger, so moving the pointer from the
+ * word to the menu crosses that gap and is briefly over neither. Without a pause
+ * the menu shuts in the reader's hand on the way to the item they aimed at.
+ */
+const CLOSE_GRACE_MS = 150;
+
 /** One menu and its trigger. */
-function Menu({ menu }: { menu: MenuName }) {
+function Menu({
+	menu,
+	open,
+	hovered,
+	onHover,
+	onOpen,
+}: {
+	menu: MenuName;
+	/** Which menu is showing, if any. */
+	open: MenuName | null;
+	/** Whether the open menu was opened by the pointer rather than by a click. */
+	hovered: boolean;
+	/** The pointer reached this trigger, or left it. */
+	onHover: (menu: MenuName, over: boolean) => void;
+	/** A click, a key, or a dismissal asked for this menu to open or close. */
+	onOpen: (menu: MenuName | null) => void;
+}) {
 	return (
-		<DropdownMenu>
+		<DropdownMenu
+			// Not modal: a modal menu takes the pointer events away from the rest of
+			// the document, which would leave the other triggers unhoverable and so
+			// unable to take over from an open menu the way a menu bar is supposed to.
+			modal={false}
+			open={open === menu}
+			onOpenChange={(next) => {
+				if (next) {
+					onOpen(menu);
+					return;
+				}
+				// A close for a menu that is no longer the open one is the outgoing
+				// half of a switch, not a dismissal. Acting on it closes the menu that
+				// just replaced it, which is why sliding along the bar opened nothing.
+				if (open === menu) onOpen(null);
+			}}
+		>
 			<DropdownMenuTrigger asChild>
-				<button type="button" className={chrome.menuItem}>
+				<button
+					type="button"
+					className={chrome.menuItem}
+					onPointerEnter={() => onHover(menu, true)}
+					onPointerLeave={() => onHover(menu, false)}
+				>
 					{menu}
 				</button>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="start" className="w-64">
+			<DropdownMenuContent
+				align="start"
+				className="w-64"
+				onCloseAutoFocus={(event) => {
+					// Focus belongs to whichever menu is open now. Handing it back to
+					// this menu's trigger when another menu has just taken its place
+					// pulls focus out of that new menu, and Radix closes a menu whose
+					// content loses focus — which is why sliding along the bar opened
+					// nothing. A menu closing on its own still gets its focus back.
+					if (open !== null && open !== menu) event.preventDefault();
+				}}
+				onPointerEnter={() => hovered && onHover(menu, true)}
+				onPointerLeave={() => hovered && onHover(menu, false)}
+			>
 				<MenuRows menu={menu} />
 			</DropdownMenuContent>
 		</DropdownMenu>
@@ -108,18 +172,71 @@ function Menu({ menu }: { menu: MenuName }) {
  * <MenuBar />
  */
 export function MenuBar() {
-	// Resolved once per render, not per menu: the same command list answers for
-	// every menu, and building it four times is four times the store reads.
 	const commands = buildCommands();
-	const published = readSections();
 	const menus = MENU_ORDER.filter(
-		(menu) => sectionsFor(menu, commands, published).length > 0,
+		(menu) => sectionsFor(menu, commands, readSections(menu)).length > 0,
 	);
+	const [open, setOpen] = useState<MenuName | null>(null);
+	const [hovered, setHovered] = useState(false);
+	// The pointer's way out of a menu, held back by the grace pause and cancelled
+	// the moment it comes back — which it will, on the way from the trigger's
+	// label down to the item under it.
+	const leave = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+	const cancelLeave = () => {
+		if (leave.current === null) return;
+		clearTimeout(leave.current);
+		leave.current = null;
+	};
+
+	useEffect(() => cancelLeave, []);
+
+	/**
+	 * Open this menu because the pointer is on it, or let it go because the pointer
+	 * has left.
+	 *
+	 * @param menu - The menu the pointer moved onto or off.
+	 * @param over - Whether the pointer is on its trigger or its dropdown.
+	 */
+	const onHover = (menu: MenuName, over: boolean) => {
+		if (over) {
+			cancelLeave();
+			// Sliding along the bar swaps menus without a second pause, which is what
+			// makes a menu bar worth aiming at rather than clicking through.
+			if (hovered) setOpen(menu);
+			else {
+				setHovered(true);
+				setOpen(menu);
+			}
+			return;
+		}
+		if (!hovered || leave.current !== null) return;
+		leave.current = setTimeout(() => {
+			leave.current = null;
+			setOpen(null);
+			setHovered(false);
+		}, CLOSE_GRACE_MS);
+	};
+
 	if (menus.length === 0) return null;
 	return (
 		<div className={chrome.menuBar} role="menubar" aria-label="Main menu">
 			{menus.map((menu) => (
-				<Menu key={menu} menu={menu} />
+				<Menu
+					key={menu}
+					menu={menu}
+					open={open}
+					hovered={hovered}
+					onHover={onHover}
+					// A click or a key opens a menu that stays put: only the pointer
+					// closes a menu the pointer opened, so a menu opened from the
+					// keyboard does not vanish when the mouse is elsewhere.
+					onOpen={(next) => {
+						cancelLeave();
+						setHovered(false);
+						setOpen(next);
+					}}
+				/>
 			))}
 			{/* The empty half of the bar drags the window, so the bar behaves like
 			    the title bar it replaced. */}

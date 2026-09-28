@@ -64,8 +64,7 @@ export function ProjectScreen() {
 					Recurse
 				</h1>
 				<p className="text-muted-foreground mt-2 max-w-sm text-sm leading-relaxed">
-					Agentic reverse engineering. Resume a project or open a new
-					target.
+					Resume a project or open a new target.
 				</p>
 			</div>
 

@@ -15,8 +15,13 @@ const DropdownMenuContent = React.forwardRef<
 		<DropdownMenuPrimitive.Content
 			ref={ref}
 			sideOffset={sideOffset}
+			// No open or close animation, deliberately. A menu is opened by a click
+			// and dismissed by a click, so the reader is already looking at the thing
+			// they are dismissing: fading it out over 150ms puts a blink between the
+			// click and the menu's disappearance, which reads as a flicker rather
+			// than as a response. It appears where the pointer is and it is gone.
 			className={cn(
-				"bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-50 min-w-48 overflow-hidden rounded-[var(--radius-control)] border p-1 shadow-none",
+				"bg-popover text-popover-foreground z-50 min-w-48 overflow-hidden rounded-[var(--radius-control)] border p-1 shadow-none",
 				className,
 			)}
 			{...props}

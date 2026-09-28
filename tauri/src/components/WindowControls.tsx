@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
+import { type Window as TaWindow } from "@tauri-apps/api/window";
 
 import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
@@ -19,10 +20,20 @@ import { cn } from "@/lib/utils";
  * <WindowControls />
  */
 export function WindowControls() {
-	const win = getCurrentWindow();
+	// There is no window outside one — in a browser, or during a reload before the
+	// webview has its own window handle — and asking for one anyway throws where
+	// the caller is a React render, which takes the whole tree with it.
+	const [win] = useState<TaWindow | null>(() => {
+		try {
+			return getCurrentWindow();
+		} catch {
+			return null;
+		}
+	});
 	const [maximised, setMaximised] = useState(false);
 
 	useEffect(() => {
+		if (!win) return;
 		void win
 			.isMaximized()
 			.then(setMaximised)
@@ -36,12 +47,14 @@ export function WindowControls() {
 	 * wide listing wants to get their own layout back without finding the taskbar.
 	 */
 	const toggleMaximise = () => {
+		if (!win) return;
 		void (maximised ? win.unmaximize() : win.maximize())
 			.then(() => win.isMaximized())
 			.then(setMaximised)
 			.catch(() => setMaximised(false));
 	};
 
+	if (!win) return null;
 	return (
 		<div className={chrome.windowControls} data-tauri-drag-region>
 			<button
@@ -49,7 +62,9 @@ export function WindowControls() {
 				className={chrome.windowButton}
 				title="Minimise"
 				aria-label="Minimise"
-				onClick={() => void win.minimize()}
+				onClick={() => {
+					void win?.minimize();
+				}}
 			>
 				<Minimize />
 			</button>
@@ -67,7 +82,9 @@ export function WindowControls() {
 				className={cn(chrome.windowButton, chrome.windowClose)}
 				title="Close"
 				aria-label="Close"
-				onClick={() => void win.close()}
+				onClick={() => {
+					void win?.close();
+				}}
 			>
 				<Close />
 			</button>

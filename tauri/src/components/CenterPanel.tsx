@@ -34,6 +34,7 @@ import {
 	formatInstructionBytes,
 	splitComment,
 } from "@/lib/disasm";
+import { MENU } from "@/lib/commands";
 import { disasmMenuSections } from "@/lib/disasmMenu";
 import { clearSections, publishSections } from "@/lib/menuRegistry";
 import { api } from "@/api";
@@ -662,10 +663,11 @@ export function CenterPanel() {
 		// decompile the function under a cursor that is showing a list of strings
 		// is offering to act on nothing.
 		if (tab !== "disasm") {
-			publishSections([]);
+			publishSections(MENU.view, []);
 			return;
 		}
 		publishSections(
+			MENU.view,
 			disasmMenuSections({
 				viewMode,
 				viewOptions,
