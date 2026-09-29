@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS function_names (
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (binary_path, addr)
 );
+-- Dropped and rebuilt by `drop_stale_variable_names` below when its shape is
+-- wrong, not migrated: see that function for why and for when it stops.
 CREATE TABLE IF NOT EXISTS variable_names (
     binary_path TEXT NOT NULL,
     func_addr INTEGER NOT NULL,
@@ -78,6 +80,40 @@ CREATE TABLE IF NOT EXISTS provider_credentials (
 /// Only the setup is serialised: each caller still gets its own independent
 /// [`Connection`] and runs its own queries unserialised afterwards.
 static SETUP_LOCK: Mutex<()> = Mutex::new(());
+
+/// Discard `variable_names` if a database already has it in the wrong shape.
+///
+/// `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
+/// a database created by an older build keeps that build's shape — and a column
+/// or a primary key added afterwards never arrives. The old shape here keyed a
+/// row by an integer `slot`; the current one keys it by a text `key`, so every
+/// write failed on an `ON CONFLICT` clause naming a constraint the table did not
+/// have, and the analyst's names silently did not stick.
+///
+/// The rows are not moved across. SQLite cannot change a primary key with
+/// `ALTER TABLE`, so carrying them over means rebuilding the table by hand for a
+/// set of names nothing released depends on. Once something is released this must
+/// become a real migration that copies the rows, keyed by the old slot.
+///
+/// The table is left alone whenever it already has the right shape, so this runs
+/// on every connection without costing the analyst their names.
+fn drop_stale_variable_names(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(variable_names)")
+        .map_err(|e| format!("inspect variable_names: {e}"))?;
+    // (column name, position within the primary key; 0 when not part of it)
+    let columns: Vec<(String, i64)> = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?)))
+        .map_err(|e| format!("inspect variable_names: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("inspect variable_names: {e}"))?;
+    // Absent: the schema below creates it. Correct: leave it and its rows alone.
+    if columns.is_empty() || columns.iter().any(|(n, pk)| n == "key" && *pk > 0) {
+        return Ok(());
+    }
+    conn.execute_batch("DROP TABLE variable_names;")
+        .map_err(|e| format!("drop stale variable_names: {e}"))
+}
 
 /// How long to keep retrying the WAL switch, and how long to wait between
 /// attempts. Only ever spent when another *process* holds the database, since
@@ -167,6 +203,7 @@ pub fn connect() -> Result<Connection, String> {
     ensure_wal(&conn)?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")
         .map_err(|e| format!("db pragmas: {e}"))?;
+    drop_stale_variable_names(&conn)?;
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| format!("db schema: {e}"))?;
     recurse_agent::memory::ensure_schema(&conn)?;

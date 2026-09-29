@@ -87,6 +87,43 @@ mod tests {
             assert!(load("/tmp/other").is_empty());
         });
     }
+
+    /// A database left behind by an older build must not shadow the schema.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists,
+    /// so a database created before `key` existed keeps its old shape: a `slot`
+    /// column, and a primary key that does not mention `key`. Every write then
+    /// fails on the `ON CONFLICT` clause naming a constraint the table does not
+    /// have — and the analyst's names silently do not stick. The schema now
+    /// discards this table rather than trying to move rows across a primary key
+    /// `ALTER TABLE` cannot change, which is only sound because nothing released
+    /// depends on the rows.
+    #[test]
+    fn a_stale_table_is_rebuilt_rather_than_written_to() {
+        crate::testhome::with_test_home(|_| {
+            let conn = crate::db::connect().expect("connect");
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS variable_names;
+                 CREATE TABLE variable_names (
+                     binary_path TEXT NOT NULL,
+                     func_addr INTEGER NOT NULL,
+                     slot INTEGER NOT NULL,
+                     name TEXT NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (binary_path, func_addr, slot)
+                 );",
+            )
+            .expect("plant the old shape");
+            drop(conn);
+
+            // The first write after the stale shape was planted is the one that
+            // used to fail.
+            set_variable("/tmp/target", 0x401000, "-4", Some("demo"))
+                .expect("write over a stale table");
+            let names = load_variables("/tmp/target");
+            assert_eq!(names.get(&(0x401000, "-4".to_string())).map(String::as_str), Some("demo"));
+        });
+    }
 }
 
 /// Every variable name recorded for `binary_path`, as `(func, key) -> name`.
