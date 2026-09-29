@@ -90,8 +90,14 @@ pub fn open_binary_impl(path: String, state: &AppState) -> Result<Value, String>
     );
     let mut guard = session_of(state)?;
     let sess = crate::engine::build(std::path::Path::new(&path))?;
-    // Restore any analyst renames recorded for this target.
-    sess.set_renames(crate::renames::load(&sess.path().to_string_lossy()));
+    // Restore any analyst renames recorded for this target. A binary whose
+    // renames cannot be read still opens — but the renames are the analyst's
+    // work, so losing them silently would show them a target that has forgotten
+    // every name they gave it.
+    match crate::renames::load(&sess.path().to_string_lossy()) {
+        Ok(renames) => sess.set_renames(renames),
+        Err(e) => eprintln!("[recurse] could not read renames for {path}: {e}"),
+    }
     let mut summary = sess.summary()?;
     // Host metadata the UI uses to hide affordances the backend cannot serve
     // (decompile / raw console on the native backend).
@@ -179,7 +185,9 @@ pub fn rename_function_impl(state: &AppState, addr: u64, name: &str) -> Result<(
     let engine = with_sess(&guard)?;
     let path = engine.path().to_string_lossy().to_string();
     crate::renames::set(&path, addr, Some(name))?;
-    engine.set_renames(crate::renames::load(&path));
+    // Read back rather than patched in place, so a name the database will not
+    // give back is not shown in the view as though it stuck.
+    engine.set_renames(crate::renames::load(&path)?);
     Ok(())
 }
 
@@ -214,7 +222,7 @@ pub fn variable_names(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session_of(&state)?;
     let engine = with_sess(&guard)?;
     let path = engine.path().to_string_lossy().to_string();
-    let names: std::collections::HashMap<String, String> = crate::renames::load_variables(&path)
+    let names: std::collections::HashMap<String, String> = crate::renames::load_variables(&path)?
         .into_iter()
         .map(|((func, key), name)| (format!("{func}:{key}"), name))
         .collect();

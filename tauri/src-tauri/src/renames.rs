@@ -7,31 +7,50 @@
 
 use std::collections::HashMap;
 
-use rusqlite::params;
+use rusqlite::{params, Connection, Row};
 
 use crate::db;
 
-/// Every rename recorded for `binary_path`, as `address -> name`. Best-effort:
-/// a storage failure yields an empty map rather than an error, so a broken DB
-/// never blocks opening a binary.
-pub fn load(binary_path: &str) -> HashMap<u64, String> {
+/// Every row `sql` returns for `binary_path`, or why they could not be read.
+///
+/// The two answers have to stay apart. A name that is absent and a name that
+/// could not be loaded are different facts, and returning an empty map for both
+/// makes a database that cannot be opened look exactly like a binary nobody has
+/// named anything in — which is how a broken table passed for an empty one for
+/// long enough to be diagnosed as a UI problem.
+fn rows_for<T>(
+    sql: &str,
+    binary_path: &str,
+    read: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, String> {
+    let conn: Connection = db::connect()?;
+    let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare renames: {e}"))?;
+    let rows = stmt
+        .query_map(params![binary_path], read)
+        .map_err(|e| format!("query renames: {e}"))?;
+    // Collected rather than flattened: a row that fails to decode is a fault to
+    // report, not one to drop on the way past.
+    rows.collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(|e| format!("read renames: {e}"))
+}
+
+/// Every rename recorded for `binary_path`, as `address -> name`.
+///
+/// Fails, rather than yielding an empty map, when the names cannot be read: a
+/// caller that is told "no names" instead will open the binary and show an
+/// analyst who has renamed things a view that has forgotten all of it. The
+/// callers that must not be blocked by this — opening a binary — degrade
+/// deliberately, and say so where they do.
+pub fn load(binary_path: &str) -> Result<HashMap<u64, String>, String> {
     let mut out = HashMap::new();
-    let Ok(conn) = db::connect() else {
-        return out;
-    };
-    let Ok(mut stmt) = conn.prepare("SELECT addr, name FROM function_names WHERE binary_path = ?1")
-    else {
-        return out;
-    };
-    let Ok(rows) = stmt.query_map(params![binary_path], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    }) else {
-        return out;
-    };
-    for row in rows.flatten() {
-        out.insert(row.0.max(0) as u64, row.1);
+    for (addr, name) in rows_for(
+        "SELECT addr, name FROM function_names WHERE binary_path = ?1",
+        binary_path,
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    )? {
+        out.insert(addr.max(0) as u64, name);
     }
-    out
+    Ok(out)
 }
 
 /// Set the name of one function, or clear it when `name` is `None`/blank.
@@ -68,10 +87,10 @@ mod tests {
     fn set_load_and_clear_roundtrip() {
         crate::testhome::with_test_home(|_| {
             let bin = "/tmp/target";
-            assert!(load(bin).is_empty());
+            assert!(load(bin).unwrap().is_empty());
             set(bin, 0x401000, Some("decrypt_flag")).unwrap();
             set(bin, 0x401100, Some("check_password")).unwrap();
-            let map = load(bin);
+            let map = load(bin).unwrap();
             assert_eq!(map.get(&0x401000).map(String::as_str), Some("decrypt_flag"));
             assert_eq!(
                 map.get(&0x401100).map(String::as_str),
@@ -80,11 +99,11 @@ mod tests {
             // Renaming overwrites; blank clears just that one.
             set(bin, 0x401000, Some("decrypt")).unwrap();
             set(bin, 0x401100, Some("  ")).unwrap();
-            let map = load(bin);
+            let map = load(bin).unwrap();
             assert_eq!(map.get(&0x401000).map(String::as_str), Some("decrypt"));
             assert!(!map.contains_key(&0x401100));
             // Renames are scoped per binary.
-            assert!(load("/tmp/other").is_empty());
+            assert!(load("/tmp/other").unwrap().is_empty());
         });
     }
 
@@ -120,8 +139,43 @@ mod tests {
             // used to fail.
             set_variable("/tmp/target", 0x401000, "-4", Some("demo"))
                 .expect("write over a stale table");
-            let names = load_variables("/tmp/target");
+            let names = load_variables("/tmp/target").unwrap();
             assert_eq!(names.get(&(0x401000, "-4".to_string())).map(String::as_str), Some("demo"));
+        });
+    }
+
+    /// A table that cannot be read must not read as a table with nothing in it.
+    ///
+    /// This is the shape of the failure that cost an afternoon: the loaders
+    /// returned an empty map for every fault, so a table missing a column
+    /// reported the same answer as a binary nobody had named anything in, all
+    /// the way out to a view that showed no names. A fault has to stay a fault
+    /// for as long as it takes to find it.
+    #[test]
+    fn an_unreadable_table_is_an_error_rather_than_no_names() {
+        crate::testhome::with_test_home(|_| {
+            let conn = crate::db::connect().expect("connect");
+            // A column of a type the loader does not expect to read back.
+            conn.execute_batch("DROP TABLE IF EXISTS variable_names;")
+                .expect("drop");
+            conn.execute_batch(
+                "CREATE TABLE variable_names (
+                     binary_path TEXT NOT NULL,
+                     func_addr INTEGER NOT NULL,
+                     key BLOB NOT NULL,
+                     name TEXT NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (binary_path, func_addr, key)
+                 );
+                 INSERT INTO variable_names VALUES ('/tmp/target', 2302, X'00', 'demo', 0);",
+            )
+            .expect("plant an unreadable row");
+            drop(conn);
+
+            assert!(
+                load_variables("/tmp/target").is_err(),
+                "a row that cannot be decoded must not be dropped in favour of a short map"
+            );
         });
     }
 }
@@ -132,29 +186,26 @@ mod tests {
 /// so it gets its own table rather than sharing `function_names`. `key` is the
 /// frame offset (`-8`) for a local and the register (`rdi`) for an argument,
 /// which is the whole identity of the thing being named.
-pub fn load_variables(binary_path: &str) -> HashMap<(u64, String), String> {
+///
+/// Fails when the names cannot be read, for the same reason [`load`] does: an
+/// empty map is a claim that nothing has been named, and a table that cannot be
+/// read is not that.
+pub fn load_variables(binary_path: &str) -> Result<HashMap<(u64, String), String>, String> {
     let mut out = HashMap::new();
-    let Ok(conn) = db::connect() else {
-        return out;
-    };
-    let Ok(mut stmt) =
-        conn.prepare("SELECT func_addr, key, name FROM variable_names WHERE binary_path = ?1")
-    else {
-        return out;
-    };
-    let Ok(rows) = stmt.query_map(params![binary_path], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    }) else {
-        return out;
-    };
-    for row in rows.flatten() {
-        out.insert((row.0.max(0) as u64, row.1), row.2);
+    for (func, key, name) in rows_for(
+        "SELECT func_addr, key, name FROM variable_names WHERE binary_path = ?1",
+        binary_path,
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )? {
+        out.insert((func.max(0) as u64, key), name);
     }
-    out
+    Ok(out)
 }
 
 /// Set the name of one variable, or clear it when `name` is `None`/blank.

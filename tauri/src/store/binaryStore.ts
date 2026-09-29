@@ -85,10 +85,23 @@ export const useBinaryStore = create<BinaryState>((set) => ({
 				sections: [],
 				boundaries: [],
 			}));
-			// Variable names are the analyst's, like function renames: fetched
-			// with the rest and never required, so a backend without them still
-			// opens.
-			const variableNames = await api.variableNames().catch(() => ({}));
+			// Variable names are the analyst's, like function renames: fetched with
+			// the rest and never required, so a backend that cannot report them
+			// still opens. Said out loud, though — an analyst who has named things
+			// and is shown none of them cannot tell that from a target that has
+			// nothing named yet.
+			let variableNames: Record<string, string> = {};
+			try {
+				variableNames = await api.variableNames();
+			} catch (e) {
+				useUiStore
+					.getState()
+					.setErr(
+						`variable names could not be read: ${
+							e instanceof Error ? e.message : String(e)
+						}`,
+					);
+			}
 			useAnalysisStore.getState().setAll({
 				funcs: f ?? [],
 				strings: s ?? [],
