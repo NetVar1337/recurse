@@ -1,11 +1,25 @@
-import type { ComponentProps } from "react";
+import { memo, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
 
+// Remark keys its plugin pipeline on the array's identity, so a literal here
+// would rebuild that pipeline on every render of every message in the
+// transcript.
+const REMARK_PLUGINS = [remarkGfm];
+
 type CodeProps = ComponentProps<"code"> & { node?: unknown };
 
+/**
+ * Render one code span or block, styled to the app's density.
+ *
+ * @param props - The element props remark supplies, plus its own `node`.
+ * @returns The code element.
+ *
+ * @example
+ * <Code className="language-c">puts("hi")</Code>
+ */
 function Code({ node: _node, className, children, ...props }: CodeProps) {
 	const text = String(children ?? "");
 	const isBlock = /^language-/.test(className ?? "") || text.includes("\n");
@@ -90,12 +104,32 @@ const components = {
 	),
 };
 
-export function Markdown({ children }: { children: string }) {
+/**
+ * Render a markdown string with the app's prose styling.
+ *
+ * Memoized, because a streaming reply re-renders its whole transcript on every
+ * token and re-parsing settled messages to redraw the newest one is the
+ * difference between a smooth stream and a stuttering one.
+ *
+ * @param props - The markdown source.
+ * @returns The rendered prose.
+ *
+ * @example
+ * <Markdown>{"> a finding, in prose"}</Markdown>
+ */
+export const Markdown = memo(function Markdown({
+	children,
+}: {
+	children: string;
+}) {
 	return (
 		<div className="min-w-0 break-words">
-			<ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+			<ReactMarkdown
+				remarkPlugins={REMARK_PLUGINS}
+				components={components}
+			>
 				{children}
 			</ReactMarkdown>
 		</div>
 	);
-}
+});

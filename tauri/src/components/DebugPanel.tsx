@@ -1,5 +1,12 @@
 import { Loader2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ReactNode,
+} from "react";
 
 import { api, pickBinary } from "@/api";
 import { DebugCpu } from "@/components/DebugCpu";
@@ -23,6 +30,15 @@ function flagsOf(eflags: number): string {
 		.map(([name]) => name)
 		.join(" ");
 }
+
+/**
+ * How close to the bottom counts as "at the bottom", in pixels.
+ *
+ * Not zero: a scrollbar cannot always land exactly on the last pixel, and a
+ * transcript that has just gained a wrapped line can be a pixel or two off
+ * without the analyst having scrolled at all.
+ */
+const TAIL_SLOP = 4;
 
 /** Human label for a stop reason. */
 function reasonLabel(r?: DebugStopReason): string {
@@ -523,6 +539,9 @@ export function DebugPanel() {
 	const [breakAt, setBreakAt] = useState("");
 	const [stdin, setStdin] = useState("");
 	const outputRef = useRef<HTMLDivElement>(null);
+	const outputTailRef = useRef<HTMLPreElement>(null);
+	/** Whether the analyst is at the bottom, and so wants new output followed. */
+	const atTail = useRef(true);
 
 	// One channel for the life of the view: the session pushes a view of itself
 	// at every stop and the debuggee's output as it is printed, so there is no
@@ -535,11 +554,36 @@ export function DebugPanel() {
 		};
 	}, [connect, disconnect]);
 
+	// Whether the analyst is reading back through the transcript. A pane that
+	// always jumps to the newest line makes scrolling up to re-read something
+	// impossible, which is the one thing a program that printed a lot makes you
+	// want to do.
+	const onOutputScroll = useCallback(() => {
+		const el = outputRef.current;
+		if (!el) return;
+		atTail.current =
+			el.scrollHeight - el.scrollTop - el.clientHeight < TAIL_SLOP;
+	}, []);
+
+	// Follow the tail as the transcript grows. A ResizeObserver on the content
+	// rather than an effect that reads `scrollHeight`: an observer is called
+	// after layout has already been done, so the read is free, where reading it
+	// during a commit forces the browser to lay the whole pane out again — once
+	// per chunk printed, which is what made a chatty debuggee stutter.
 	useEffect(() => {
-		if (outputRef.current) {
-			outputRef.current.scrollTop = outputRef.current.scrollHeight;
-		}
-	}, [output]);
+		const scroller = outputRef.current;
+		const tail = outputTailRef.current;
+		if (!scroller || !tail) return;
+		scroller.addEventListener("scroll", onOutputScroll, { passive: true });
+		const observer = new ResizeObserver(() => {
+			if (atTail.current) scroller.scrollTop = scroller.scrollHeight;
+		});
+		observer.observe(tail);
+		return () => {
+			scroller.removeEventListener("scroll", onOutputScroll);
+			observer.disconnect();
+		};
+	}, [onOutputScroll]);
 
 	const onLaunch = async () => {
 		const path = await pickBinary();
@@ -734,8 +778,15 @@ export function DebugPanel() {
 				<div className="text-muted-foreground px-3 py-1 text-xs font-semibold tracking-wider uppercase">
 					Program output
 				</div>
-				<div ref={outputRef} className="scroll-host h-24 overflow-auto">
-					<pre className="text-2xs p-2 font-mono whitespace-pre-wrap">
+				<div
+					ref={outputRef}
+					className="scroll-host h-24 overflow-auto"
+					data-testid="debug-output"
+				>
+					<pre
+						ref={outputTailRef}
+						className="text-2xs p-2 font-mono whitespace-pre-wrap"
+					>
 						{/* Chunks, so the analyst's own input reads differently from what
 					    the debuggee printed. Index keys: the transcript only appends
 					    and trims from the front, and the children are plain text. */}

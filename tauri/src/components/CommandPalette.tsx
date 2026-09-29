@@ -6,6 +6,18 @@ import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 
+/** How many function matches the palette will ever show at once. */
+const PALETTE_LIMIT = 30;
+
+/**
+ * Format an address the way the palette and its rows both write it.
+ *
+ * @param a - The address.
+ * @returns The address as `0x` plus lowercase hex.
+ *
+ * @example
+ * fmtAddr(4096); // => "0x1000"
+ */
 function fmtAddr(a: number): string {
 	return `0x${a.toString(16)}`;
 }
@@ -45,9 +57,14 @@ export function CommandPalette() {
 
 	const matchedFunctions = useMemo(() => {
 		if (!q || !binary) return [];
-		return funcs
-			.filter((f) => (f.name ?? "").toLowerCase().includes(q))
-			.slice(0, 30);
+		// Stop at the cap rather than slicing after a full scan: a binary can hold
+		// tens of thousands of functions and only the first thirty are ever shown.
+		const out: typeof funcs = [];
+		for (const f of funcs) {
+			if (out.length === PALETTE_LIMIT) break;
+			if ((f.name ?? "").toLowerCase().includes(q)) out.push(f);
+		}
+		return out;
 	}, [funcs, q, binary]);
 
 	const matchedCommands = useMemo(

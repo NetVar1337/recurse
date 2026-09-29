@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-	Background,
 	Controls,
 	Handle,
 	MarkerType,
@@ -14,9 +13,9 @@ import {
 	useNodesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import dagre from "@dagrejs/dagre";
 
 import { api } from "@/api";
+import { layoutInline, layoutInWorker } from "@/lib/dagreLayout";
 import { cn } from "@/lib/utils";
 import { callTarget } from "@/lib/calls";
 import { VarNameChip } from "@/components/VarNameChip";
@@ -234,6 +233,11 @@ function toGraph(
 	byAddr: Map<number, Function>,
 ): { nodes: BlockNode[]; edges: Edge[] } {
 	const blocks = graph.blocks ?? [];
+	// Every node carries the function's whole instruction list, because a block
+	// only shows its own and the shared list is what names a variable in it.
+	// Flattened once here: doing it per node rebuilt the whole function's
+	// instructions once per basic block.
+	const allOps = blocks.flatMap((blk) => blk.ops ?? []);
 	const nodes: BlockNode[] = blocks.map((b) => {
 		const ops: BlockOp[] = (b.ops ?? []).map((op) => ({
 			...op,
@@ -246,7 +250,7 @@ function toGraph(
 				addr: fmtAddr(b.addr),
 				ops,
 				func: graph.addr,
-				insns: (graph.blocks ?? []).flatMap((blk) => blk.ops ?? []),
+				insns: allOps,
 			},
 			position: { x: 0, y: 0 },
 			width: blockWidth(ops),
@@ -278,27 +282,34 @@ function toGraph(
 	return { nodes, edges };
 }
 
-function layout(nodes: BlockNode[], edges: Edge[]): BlockNode[] {
-	const g = new dagre.graphlib.Graph();
-	g.setDefaultEdgeLabel(() => ({}));
-	g.setGraph({
-		rankdir: "TB",
-		nodesep: 22,
-		ranksep: 56,
-		marginx: 16,
-		marginy: 16,
-	});
-	nodes.forEach((n) =>
-		g.setNode(n.id, { width: n.width ?? BLOCK_W, height: n.height ?? 80 }),
-	);
-	edges.forEach((e) => g.setEdge(e.source, e.target));
-	dagre.layout(g);
-	return nodes.map((n) => {
-		const pos = g.node(n.id);
-		const w = n.width ?? BLOCK_W;
-		const h = n.height ?? 80;
-		return { ...n, position: { x: pos.x - w / 2, y: pos.y - h / 2 } };
-	});
+/**
+ * Place every block, in a worker where one is available.
+ *
+ * A large function's graph is hundreds of blocks, and dagre's pass over all of
+ * them blocks the thread it runs on — which is the thread that also has to
+ * answer the next click. The worker keeps the window alive while it works; the
+ * inline pass is the fallback for an environment without one.
+ *
+ * @param nodes - The blocks to place.
+ * @param edges - The jumps between them.
+ * @returns The blocks with positions filled in.
+ */
+async function layout(nodes: BlockNode[], edges: Edge[]): Promise<BlockNode[]> {
+	const request = {
+		nodes: nodes.map((n) => ({
+			id: n.id,
+			width: n.width ?? BLOCK_W,
+			height: n.height ?? 80,
+		})),
+		edges: edges.map((e) => ({ source: e.source, target: e.target })),
+	};
+	let positions;
+	try {
+		positions = await layoutInWorker(request);
+	} catch {
+		positions = layoutInline(request);
+	}
+	return nodes.map((n, i) => ({ ...n, position: positions[i] }));
 }
 
 function GraphCanvas({ addr }: { addr: number }) {
@@ -306,16 +317,19 @@ function GraphCanvas({ addr }: { addr: number }) {
 	const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 	const [loading, setLoading] = useState(true);
 	const [err, setErr] = useState<string | null>(null);
-	const funcs = useAnalysisStore((s) => s.funcs);
 
 	useEffect(() => {
 		let cancelled = false;
+		// Read at fetch time rather than subscribing: the address is what decides
+		// which graph to show, and taking the function list as a dependency meant
+		// every background indexing tick re-fetched the graph over IPC and laid it
+		// out again — once a second and a half, while the analyst typed.
 		const byAddr = new Map<number, Function>();
-		for (const f of funcs) {
+		for (const f of useAnalysisStore.getState().funcs) {
 			if (typeof f.addr === "number") byAddr.set(f.addr, f);
 		}
 		api.functionGraph(addr)
-			.then((g) => {
+			.then(async (g) => {
 				if (cancelled) return;
 				if (!g || !g.blocks || g.blocks.length === 0) {
 					setErr("no graph for this address");
@@ -323,7 +337,11 @@ function GraphCanvas({ addr }: { addr: number }) {
 					return;
 				}
 				const { nodes: ns, edges: es } = toGraph(g, byAddr);
-				setNodes(layout(ns, es));
+				const placed = await layout(ns, es);
+				// A graph that took a moment to lay out can be overtaken by the
+				// analyst moving to the next function; the old one must not land.
+				if (cancelled) return;
+				setNodes(placed);
 				setEdges(es);
 				setLoading(false);
 			})
@@ -336,7 +354,7 @@ function GraphCanvas({ addr }: { addr: number }) {
 		return () => {
 			cancelled = true;
 		};
-	}, [addr, setNodes, setEdges, funcs]);
+	}, [addr, setNodes, setEdges]);
 
 	return (
 		<div className="h-full w-full">
@@ -360,6 +378,10 @@ function GraphCanvas({ addr }: { addr: number }) {
 					nodeTypes={nodeTypes}
 					onNodesChange={onNodesChange}
 					onEdgesChange={onEdgesChange}
+					// Each node renders its block's instructions. With every node
+					// mounted, a large function's graph meant every instruction of
+					// the whole function in the DOM at once, off-screen included.
+					onlyRenderVisibleElements
 					fitView
 					fitViewOptions={{ padding: 0.15 }}
 					nodesDraggable={false}
@@ -373,7 +395,6 @@ function GraphCanvas({ addr }: { addr: number }) {
 					proOptions={{ hideAttribution: true }}
 					className="bg-background"
 				>
-					<Background gap={18} size={1} />
 					<Controls showInteractive={false} />
 				</ReactFlow>
 			)}

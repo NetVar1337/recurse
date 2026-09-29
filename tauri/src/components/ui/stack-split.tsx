@@ -67,6 +67,8 @@ export function StackSplit({
 	const drag = useRef<{
 		index: number;
 		y: number;
+		/** The container's height when the drag began, so a move never reads layout. */
+		height: number;
 		shares: number[];
 		el: HTMLDivElement;
 	} | null>(null);
@@ -165,9 +167,15 @@ export function StackSplit({
 	 * with three panes the divider after the middle one moves against the last,
 	 * and charging it to the first would move two panes' worth of divider for one
 	 * divider's worth of drag.
+	 *
+	 * @param index - The pane whose trailing divider is moving.
+	 * @param delta - The share to move, positive downward.
+	 * @param persist - Whether to write the arrangement to storage. A drag
+	 *   passes `false` and lets the release do it: storage is synchronous, and a
+	 *   pointer emits sixty moves a second.
 	 */
 	const move = useCallback(
-		(index: number, delta: number) => {
+		(index: number, delta: number, persist = true) => {
 			const shares = bases.current;
 			if (!shares) return;
 			const next = [...shares];
@@ -185,7 +193,7 @@ export function StackSplit({
 			next[index] = give - allowed;
 			next[other] = take + allowed;
 			paint(next);
-			remember(next);
+			if (persist) remember(next);
 		},
 		[paint, remember, min, max],
 	);
@@ -193,7 +201,8 @@ export function StackSplit({
 	const onPointerDown =
 		(index: number) => (event: ReactPointerEvent<HTMLDivElement>) => {
 			const shares = bases.current;
-			if (event.button !== 0 || !shares) return;
+			const box = container.current;
+			if (event.button !== 0 || !shares || !box) return;
 			// The pointer is crossing rows of names, addresses and symbols; a drag
 			// must not leave them selected behind it.
 			event.preventDefault();
@@ -201,6 +210,10 @@ export function StackSplit({
 			drag.current = {
 				index,
 				y: event.clientY,
+				// Measured once: the container cannot change height under a drag
+				// that is not resizing it, and reading it per move would force a
+				// layout between every write.
+				height: box.getBoundingClientRect().height,
 				shares,
 				el: event.currentTarget,
 			};
@@ -213,28 +226,36 @@ export function StackSplit({
 
 	const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
 		const state = drag.current;
-		const box = container.current;
-		if (!state || !box) return;
-		const rect = box.getBoundingClientRect();
-		if (rect.height <= 0) return;
+		if (!state || state.height <= 0) return;
 		// The drag is measured against the shares as they were when it started,
 		// so a move is relative to the grab rather than compounding.
-		const delta = (event.clientY - state.y) / rect.height;
+		const delta = (event.clientY - state.y) / state.height;
 		const current = bases.current;
 		if (!current) return;
 		move(
 			state.index,
 			delta + (state.shares[state.index] - current[state.index]),
+			false,
 		);
 	};
 
-	/** Drop the drag, and the lit line with it however the drag ended. */
-	const release = () => {
+	/**
+	 * Drop the drag, and the lit line with it however the drag ended.
+	 *
+	 * Memoized because the window-level fallback below subscribes to it, and
+	 * re-subscribing on every render would leave a listener per render until the
+	 * next cleanup.
+	 */
+	const release = useCallback(() => {
 		if (drag.current === null) return;
 		delete drag.current.el.dataset.dragging;
 		drag.current = null;
+		// The arrangement is the analyst's once the divider is let go, so this is
+		// where it is written — not sixty times on the way there.
+		const shares = bases.current;
+		if (shares) remember(shares);
 		endDragSuppressSelect("row");
-	};
+	}, [remember]);
 
 	const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
 		release();
@@ -254,7 +275,7 @@ export function StackSplit({
 			window.removeEventListener("pointerup", stop);
 			window.removeEventListener("pointercancel", stop);
 		};
-	}, []);
+	}, [release]);
 
 	const onKeyDown =
 		(index: number) => (event: ReactKeyboardEvent<HTMLDivElement>) => {

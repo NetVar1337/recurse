@@ -610,3 +610,20 @@ body.dragging-suppress-select-row {
 	width: 2px;
 	background: var(--brand);
 }
+
+/* Rows in a long list.
+ *
+ * A disassembly of a large function, a hex dump, a string table — the lists that
+ * run to thousands of rows are read by scrolling, and the browser lays out and
+ * paints every one of them whether or not it is on screen. Letting the browser
+ * skip the off-screen ones is most of what windowing would buy, without a
+ * dependency or a fixed row height that a variable-height row would break.
+ *
+ * `contain-intrinsic-size` is what makes the scrollbar honest: without it the
+ * browser would have to lay rows out to know how far down the list goes, which
+ * is the work being skipped.
+ */
+.offscreen-row {
+	content-visibility: auto;
+	contain-intrinsic-size: auto var(--row-h);
+}

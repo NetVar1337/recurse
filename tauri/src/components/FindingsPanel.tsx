@@ -36,6 +36,38 @@ function Empty({ label }: { label: string }) {
 	return <div className="text-muted-foreground text-xs italic">{label}</div>;
 }
 
+/** How many rows one findings section will render. */
+const SECTION_CAP = 200;
+
+/**
+ * Say what a cap is hiding, so a truncated section is not read as a complete one.
+ *
+ * @param props.total - How many the scan actually found.
+ * @returns The note, or nothing when the section fit.
+ */
+function Overflow({ total }: { total: number }) {
+	if (total <= SECTION_CAP) return null;
+	return (
+		<div className="text-muted-foreground text-[11px]">
+			… {total - SECTION_CAP} more
+		</div>
+	);
+}
+
+/**
+ * Cap one section's rows, the way the DWARF section already did.
+ *
+ * A capa match on a large binary runs to hundreds and a driver IOCTL scan to
+ * thousands; the section has no pagination, so without a cap the whole set is
+ * mounted at once.
+ *
+ * @param items - Everything the scan found.
+ * @returns The rows to render.
+ */
+function capped<T>(items: T[]): T[] {
+	return items.length > SECTION_CAP ? items.slice(0, SECTION_CAP) : items;
+}
+
 /**
  * Combined findings dashboard: capa-style capability matches, C++
  * vtable/RTTI-recovered classes, kernel driver IOCTL dispatch candidates,
@@ -132,7 +164,7 @@ export function FindingsPanel() {
 					<Empty label="no capa rule matches" />
 				) : (
 					<div className="flex flex-col gap-1.5">
-						{findings.capabilities.map((c, i) => (
+						{capped(findings.capabilities).map((c, i) => (
 							<div
 								key={`${c.name}-${i}`}
 								className="bg-muted/40 rounded px-2.5 py-1.5 text-[11px]"
@@ -150,6 +182,7 @@ export function FindingsPanel() {
 								</div>
 							</div>
 						))}
+						<Overflow total={findings.capabilities.length} />
 					</div>
 				)}
 			</Section>
@@ -159,7 +192,7 @@ export function FindingsPanel() {
 					<Empty label="no vtables recovered (not a C++ Itanium-ABI binary, or fully stripped)" />
 				) : (
 					<div className="flex flex-col gap-2">
-						{findings.classes.map((c) => (
+						{capped(findings.classes).map((c) => (
 							<div
 								key={c.vtable_address}
 								className="bg-muted/40 rounded px-2.5 py-1.5 text-[11px]"
@@ -183,6 +216,7 @@ export function FindingsPanel() {
 								</div>
 							</div>
 						))}
+						<Overflow total={findings.classes.length} />
 					</div>
 				)}
 			</Section>
@@ -205,7 +239,7 @@ export function FindingsPanel() {
 							</tr>
 						</thead>
 						<tbody>
-							{findings.driver_ioctls.map((h, i) => (
+							{capped(findings.driver_ioctls).map((h, i) => (
 								<tr key={i} className="hover:bg-accent">
 									<td className="py-0.5 pr-3">
 										0x{h.code.raw.toString(16)}
@@ -230,6 +264,19 @@ export function FindingsPanel() {
 									</td>
 								</tr>
 							))}
+							{findings.driver_ioctls.length > SECTION_CAP && (
+								<tr>
+									<td
+										colSpan={4}
+										className="text-muted-foreground py-0.5 text-[11px]"
+									>
+										…{" "}
+										{findings.driver_ioctls.length -
+											SECTION_CAP}{" "}
+										more
+									</td>
+								</tr>
+							)}
 						</tbody>
 					</table>
 				)}
@@ -243,7 +290,7 @@ export function FindingsPanel() {
 					<Empty label="no embedded firmware/archive/filesystem signatures" />
 				) : (
 					<div className="flex flex-col gap-1">
-						{findings.firmware.map((m, i) => (
+						{capped(findings.firmware).map((m, i) => (
 							<div
 								key={i}
 								className="flex items-center gap-3 font-mono text-[11px]"
@@ -254,6 +301,7 @@ export function FindingsPanel() {
 								<span>{m.signature}</span>
 							</div>
 						))}
+						<Overflow total={findings.firmware.length} />
 					</div>
 				)}
 			</Section>
@@ -266,7 +314,7 @@ export function FindingsPanel() {
 					<Empty label="no DWARF debug info (stripped, or not a DWARF-carrying build)" />
 				) : (
 					<div className="flex flex-col gap-1">
-						{findings.dwarf_functions.slice(0, 200).map((f, i) => (
+						{capped(findings.dwarf_functions).map((f, i) => (
 							<div key={i} className="font-mono text-[11px]">
 								<span className="text-primary">
 									{f.return_type ?? "void"}
@@ -284,11 +332,7 @@ export function FindingsPanel() {
 								)}
 							</div>
 						))}
-						{findings.dwarf_functions.length > 200 && (
-							<div className="text-muted-foreground text-[11px]">
-								… {findings.dwarf_functions.length - 200} more
-							</div>
-						)}
+						<Overflow total={findings.dwarf_functions.length} />
 					</div>
 				)}
 			</Section>

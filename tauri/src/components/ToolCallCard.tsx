@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
 	Binary,
 	Bug,
@@ -240,16 +240,41 @@ function ToolResult({
 	);
 }
 
-/** Render one security-aware, domain-specific tool call in the agent transcript. */
-export function ToolCallCard({ call }: { call: ToolCallUi }) {
+/**
+ * Render one security-aware, domain-specific tool call in the agent transcript.
+ *
+ * Memoized, because a streaming reply re-renders every card in the transcript on
+ * every frame, and a finished tool call does not change while the answer below
+ * it is being written.
+ *
+ * @param props.call - The invocation and, once it has returned, its result.
+ * @returns The card.
+ *
+ * @example
+ * <ToolCallCard call={{ id: "1", name: "read_bytes", arguments: "{}" }} />
+ */
+export const ToolCallCard = memo(function ToolCallCard({
+	call,
+}: {
+	call: ToolCallUi;
+}) {
 	const [expanded, setExpanded] = useState(false);
 	const [copied, setCopied] = useState(false);
-	const view = classifyToolCall(call.name, call.arguments);
+	// Both of these parse the call's own JSON, and a streaming reply re-renders
+	// every card in the transcript on every token — so they are read off the
+	// call rather than off the frame.
+	const view = useMemo(
+		() => classifyToolCall(call.name, call.arguments),
+		[call.name, call.arguments],
+	);
+	const facts = useMemo(
+		() => getToolResultFacts(view, call.result),
+		[view, call.result],
+	);
 	const running = call.result === undefined;
 	const failed = isToolError(call.result);
 	const cancelled =
 		call.result?.trim().toLowerCase().startsWith("cancelled") === true;
-	const facts = getToolResultFacts(view, call.result);
 	const Icon = FAMILY_ICONS[view.family];
 	const detailsId = `tool-call-details-${call.id}`;
 
@@ -336,4 +361,4 @@ export function ToolCallCard({ call }: { call: ToolCallUi }) {
 			)}
 		</article>
 	);
-}
+});

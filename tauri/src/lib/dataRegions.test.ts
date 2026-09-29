@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { BoundarySymbol, DataSection, DataSegment } from "../types";
 
-/** Clamp a split fraction, mirroring the bounds SplitView enforces. */
+/** Clamp a split fraction, mirroring the bounds a stack divider enforces. */
 function clamp(v: number, min: number, max: number): number {
 	return Math.min(max, Math.max(min, v));
 }

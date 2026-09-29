@@ -54,6 +54,18 @@ function push(
 	deliverTauriCallback(channel.id, { ...event, gen });
 }
 
+/**
+ * Wait out the frame the output pane commits on.
+ *
+ * The debuggee's stdout is queued and committed once a frame rather than one
+ * event at a time, so a test that pushes output has to let the frame land
+ * before the transcript reflects it. A real timer rather than a fake one, so
+ * this exercises the same path the app does.
+ */
+function flushOutput(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 150));
+}
+
 /** A stop carrying just a pc, which is all the cache logic reads. */
 function stopAt(pc: number): DebugStop {
 	return {
@@ -270,8 +282,10 @@ describe("process exit", () => {
 		expect(s.state).toBe("exited");
 		expect(s.disasm.size).toBe(EXIT_BODY.length);
 		expect(s.breakpoints).toHaveLength(1);
-		expect(outputText(s.output)).toContain("hello from the debuggee");
-		expect(s.log.length).toBeGreaterThan(0);
+		await flushOutput();
+		expect(outputText(useDebugStore.getState().output)).toContain(
+			"hello from the debuggee",
+		);
 	});
 
 	it("reports the exit as a state, not as an error", async () => {
@@ -393,14 +407,6 @@ describe("relaunching after an exit", () => {
 		expect(outputText(s.output)).toBe("");
 	});
 
-	it("keeps the op log, which is a record of what was done", async () => {
-		const before = useDebugStore.getState().log.length;
-		await useDebugStore.getState().run("launch", { path: "/bin/second" });
-		const s = useDebugStore.getState();
-		expect(s.log.length).toBeGreaterThan(before);
-		expect(s.log.some((l) => l.includes("/bin/first"))).toBe(true);
-	});
-
 	it("shows the new run's own stdout, not a mix", async () => {
 		mocked.debugCommand.mockImplementation(async (op: string) => {
 			if (op === "breakpoints" || op === "backtrace") return [];
@@ -408,6 +414,7 @@ describe("relaunching after an exit", () => {
 		});
 		await useDebugStore.getState().run("launch", { path: "/bin/second" });
 		push({ event: "output", text: "second run\n" });
+		await flushOutput();
 		const s = useDebugStore.getState();
 		expect(outputText(s.output)).toBe("second run\n");
 		expect(outputText(s.output)).not.toContain("first run");
@@ -496,6 +503,7 @@ describe("stdout is per process", () => {
 		push({ event: "output", text: "run output\n" });
 		await useDebugStore.getState().run("continue");
 		// The finished session keeps its own output on screen.
+		await flushOutput();
 		expect(outputText(useDebugStore.getState().output)).toBe(
 			"run output\n",
 		);
@@ -508,13 +516,6 @@ describe("stdout is per process", () => {
 		expect(outputText(useDebugStore.getState().output)).toBe("");
 	});
 
-	it("keeps the op log across a kill", async () => {
-		await useDebugStore.getState().run("launch", { path: "/bin/first" });
-		const before = useDebugStore.getState().log.length;
-		await useDebugStore.getState().run("kill");
-		expect(useDebugStore.getState().log.length).toBeGreaterThan(before);
-	});
-
 	it("discards output still in flight from a session that has been replaced", async () => {
 		await useDebugStore.getState().run("launch", { path: "/bin/first" });
 		await useDebugStore.getState().run("launch", { path: "/bin/second" });
@@ -525,9 +526,23 @@ describe("stdout is per process", () => {
 		push({ event: "snapshot", snapshot: snapshotOf({ stop_seq: 2 }) }, 2);
 		push({ event: "output", text: "late output from the first run\n" }, 1);
 		push({ event: "output", text: "second run\n" }, 2);
+		await flushOutput();
 		expect(outputText(useDebugStore.getState().output)).toBe(
 			"second run\n",
 		);
+	});
+
+	it("throws away output that is still queued when the process is replaced", async () => {
+		// Not a straggler this time: the first run's output arrived and is
+		// waiting for its frame when the relaunch replaces the debuggee. Committing
+		// it afterwards would open the new process's transcript with the old
+		// process's words in it.
+		await useDebugStore.getState().run("launch", { path: "/bin/first" });
+		push({ event: "output", text: "from the first run\n" });
+		await useDebugStore.getState().run("launch", { path: "/bin/second" });
+		await flushOutput();
+
+		expect(outputText(useDebugStore.getState().output)).toBe("");
 	});
 
 	it("advances the generation on every process boundary", async () => {
@@ -552,14 +567,30 @@ describe("stdin echo", () => {
 
 	it("shows what was sent, so the pane reflects the input", async () => {
 		await useDebugStore.getState().sendStdin("AAAA\n");
+		await flushOutput();
 		expect(outputText(useDebugStore.getState().output)).toContain("AAAA\n");
 	});
 
 	it("tags the echo apart from what the debuggee printed", async () => {
 		await useDebugStore.getState().sendStdin("AAAA\n");
+		await flushOutput();
 		const chunks = useDebugStore.getState().output;
 		expect(chunks.map((c) => c.echo ?? false)).toEqual([false, true]);
 		expect(chunks[1].text).toBe("AAAA\n");
+	});
+
+	it("does not let an echo jump ahead of output already printed", async () => {
+		// The transcript is one conversation in one order. An echo written
+		// straight through while program output is still queued would put the
+		// analyst's own line above the debuggee's line that prompted it.
+		await useDebugStore.getState().sendStdin("AAAA\n");
+		await flushOutput();
+
+		const chunks = useDebugStore.getState().output;
+		expect(chunks.map((c) => c.text)).toEqual([
+			"Let's start the CTF:\n",
+			"AAAA\n",
+		]);
 	});
 
 	it("sends exactly what it echoes", async () => {
@@ -568,6 +599,7 @@ describe("stdin echo", () => {
 			data: "AAAA\n",
 		});
 		// Nothing transformed on the way to the transcript.
+		await flushOutput();
 		const echoed = useDebugStore.getState().output.find((c) => c.echo);
 		expect(echoed?.text).toBe("AAAA\n");
 	});
@@ -575,6 +607,7 @@ describe("stdin echo", () => {
 	it("keeps consecutive lines of input in one echoed chunk", async () => {
 		await useDebugStore.getState().sendStdin("one\n");
 		await useDebugStore.getState().sendStdin("two\n");
+		await flushOutput();
 		const echoes = useDebugStore.getState().output.filter((c) => c.echo);
 		expect(echoes).toHaveLength(1);
 		expect(echoes[0].text).toBe("one\ntwo\n");
@@ -1096,11 +1129,31 @@ describe("the push channel", () => {
 		expect(typeof channel?.onmessage).toBe("function");
 	});
 
-	it("folds an event the host delivers through the channel", () => {
+	it("folds an event the host delivers through the channel", async () => {
 		push({ event: "output", text: "hello from the debuggee\n" });
+		await flushOutput();
 		expect(outputText(useDebugStore.getState().output)).toBe(
 			"hello from the debuggee\n",
 		);
+	});
+
+	it("holds a burst of output to one commit, not one per chunk", async () => {
+		// A program that prints faster than the screen refreshes delivers events
+		// far faster than a human can read them; committing each is a re-render
+		// of the whole panel per chunk.
+		const seen: string[] = [];
+		const unsub = useDebugStore.subscribe((s) =>
+			seen.push(outputText(s.output)),
+		);
+		for (let i = 0; i < 20; i++) {
+			push({ event: "output", text: `line ${i}\n` });
+		}
+		await flushOutput();
+		unsub();
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toContain("line 0");
+		expect(seen[0]).toContain("line 19");
 	});
 
 	it("says so when the channel cannot be registered", async () => {

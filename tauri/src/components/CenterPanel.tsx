@@ -13,7 +13,6 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DebugPanel } from "@/components/DebugPanel";
 import {
 	DisasmBytes,
 	readDisasmView,
@@ -41,7 +40,7 @@ import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
 import { useUiStore } from "@/store/uiStore";
-import type { DecompileAnnotation, Function, Xref } from "@/types";
+import type { DebugInsn, DecompileAnnotation, Function, Xref } from "@/types";
 
 const RAW_BYTE_PREVIEW = 128;
 const RAW_BYTE_CHUNK = 16 * 1024;
@@ -68,6 +67,14 @@ const FindingsPanel = lazy(() =>
 
 const HexPanel = lazy(() =>
 	import("@/components/HexPanel").then((m) => ({ default: m.HexPanel })),
+);
+
+// The debugger pane, deferred like its siblings. It carries the registers pane,
+// the CPU view, the stack and the output transcript — none of which are needed
+// until the analyst opens the Debug tab, and all of which were in the first
+// chunk until they were.
+const DebugPanel = lazy(() =>
+	import("@/components/DebugPanel").then((m) => ({ default: m.DebugPanel })),
 );
 
 function fmtAddr(a?: number | null) {
@@ -99,6 +106,21 @@ const HL_COLORS: Record<string, string> = {
 	constant_variable: "text-asm-number",
 };
 
+/**
+ * Color a decompiled source according to the engine's annotations.
+ *
+ * Annotations are byte ranges over the source, so they are flattened into a
+ * per-character category first and then coalesced back into runs — which is
+ * linear in the source, and is why the caller memoizes the result.
+ *
+ * @param code - The decompiled source.
+ * @param annotations - Ranges to color, from the engine.
+ * @returns Runs of text, each in a `<span>` when the engine named a category.
+ *
+ * @example
+ * highlight("mov a, b", [{ start: 0, end: 3, syntax_highlight: "instruction" }]);
+ * // => [<span className="text-asm-instruction">"mov"</span>, " a, b"]
+ */
 function highlight(
 	code: string,
 	annotations: DecompileAnnotation[],
@@ -132,12 +154,46 @@ function highlight(
 	return spans;
 }
 
+/** An instruction reduced to what variable naming reads from it. */
+type FrameOp = DebugInsn;
+
+/**
+ * Normalize a function's instructions for variable naming.
+ *
+ * Every row of a listing carries the same answer to "how does this function
+ * address its frame", so the answer is computed once per function and handed
+ * down, rather than rebuilt per row.
+ *
+ * @param ops - The function's instructions, as the engine reports them.
+ * @returns The instructions in the shape `frameOf` reads, or `undefined` when
+ *   there is no listing to read.
+ *
+ * @example
+ * frameOpsFor([{ addr: 0, text: "mov [rbp-8], rdi" }]);
+ * // => [{ addr: 0, bytes: "", text: "mov [rbp-8], rdi" }]
+ */
+function frameOpsFor(
+	ops: readonly { text?: string; disasm?: string }[] | undefined,
+): FrameOp[] | undefined {
+	return ops?.map((i) => ({
+		addr: 0,
+		bytes: "",
+		text: i.text ?? i.disasm ?? "",
+	}));
+}
+
 /**
  * Render one disassembly instruction with optional source columns and the
  * active-row treatment used by the function listing.
  *
+ * @param props.op - The instruction to render.
+ * @param props.frameOps - The function's instructions, already normalized for
+ *   variable naming. Mapped by the caller, not here: a listing of M rows would
+ *   otherwise map M instructions M times over.
+ * @returns The row element.
+ *
  * @example
- * <OpRow op={op} active={op.addr === selectedAddress} />
+ * <OpRow op={op} frameOps={frameOps} active={op.addr === selectedAddress} />
  */
 function OpRow({
 	op,
@@ -150,12 +206,12 @@ function OpRow({
 	showComments,
 	wideSpacing,
 	func,
-	insns,
+	frameOps,
 }: {
 	/** The function this instruction belongs to, for its variable names. */
 	func?: number | null;
 	/** The function's instructions, which say how it addresses its frame. */
-	insns?: { text?: string; disasm?: string }[];
+	frameOps?: FrameOp[];
 	op: {
 		addr: number;
 		bytes?: string | null;
@@ -175,23 +231,18 @@ function OpRow({
 }) {
 	const text = op.text ?? op.disasm ?? "";
 	const { instr, comment } = splitComment(text);
-	// The variable's own name, editable where the analyst is reading it. The
-	// engine's comment — a string, an import — stays beside it, because those are
-	// different facts about the instruction, not two names for one slot.
-	const frameOps = useMemo(
-		() =>
-			(insns ?? []).map((i) => ({
-				addr: 0,
-				bytes: "",
-				text: i.text ?? i.disasm ?? "",
-			})),
-		[insns],
-	);
 	const clickable = !!target;
 	return (
 		<div
 			className={cn(
 				chrome.row,
+				// A large function is thousands of instructions, read by scrolling.
+				// Letting the browser skip laying out and painting the ones that are
+				// not on screen is most of what windowing would buy — and unlike a
+				// row virtualizer, it does not need the rows to be a known height,
+				// which they are not: comments, byte columns and named variables all
+				// change a row's height.
+				"offscreen-row",
 				"min-w-max pl-3",
 				wideSpacing ? "gap-5" : "gap-3",
 				active && "ui-selected border-brand border-l-2 pl-[10px]",
@@ -274,6 +325,16 @@ export function CenterPanel() {
 	// (decompile / raw console on native). Undefined = older host, show them.
 	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
 	const binaryPath = useBinaryStore((s) => s.binary?.path);
+	// One normalization for the whole listing, so opening a function is O(n)
+	// rather than one pass per row.
+	const frameOps = useMemo(() => frameOpsFor(asm?.ops), [asm?.ops]);
+	// Coloring walks every character of the source, so it is done when the
+	// source changes and not when the window does.
+	const highlighted = useMemo(
+		() =>
+			decompiled ? highlight(decompiled, decompiledAnnotations) : null,
+		[decompiled, decompiledAnnotations],
+	);
 
 	const pending = useContextStore((s) => s.pending);
 	const setPending = useContextStore((s) => s.setPending);
@@ -455,12 +516,24 @@ export function CenterPanel() {
 		};
 	}, [strings, stringQuery]);
 
+	// A large binary can import tens of thousands of symbols, and the table has
+	// no pagination: it renders what it is given. Capped the way the strings
+	// table is, with the count saying so rather than the list stopping silently.
 	const visibleImports = useMemo(() => {
+		const IMPORTS_CAP = 2000;
 		const q = importQuery.trim().toLowerCase();
-		if (!q) return imports;
-		return imports.filter((imp) =>
+		if (!q)
+			return {
+				rows: imports.slice(0, IMPORTS_CAP),
+				capped: imports.length > IMPORTS_CAP,
+			};
+		const matched = imports.filter((imp) =>
 			(imp.name ?? "").toLowerCase().includes(q),
 		);
+		return {
+			rows: matched.slice(0, IMPORTS_CAP),
+			capped: matched.length > IMPORTS_CAP,
+		};
 	}, [imports, importQuery]);
 
 	// Address → function lookup so call instructions can resolve to their target.
@@ -599,20 +672,61 @@ export function CenterPanel() {
 	const currentXrefsError = xrefsAddress === selectedAddr ? xrefsError : null;
 	const currentXrefsLoading = xrefsAddress === selectedAddr && xrefsLoading;
 
-	const sourceFunction = (xref: Xref): Function | undefined => {
-		if (xref.fcn_name) {
-			const byName = funcs.find(
-				(f) => f.name === xref.fcn_name || f.realname === xref.fcn_name,
-			);
-			if (byName) return byName;
+	// An incoming-reference list is one row per reference, and each row has to
+	// find the function it came from. Doing that with a `find` per row made the
+	// list quadratic in the binary's function count, so both lookups are built
+	// once: by name, and by the address ranges a reference can fall inside.
+	const funcsByName = useMemo(() => {
+		const m = new Map<string, Function>();
+		for (const f of funcs) {
+			if (f.name && !m.has(f.name)) m.set(f.name, f);
+			if (f.realname && !m.has(f.realname)) m.set(f.realname, f);
 		}
-		return funcs.find(
-			(f) =>
-				typeof f.size === "number" &&
-				xref.from >= f.addr &&
-				xref.from < f.addr + f.size,
-		);
-	};
+		return m;
+	}, [funcs]);
+
+	const sizedFuncs = useMemo(
+		() =>
+			funcs
+				.filter((f) => typeof f.size === "number")
+				.slice()
+				.sort((a, b) => a.addr - b.addr),
+		[funcs],
+	);
+
+	const sourceFunction = useCallback(
+		(xref: Xref): Function | undefined => {
+			if (xref.fcn_name) {
+				const byName = funcsByName.get(xref.fcn_name);
+				if (byName) return byName;
+			}
+			// The last function starting at or before the reference whose range
+			// contains it. Sorted by address, so this is a binary search rather
+			// than a walk over every function in the binary.
+			let lo = 0;
+			let hi = sizedFuncs.length - 1;
+			let found: Function | undefined;
+			while (lo <= hi) {
+				const mid = (lo + hi) >> 1;
+				const f = sizedFuncs[mid];
+				if (f.addr <= xref.from) {
+					found = f;
+					lo = mid + 1;
+				} else {
+					hi = mid - 1;
+				}
+			}
+			if (
+				found &&
+				typeof found.size === "number" &&
+				xref.from < found.addr + found.size
+			) {
+				return found;
+			}
+			return undefined;
+		},
+		[funcsByName, sizedFuncs],
+	);
 
 	return (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -668,7 +782,15 @@ export function CenterPanel() {
 				{tab === "recon" ? (
 					<ReconPanel key={binaryPath} />
 				) : tab === "debug" ? (
-					<DebugPanel />
+					<Suspense
+						fallback={
+							<div className="text-muted-foreground px-3 py-3 text-xs">
+								loading debugger…
+							</div>
+						}
+					>
+						<DebugPanel />
+					</Suspense>
 				) : tab === "callgraph" ? (
 					<Suspense
 						fallback={
@@ -826,7 +948,7 @@ export function CenterPanel() {
 																selectFn(source)
 															}
 															className={cn(
-																"hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs disabled:cursor-default",
+																"offscreen-row hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs disabled:cursor-default",
 																source &&
 																	"text-primary",
 															)}
@@ -916,7 +1038,7 @@ export function CenterPanel() {
 												key={op.addr}
 												op={op}
 												func={selectedAddr}
-												insns={asm?.ops}
+												frameOps={frameOps}
 												target={callTarget(
 													op,
 													funcByAddr,
@@ -988,7 +1110,7 @@ export function CenterPanel() {
 											{visibleStrings.rows.map((s, i) => (
 												<tr
 													key={`${s.vaddr}-${i}-${s.string?.slice(0, 16)}`}
-													className="hover:bg-accent"
+													className="hover:bg-accent offscreen-row"
 												>
 													<td className="text-primary px-3 py-px">
 														{fmtAddr(s.vaddr)}
@@ -1035,8 +1157,11 @@ export function CenterPanel() {
 										/>
 										<span className="text-muted-foreground text-xs">
 											showing{" "}
-											{visibleImports.length.toLocaleString()}{" "}
+											{visibleImports.rows.length.toLocaleString()}{" "}
 											of {imports.length.toLocaleString()}
+											{visibleImports.capped
+												? " (capped at 2,000 — refine the filter)"
+												: ""}
 										</span>
 									</div>
 									<table className="w-full font-mono text-xs">
@@ -1048,18 +1173,21 @@ export function CenterPanel() {
 											</tr>
 										</thead>
 										<tbody>
-											{visibleImports.map((imp, i) => (
-												<tr
-													key={i}
-													className="hover:bg-accent"
-												>
-													<td className="px-3 py-px">
-														{imp.name ??
-															"(unnamed)"}
-													</td>
-												</tr>
-											))}
-											{visibleImports.length === 0 && (
+											{visibleImports.rows.map(
+												(imp, i) => (
+													<tr
+														key={i}
+														className="hover:bg-accent offscreen-row"
+													>
+														<td className="px-3 py-px">
+															{imp.name ??
+																"(unnamed)"}
+														</td>
+													</tr>
+												),
+											)}
+											{visibleImports.rows.length ===
+												0 && (
 												<tr>
 													<td className="text-muted-foreground px-3 py-3 text-center">
 														{importQuery.trim()
@@ -1077,10 +1205,7 @@ export function CenterPanel() {
 						{tab === "disasm" && decompiled && (
 							<div className="border-border bg-card relative shrink-0 border-t">
 								<pre className="scroll-host text-primary h-64 overflow-auto px-3 py-2 font-mono text-xs">
-									{highlight(
-										decompiled,
-										decompiledAnnotations,
-									)}
+									{highlighted}
 								</pre>
 								<Button
 									variant="toolbar"

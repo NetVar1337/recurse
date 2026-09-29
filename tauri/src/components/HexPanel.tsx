@@ -9,6 +9,48 @@ import { useAnalysisStore } from "@/store/analysisStore";
 
 const ROW_BYTES = 16;
 const DEFAULT_LEN = 256;
+/** The most a single read will return, however large a length is asked for. */
+const MAX_LEN = 4096;
+
+/**
+ * The byte being typed into, and what has been typed so far.
+ *
+ * Held apart from `edits` so a half-typed nibble is not mistaken for a value: a
+ * staged edit is a fact about the file, and a draft is a fact about the field.
+ */
+interface Draft {
+	offset: number;
+	text: string;
+}
+
+/**
+ * Format a byte as the two hex digits the view shows.
+ *
+ * @param b - The byte value.
+ * @returns Two lowercase hex digits.
+ *
+ * @example
+ * hexByte(0x0a); // => "0a"
+ */
+function hexByte(b: number): string {
+	return b.toString(16).padStart(2, "0");
+}
+
+/**
+ * Read a staged two-digit hex field, or null when it is not a byte yet.
+ *
+ * @param text - What is in the field.
+ * @returns The byte, or null if the text is not one.
+ *
+ * @example
+ * parseByte("ff"); // => 255
+ * parseByte("z");  // => null
+ */
+function parseByte(text: string): number | null {
+	if (!/^[0-9a-fA-F]{1,2}$/.test(text)) return null;
+	const v = parseInt(text, 16);
+	return Number.isFinite(v) && v >= 0 && v <= 255 ? v : null;
+}
 
 function fmtAddr(a: number): string {
 	return `0x${a.toString(16).padStart(8, "0")}`;
@@ -40,6 +82,7 @@ export function HexPanel() {
 	const [baseAddr, setBaseAddr] = useState<number | null>(null);
 	const [bytes, setBytes] = useState<number[] | null>(null);
 	const [edits, setEdits] = useState<Map<number, number>>(new Map());
+	const [draft, setDraft] = useState<Draft | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [status, setStatus] = useState<string | null>(null);
@@ -62,10 +105,11 @@ export function HexPanel() {
 		setError(null);
 		setStatus(null);
 		try {
-			const data = await api.readBytes(addr, Math.min(len, 4096));
+			const data = await api.readBytes(addr, Math.min(len, MAX_LEN));
 			setBaseAddr(addr);
 			setBytes(data);
 			setEdits(new Map());
+			setDraft(null);
 		} catch (e) {
 			setError(String(e));
 		} finally {
@@ -73,15 +117,26 @@ export function HexPanel() {
 		}
 	};
 
-	const editByte = (offset: number, hex: string) => {
-		const v = parseInt(hex, 16);
-		if (!Number.isFinite(v) || v < 0 || v > 255) return;
+	// One field is live at a time, not one per byte. A 4 KB read is four thousand
+	// controlled inputs, and typing a single hex digit re-reconciled every one of
+	// them; here the draft is the only input in the view and nothing else moves.
+	const beginEdit = (offset: number, current: number) => {
+		setDraft({ offset, text: hexByte(current) });
+	};
+
+	const commitDraft = () => {
+		if (draft === null) return;
+		const value = parseByte(draft.text);
+		setDraft(null);
+		if (value === null) return;
 		setEdits((prev) => {
 			const next = new Map(prev);
-			next.set(offset, v);
+			next.set(draft.offset, value);
 			return next;
 		});
 	};
+
+	const cancelDraft = () => setDraft(null);
 
 	const applyPatch = async () => {
 		if (baseAddr === null || edits.size === 0) return;
@@ -158,7 +213,10 @@ export function HexPanel() {
 						<Button
 							size="sm"
 							variant="ghost"
-							onClick={() => setEdits(new Map())}
+							onClick={() => {
+								setEdits(new Map());
+								setDraft(null);
+							}}
 						>
 							Discard
 						</Button>
@@ -191,41 +249,69 @@ export function HexPanel() {
 					<table className="border-separate border-spacing-y-0.5">
 						<tbody>
 							{rows.map(({ addr, row }) => (
-								<tr key={addr}>
+								<tr key={addr} className="offscreen-row">
 									<td className="text-muted-foreground pr-3 align-top select-none">
 										{fmtAddr(addr)}
 									</td>
-									{row.map((b, i) => {
-										const offset = addr - baseAddr! + i;
-										const edited = edits.has(offset);
-										const value = edited
-											? (edits.get(offset) ?? b)
-											: b;
-										return (
-											<td
-												key={i}
-												className="w-[2ch] pr-1.5 align-top"
-											>
-												<input
-													value={value
-														.toString(16)
-														.padStart(2, "0")}
-													onChange={(e) =>
-														editByte(
-															offset,
-															e.target.value,
-														)
+									<td className="pr-1.5 align-top whitespace-pre">
+										{row.map((b, i) => {
+											const offset = addr - baseAddr! + i;
+											const edited = edits.has(offset);
+											const value =
+												edits.get(offset) ?? b;
+											const editing =
+												draft?.offset === offset;
+											return (
+												<span
+													key={i}
+													onClick={() =>
+														beginEdit(offset, value)
 													}
-													maxLength={2}
 													className={cn(
-														"w-[2ch] bg-transparent text-center outline-none",
+														"w-[2ch] cursor-text text-center",
 														edited &&
 															"text-primary font-bold underline decoration-dotted",
 													)}
-												/>
-											</td>
-										);
-									})}
+												>
+													{editing ? (
+														<input
+															autoFocus
+															value={draft.text}
+															onChange={(e) =>
+																setDraft({
+																	offset,
+																	text: e.target.value.slice(
+																		0,
+																		2,
+																	),
+																})
+															}
+															onFocus={(e) =>
+																e.currentTarget.select()
+															}
+															onBlur={commitDraft}
+															onKeyDown={(e) => {
+																if (
+																	e.key ===
+																	"Enter"
+																)
+																	commitDraft();
+																if (
+																	e.key ===
+																	"Escape"
+																)
+																	cancelDraft();
+															}}
+															maxLength={2}
+															className="text-primary w-[2ch] bg-transparent text-center font-bold outline-none"
+														/>
+													) : (
+														hexByte(value)
+													)}
+												</span>
+											);
+										})}
+									</td>
 									<td className="text-muted-foreground pl-3 align-top select-none">
 										{row
 											.map((b, i) =>

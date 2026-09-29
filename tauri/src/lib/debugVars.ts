@@ -216,12 +216,12 @@ export function slotIn(text: string, frame: Frame): number | null {
 	// matching nothing. The offsets are used as written, which is right for a
 	// frame-pointer function and the best available answer for a leaf one.
 	if (frame.unknown) {
-		return frameSlot(text, "rbp") ?? frameSlot(text, "rsp");
+		return frameSlot(text, RBP_SLOT) ?? frameSlot(text, RSP_SLOT);
 	}
 	if (frame.hasFramePointer) {
-		const viaFrame = frameSlot(text, "rbp");
+		const viaFrame = frameSlot(text, RBP_SLOT);
 		if (viaFrame !== null) return viaFrame === 0 ? null : viaFrame;
-		const viaStack = frameSlot(text, "rsp");
+		const viaStack = frameSlot(text, RSP_SLOT);
 		if (viaStack === null) return null;
 		const canonical = viaStack - frame.depth;
 		return canonical === 0 ? null : canonical;
@@ -229,16 +229,29 @@ export function slotIn(text: string, frame: Frame): number | null {
 	// No frame pointer: the stack pointer is the frame, so its offsets are
 	// already canonical — a function that never sets up a frame has locals
 	// counted from the allocation it did make.
-	const viaStack = frameSlot(text, "rsp");
+	const viaStack = frameSlot(text, RSP_SLOT);
 	return viaStack === null || viaStack === 0 ? null : viaStack;
 }
 
-/** The offset an operand names through a given frame register, or null. */
-function frameSlot(text: string, reg: string): number | null {
-	const m = new RegExp(
+/**
+ * A frame reference through one register, as `[reg +/- n]`.
+ *
+ * Built once per register: these are read once per instruction row, and a
+ * listing can be thousands of rows deep.
+ */
+function frameSlotPattern(reg: string): RegExp {
+	return new RegExp(
 		`\\[\\s*${reg}\\s*([+-])\\s*(0x[0-9a-f]+|\\d+)\\s*\\]`,
 		"i",
-	).exec(text);
+	);
+}
+
+const RSP_SLOT = frameSlotPattern("rsp");
+const RBP_SLOT = frameSlotPattern("rbp");
+
+/** The offset an operand names through a given frame register, or null. */
+function frameSlot(text: string, slot: RegExp): number | null {
+	const m = slot.exec(text);
 	if (!m) return null;
 	const magnitude = numberOf(m[2]);
 	return m[1] === "-" ? -magnitude : magnitude;

@@ -45,6 +45,42 @@ globalThis.window = {
 } as unknown as Window & typeof globalThis;
 
 /**
+ * The worker global.
+ *
+ * The graph layout module wires `self.onmessage` on import, which is correct
+ * inside a worker and a crash anywhere else. A stub lets a test import it and
+ * drive the handler directly — which is the only way to catch a worker that
+ * receives a request and never answers it.
+ */
+const postedToSelf: unknown[] = [];
+const selfStub = {
+	onmessage: null as ((event: MessageEvent) => void) | null,
+	postMessage(message: unknown) {
+		postedToSelf.push(message);
+	},
+};
+
+globalThis.self = selfStub as unknown as typeof globalThis.self;
+
+/**
+ * Everything the worker global has posted since the last call, then cleared.
+ *
+ * @returns The posted messages, oldest first.
+ */
+export function selfMessages(): unknown[] {
+	return postedToSelf.splice(0, postedToSelf.length);
+}
+
+/**
+ * Deliver a message to the worker global's handler, as a worker host would.
+ *
+ * @param data - The message the host would have sent.
+ */
+export function deliverToSelf(data: unknown): void {
+	selfStub.onmessage?.({ data } as MessageEvent);
+}
+
+/**
  * Deliver a message to the callback a channel registered, as the host does.
  *
  * @param id - The channel's id.

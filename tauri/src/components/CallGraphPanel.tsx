@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-	Background,
 	Controls,
 	Handle,
 	MarkerType,
@@ -122,16 +121,21 @@ async function layout(nodes: FnNode[], edges: Edge[]): Promise<FnNode[]> {
 /** Estimate whether the laid-out graph needs a readable top-level viewport. */
 function graphNeedsTopView(nodes: FnNode[], edges: Edge[]): boolean {
 	if (nodes.length > 300 || edges.length > 3_000) return true;
-	const maxX = Math.max(
-		...nodes.map((node) => node.position.x + NODE_WIDTH),
-		0,
-	);
-	const maxY = Math.max(
-		...nodes.map((node) => node.position.y + NODE_HEIGHT),
-		0,
-	);
-	const minX = Math.min(...nodes.map((node) => node.position.x), 0);
-	const minY = Math.min(...nodes.map((node) => node.position.y), 0);
+	// One pass for all four bounds: four `Math.max(...nodes.map(...))` spreads
+	// allocated four arrays on every render of a panel that re-renders on every
+	// pan and zoom of the viewport.
+	let maxX = 0;
+	let minX = 0;
+	let maxY = 0;
+	let minY = 0;
+	for (const node of nodes) {
+		const right = node.position.x + NODE_WIDTH;
+		const bottom = node.position.y + NODE_HEIGHT;
+		if (right > maxX) maxX = right;
+		if (node.position.x < minX) minX = node.position.x;
+		if (bottom > maxY) maxY = bottom;
+		if (node.position.y < minY) minY = node.position.y;
+	}
 	return maxX - minX > 1_200 || maxY - minY > 820;
 }
 
@@ -177,7 +181,12 @@ function Canvas() {
 		visible: number;
 		edges: number;
 	} | null>(null);
-	const largeGraph = graphNeedsTopView(nodes, edges);
+	// The bounds only change when the graph is re-laid-out, not when the
+	// viewport moves, so this is not recomputed on every pan.
+	const largeGraph = useMemo(
+		() => graphNeedsTopView(nodes, edges),
+		[nodes, edges],
+	);
 	const flow = useReactFlow<FnNode, Edge>();
 	const selectFn = useAnalysisStore((s) => s.selectFn);
 	const funcs = useAnalysisStore((s) => s.funcs);
@@ -279,7 +288,6 @@ function Canvas() {
 						proOptions={{ hideAttribution: true }}
 						className="bg-background"
 					>
-						<Background gap={18} size={1} />
 						<Controls showInteractive={false} />
 						{largeGraph && (
 							<div className="pointer-events-none absolute right-3 bottom-3 z-10 flex flex-col items-end gap-1.5">

@@ -82,6 +82,8 @@ export function useResizableColumn(
 	const [width, setWidth] = useState(() => initial(window.innerWidth));
 	const handleEl = useRef<HTMLDivElement | null>(null);
 	const dragging = useRef(false);
+	/** The grid's edges as of the drag's first move, so a move never reads layout. */
+	const origin = useRef<DOMRect | null>(null);
 	/** The width, as the grid sees it. */
 	const paint = useCallback(
 		(next: number) => {
@@ -144,11 +146,16 @@ export function useResizableColumn(
 	 * two share the same edges, and the grid is a value the caller already has.
 	 * A divider that needed a ref to its own panel to find its own edge would be
 	 * a divider that could not answer a drag before it had been mounted.
+	 *
+	 * A drag reuses the edges captured when it began. Measuring per move would
+	 * interleave a read with the write `paint` makes and force the browser to
+	 * lay the whole grid out again between every frame, which is the one thing
+	 * a sixty-hertz drag cannot afford.
 	 */
 	const fromPointer = useCallback(
 		(clientX: number): number | null => {
-			if (!grid) return null;
-			const box = grid.getBoundingClientRect();
+			const box = origin.current ?? grid?.getBoundingClientRect();
+			if (!box) return null;
 			return fit(
 				side === "start" ? clientX - box.left : box.right - clientX,
 			);
@@ -179,16 +186,18 @@ export function useResizableColumn(
 	const onPointerMove = useCallback(
 		(event: ReactPointerEvent<HTMLDivElement>) => {
 			if (!dragging.current) return;
+			origin.current ??= grid?.getBoundingClientRect() ?? null;
 			const next = fromPointer(event.clientX);
 			if (next !== null) paint(next);
 		},
-		[fromPointer, paint],
+		[fromPointer, grid, paint],
 	);
 
 	const onPointerUp = useCallback(
 		(event: ReactPointerEvent<HTMLDivElement>) => {
 			if (!dragging.current) return;
 			dragging.current = false;
+			origin.current = null;
 			endDragSuppressSelect("col");
 			if (handleEl.current) delete handleEl.current.dataset.dragging;
 			if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -210,6 +219,7 @@ export function useResizableColumn(
 		const stop = () => {
 			if (!dragging.current) return;
 			dragging.current = false;
+			origin.current = null;
 			// A drag released off the handle leaves the line lit otherwise, and a
 			// divider that stays highlighted looks stuck.
 			if (handleEl.current) delete handleEl.current.dataset.dragging;

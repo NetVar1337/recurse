@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 @import "./chrome.css";
 @custom-variant dark (&:is(.dark *));
 
@@ -203,4 +202,23 @@ div.react-flow__controls {
 }
 .react-flow__controls .react-flow__controls-button.disabled svg {
 	fill: var(--muted-foreground);
+}
+
+/* Motion, for the analyst who has asked for less of it.
+ *
+ * The loaders and the thinking indicator are the only things here that move on
+ * their own, and they are exactly the kind of repeated motion that a
+ * motion-sensitive reader needs to be able to switch off. Durations are
+ * flattened rather than removed so that a transition still *ends* where it
+ * would have: an element that finishes at a different state than it started in
+ * would otherwise snap. */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
 }

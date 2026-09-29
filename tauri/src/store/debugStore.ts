@@ -6,6 +6,7 @@ import { pltSlot, shortName } from "../lib/debugCalls";
 import { moduleAt, nearestSymbol } from "../lib/debugModules";
 import { printableAt, STRING_WINDOW } from "../lib/debugModules";
 import { appendOutput, type OutputChunk } from "../lib/debugOutput";
+import { createFrameBatch } from "../lib/frameBatch";
 import {
 	countForward,
 	DISASM_MIN_FORWARD,
@@ -120,7 +121,6 @@ interface DebugState {
 	output: OutputChunk[];
 	/** ASLR/PIE load bias: runtime − static. */
 	bias: number;
-	log: string[];
 	busy: boolean;
 	/** A session-wide op failure, shown once at the top of the debugger. */
 	error: string | null;
@@ -259,7 +259,6 @@ const initial = {
 	frames: [] as DebugFrame[],
 	output: [] as OutputChunk[],
 	bias: 0,
-	log: [] as string[],
 	busy: false,
 	error: null as string | null,
 	disasmError: null as string | null,
@@ -293,11 +292,6 @@ const initial = {
  */
 function errText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
-}
-
-/** Append a line to the capped debug log. */
-function appendLog(line: string): void {
-	useDebugStore.setState((s) => ({ log: [...s.log, line].slice(-300) }));
 }
 
 /** Re-fetch the breakpoint list. */
@@ -422,6 +416,53 @@ function applySnapshot(snapshot: DebugSnapshot): void {
 }
 
 /**
+ * One chunk of the debuggee's stdout, held until its frame.
+ *
+ * The generation is carried with the text rather than read at commit time: a
+ * debuggee that has been replaced by the time the frame lands must not have the
+ * old process's last words appended under the new one's.
+ */
+interface PendingOutput {
+	/** The session generation the text belongs to. */
+	gen: number;
+	/** The text, verbatim. */
+	text: string;
+	/** True for the analyst's own input, false for what the program printed. */
+	echo?: boolean;
+}
+
+/**
+ * Commit queued stdout to the transcript.
+ *
+ * @param items - The chunks, oldest first.
+ */
+function commitOutput(items: PendingOutput[]): void {
+	if (items.length === 0) return;
+	const gen = useDebugStore.getState().eventGen;
+	// A queued chunk from a replaced session is already out of date, exactly as
+	// an event that arrives after the swap would be.
+	const live = items.filter((i) => i.gen >= gen);
+	if (live.length === 0) return;
+	useDebugStore.setState((s) => {
+		let output = s.output;
+		for (const item of live) {
+			output = appendOutput(output, item.text, { echo: item.echo });
+		}
+		return { output };
+	});
+}
+
+/**
+ * The debuggee's stdout, queued to land a frame at a time.
+ *
+ * A program that prints quickly produces events far faster than the screen
+ * refreshes, and committing each one is a re-render of the whole debugger
+ * panel plus a forced layout to keep the pane pinned to the bottom. A chatty
+ * debuggee should read as a scroll of text, not a flicker.
+ */
+const outputBatch = createFrameBatch<PendingOutput>(commitOutput);
+
+/**
  * Fold one pushed event into the store.
  *
  * @param event - What the session or the host said.
@@ -441,9 +482,7 @@ function applyEvent(event: DebugEvent): void {
 			return;
 		case "output":
 			if (!event.text) return;
-			useDebugStore.setState((s) => ({
-				output: appendOutput(s.output, event.text),
-			}));
+			outputBatch.push({ gen: event.gen, text: event.text });
 			return;
 		case "trace_appended":
 			useDebugStore.setState((s) => ({
@@ -485,6 +524,10 @@ async function readBytes(addr: number): Promise<DebugMemory | null> {
  * screen; it is dropped here, at the boundary where a new process takes over.
  */
 function clearProcessState(): void {
+	// Anything still queued belongs to the debuggee that is being replaced, and
+	// committing it now would open the new process's transcript with the old
+	// process's last words.
+	outputBatch.drop();
 	useDebugStore.setState((s) => ({
 		pid: null,
 		stop: null,
@@ -551,20 +594,18 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 		const stateBefore = get().state;
 		if (op === "continue" || op === "step") set({ state: "running" });
 		if (SESSION_OPS.has(op)) clearProcessState();
-		appendLog(`> ${op}${args ? ` ${JSON.stringify(args)}` : ""}`);
 		try {
 			const out = await api.debugCommand(op, args);
-			appendLog(JSON.stringify(out));
 			if (STOP_OPS.has(op)) {
 				await applyStop(out as DebugStop);
 			} else if (op === "detach" || op === "kill") {
 				// Detaching or killing ends the session on purpose: the same clean
-				// exit path as a process that ran to completion. The op transcript
-				// and the follow preference are the viewer's, not the process's, so
-				// they survive; its stdout does not, being per-process.
+				// exit path as a process that ran to completion. The follow
+				// preference is the viewer's, not the process's, so it survives;
+				// the process's stdout does not, being per-process.
+				outputBatch.drop();
 				set((s) => ({
 					...initial,
-					log: s.log,
 					follow: s.follow,
 					sessionGen: s.sessionGen + 1,
 				}));
@@ -592,7 +633,6 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 		} catch (e) {
 			const message = errText(e);
 			set({ error: message, state: stateBefore });
-			appendLog(`! ${message}`);
 			throw e;
 		} finally {
 			set({ busy: false });
@@ -808,6 +848,9 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 		// Stamped for the same reason as `pollOutput`: a send that lands after the
 		// process was replaced must not echo into the new one's transcript.
 		const gen = get().sessionGen;
+		// The stamp the queue's own filter compares against, read at the same
+		// moment so the echo is filtered exactly like a pushed chunk would be.
+		const stamp = get().eventGen;
 		try {
 			await api.debugCommand("stdin", { data: text });
 			if (get().sessionGen !== gen) return;
@@ -817,9 +860,12 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 			// is the one place that works on every backend: what was sent is
 			// exactly what appears, tagged so the pane can style it apart from the
 			// debuggee's own output.
-			set((s) => ({
-				output: appendOutput(s.output, text, { echo: true }),
-			}));
+			//
+			// Queued with the program output rather than written straight through,
+			// because the transcript is a conversation in one order: an echo that
+			// jumped ahead of output the debuggee had already printed would put
+			// the analyst's own line above the reply to it.
+			outputBatch.push({ gen: stamp, text, echo: true });
 		} catch (e) {
 			set({ error: errText(e) });
 		}
@@ -846,6 +892,9 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 	},
 
 	disconnect: async () => {
+		// The channel is gone, so nothing more will be delivered on it; holding
+		// queued text would only replay it into a pane nobody is watching.
+		outputBatch.drop();
 		set({ connected: false });
 	},
 
@@ -872,5 +921,8 @@ export const useDebugStore = create<DebugState>((set, get) => ({
 		await get().run("kill");
 	},
 
-	reset: () => set({ ...initial }),
+	reset: () => {
+		outputBatch.drop();
+		set({ ...initial });
+	},
 }));

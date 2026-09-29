@@ -147,7 +147,10 @@ export function DisasmBytes({
 			{rows.map((row) => (
 				<div
 					key={row.address}
-					className="grid min-w-max gap-x-2 px-3 py-px"
+					// A raw dump is 16 KB by default — a thousand rows, read by
+					// scrolling. Skipping the off-screen ones is most of what a
+					// windowing pass would buy, for none of its machinery.
+					className="offscreen-row grid min-w-max gap-x-2 px-3 py-px"
 					style={{
 						gridTemplateColumns: showAscii
 							? "19ch 48ch 1fr"

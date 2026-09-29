@@ -1,12 +1,20 @@
 import { Database, ListTree } from "lucide-react";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 
-import { DataRegionsPanel } from "@/components/DataRegionsPanel";
 import { FunctionList } from "@/components/FunctionList";
 import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
+
+// The memory map, deferred until the tab is opened. It pulls the stack splitter
+// and the disassembly helpers in with it, and the Functions tab is what the
+// sidebar shows on arrival.
+const DataRegionsPanel = lazy(() =>
+	import("@/components/DataRegionsPanel").then((m) => ({
+		default: m.DataRegionsPanel,
+	})),
+);
 
 /** One panel the sidebar can show. */
 type SidebarTab = "functions" | "data";
@@ -92,7 +100,19 @@ export function Sidebar() {
 					);
 				})}
 			</div>
-			{tab === "functions" ? <FunctionList /> : <DataRegionsPanel />}
+			{tab === "functions" ? (
+				<FunctionList />
+			) : (
+				<Suspense
+					fallback={
+						<div className="text-muted-foreground px-3 py-3 text-xs">
+							loading memory map…
+						</div>
+					}
+				>
+					<DataRegionsPanel />
+				</Suspense>
+			)}
 		</div>
 	);
 }

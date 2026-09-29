@@ -40,17 +40,22 @@ export interface ButtonProps
 	asChild?: boolean;
 }
 
-const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-	({ className, variant, size, asChild = false, ...props }, ref) => {
-		const Comp = asChild ? Slot : "button";
-		return (
-			<Comp
-				className={cn(buttonVariants({ variant, size, className }))}
-				ref={ref}
-				{...props}
-			/>
-		);
-	},
+// Memoized: a button is cheap on its own, but the panels that hold hundreds of
+// them re-render whenever anything above them does, and a re-render that could
+// have been skipped is the whole cost.
+const Button = React.memo(
+	React.forwardRef<HTMLButtonElement, ButtonProps>(
+		({ className, variant, size, asChild = false, ...props }, ref) => {
+			const Comp = asChild ? Slot : "button";
+			return (
+				<Comp
+					className={cn(buttonVariants({ variant, size, className }))}
+					ref={ref}
+					{...props}
+				/>
+			);
+		},
+	),
 );
 Button.displayName = "Button";
 

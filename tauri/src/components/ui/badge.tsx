@@ -26,10 +26,16 @@ export interface BadgeProps
 		React.HTMLAttributes<HTMLDivElement>,
 		VariantProps<typeof badgeVariants> {}
 
-function Badge({ className, variant, ...props }: BadgeProps) {
+// Memoized, because a list of badges — attached context items, a run's findings
+// — re-renders with its list, and none of the badges in it have changed.
+const Badge = React.memo(function Badge({
+	className,
+	variant,
+	...props
+}: BadgeProps) {
 	return (
 		<div className={cn(badgeVariants({ variant }), className)} {...props} />
 	);
-}
+});
 
 export { Badge, badgeVariants };

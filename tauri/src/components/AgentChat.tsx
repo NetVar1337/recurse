@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useRef, useState, type RefObject } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -303,7 +303,23 @@ function ReasoningBlock({ text }: { text: string }) {
 	);
 }
 
-function AssistantMessage({
+/**
+ * One assistant turn: its reasoning, its tool calls, and its answer.
+ *
+ * Memoized because a streaming reply re-renders the whole transcript on every
+ * frame, and every settled turn in it is a turn that did not change. Without
+ * this, a two-hundred-turn conversation re-renders all two hundred turns once a
+ * frame for the sake of the one being written.
+ *
+ * `blocks` is compared by identity, which the store guarantees: a turn that has
+ * not been appended to is handed over as the very same array.
+ *
+ * @param props.blocks - The turn's blocks, in the order they happened.
+ * @param props.pending - Whether the turn is still being written.
+ * @param props.error - The turn's failure, when it failed.
+ * @returns The rendered turn.
+ */
+const AssistantMessage = memo(function AssistantMessage({
 	blocks,
 	pending,
 	error,
@@ -345,4 +361,4 @@ function AssistantMessage({
 			)}
 		</div>
 	);
-}
+});
