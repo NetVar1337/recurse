@@ -133,10 +133,40 @@ export function tokenizeAsm(instr: string): Token[] {
  * immediates), IDA-style. Comments are handled separately by
  * [`DisasmComment`].
  */
+/**
+ * Render one instruction with per-token colour: the mnemonic, its registers and
+ * its immediates each read differently, so the shape of the line is legible
+ * without reading it. The `; …` suffix is a separate fact about the line and is
+ * rendered by [`DisasmComment`].
+ *
+ * @param props.text - The instruction, without its comment.
+ * @returns One span per token, coloured by kind.
+ *
+ * @example
+ * <DisasmInstr text="mov eax, 0x3" />
+ */
 export function DisasmInstr({ text }: { text: string }): ReactNode {
+	return <AsmTokens tokens={tokenizeAsm(text)} />;
+}
+
+/**
+ * Render instructions that have already been tokenized.
+ *
+ * Taking the tokens rather than the text is what lets a caller tokenize once and
+ * reuse the result. A control-flow graph shows the same instructions in many
+ * places — once per block that contains them — and re-splitting them per render
+ * was a per-character pass over every instruction in view.
+ *
+ * @param props.tokens - The instruction's tokens.
+ * @returns One span per token, coloured by kind.
+ *
+ * @example
+ * <AsmTokens tokens={tokenizeAsm("mov eax, 0x3")} />
+ */
+export function AsmTokens({ tokens }: { tokens: Token[] }): ReactNode {
 	return (
 		<>
-			{tokenizeAsm(text).map((t, i) => {
+			{tokens.map((t, i) => {
 				const cls = TOKEN_CLASS[t.kind];
 				return cls ? (
 					<span key={i} className={cls}>

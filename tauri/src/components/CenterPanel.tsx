@@ -24,6 +24,7 @@ import { ReconPanel } from "@/components/ReconPanel";
 import { cn } from "@/lib/utils";
 import { chrome } from "@/lib/chrome";
 import { callTarget } from "@/lib/calls";
+import { frameOf, type Frame } from "@/lib/debugVars";
 import { VarNameChip } from "@/components/VarNameChip";
 import { FunctionVariables } from "@/components/VariableList";
 import {
@@ -187,13 +188,12 @@ function frameOpsFor(
  * active-row treatment used by the function listing.
  *
  * @param props.op - The instruction to render.
- * @param props.frameOps - The function's instructions, already normalized for
- *   variable naming. Mapped by the caller, not here: a listing of M rows would
- *   otherwise map M instructions M times over.
+ * @param props.frame - How the function addresses its frame, worked out once by
+ *   the caller. Reading it per row would walk the whole function once per row.
  * @returns The row element.
  *
  * @example
- * <OpRow op={op} frameOps={frameOps} active={op.addr === selectedAddress} />
+ * <OpRow op={op} frame={frame} active={op.addr === selectedAddress} />
  */
 function OpRow({
 	op,
@@ -206,12 +206,16 @@ function OpRow({
 	showComments,
 	wideSpacing,
 	func,
-	frameOps,
+	frame,
 }: {
 	/** The function this instruction belongs to, for its variable names. */
 	func?: number | null;
-	/** The function's instructions, which say how it addresses its frame. */
-	frameOps?: FrameOp[];
+	/**
+	 * How the function addresses its frame, worked out once for the whole
+	 * listing. Each row needs it, and reading it per row walked every instruction
+	 * of the function once per instruction.
+	 */
+	frame?: Frame;
 	op: {
 		addr: number;
 		bytes?: string | null;
@@ -284,11 +288,7 @@ function OpRow({
 			>
 				{instr && <DisasmInstr text={instr} />}
 				{showComments !== false && <DisasmComment comment={comment} />}
-				<VarNameChip
-					func={func ?? null}
-					insns={frameOps}
-					text={instr}
-				/>
+				<VarNameChip func={func ?? null} frame={frame} text={instr} />
 				{typeof op.jump === "number" && (
 					<span className="text-asm-jump"> → {fmtAddr(op.jump)}</span>
 				)}
@@ -325,9 +325,12 @@ export function CenterPanel() {
 	// (decompile / raw console on native). Undefined = older host, show them.
 	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
 	const binaryPath = useBinaryStore((s) => s.binary?.path);
-	// One normalization for the whole listing, so opening a function is O(n)
-	// rather than one pass per row.
-	const frameOps = useMemo(() => frameOpsFor(asm?.ops), [asm?.ops]);
+	// The frame belongs to the function, not to a row, so it is worked out once
+	// for the whole listing rather than once per instruction.
+	const frame = useMemo(
+		() => frameOf(frameOpsFor(asm?.ops) ?? []),
+		[asm?.ops],
+	);
 	// Coloring walks every character of the source, so it is done when the
 	// source changes and not when the window does.
 	const highlighted = useMemo(
@@ -1038,7 +1041,7 @@ export function CenterPanel() {
 												key={op.addr}
 												op={op}
 												func={selectedAddr}
-												frameOps={frameOps}
+												frame={frame}
 												target={callTarget(
 													op,
 													funcByAddr,
