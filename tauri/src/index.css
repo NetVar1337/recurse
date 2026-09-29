@@ -1,5 +1,10 @@
 @import "tailwindcss";
 @import "./chrome.css";
+/* Bundled locally so the Tauri build renders identically offline. The Inter
+   `opsz` cut carries the optical-size axis, which the app needs: its dense
+   10–11px labels look muddy without it. */
+@import "@fontsource-variable/inter/opsz.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -101,16 +106,42 @@ body,
 
 body {
 	@apply bg-background text-foreground antialiased;
+	/* Inter (variable) for prose/controls, JetBrains Mono for code and data —
+	   the same pairing VS Code and Cursor ship, so the app reads as native
+	   developer tooling instead of a web page. System fonts stay as the last
+	   resort so a missing bundle degrades quietly. */
 	font-family:
-		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+		"Inter Variable",
+		"Inter",
+		-apple-system,
+		BlinkMacSystemFont,
+		"Segoe UI",
+		Roboto,
+		Helvetica,
+		Arial,
 		sans-serif;
 	font-size: 13px;
+	font-feature-settings:
+		"cv02" 1,
+		"cv03" 1,
+		"cv04" 1,
+		"cv11" 1;
+	/* Drive Inter's optical-size axis off the rendered size so small text gets
+	   the tighter, higher-contrast cut instead of a shrunken display cut. */
+	font-optical-sizing: auto;
 	overflow: hidden;
 }
 
 .font-mono {
 	font-family:
-		ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+		"JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+		SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+	/* Deliberately no `zero`/dotted-zero or stylistic-set features: these
+	   columns are addresses, offsets and hex bytes, where a slashed or dotted
+	   0 is actively ambiguous. */
+	/* Slight negative tracking; the app's `ch`-sized columns (asm addresses,
+	   byte dumps) self-compensate because `ch` excludes letter-spacing. */
+	letter-spacing: -0.01em;
 }
 
 /* compact scrollbars (WebKit) */

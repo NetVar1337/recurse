@@ -553,7 +553,9 @@ body.dragging-suppress-select-row {
 .ui-kbd {
 	margin-left: auto;
 	padding-left: var(--space-3);
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family:
+		"JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+		SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 10px;
 	font-weight: 400;
 	letter-spacing: 0;
