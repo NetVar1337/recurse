@@ -1,4 +1,5 @@
 import { api, pickBinary } from "@/api";
+import { THEMES } from "@/lib/themes";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useDebugStore } from "@/store/debugStore";
@@ -10,7 +11,20 @@ import type { CenterTab, Function } from "@/types";
 /** One thing the app can be asked to do, wherever it is asked from. */
 export interface Command {
 	id: string;
+	/** How the palette lists it, which is also what the palette filters on. */
 	title: string;
+	/**
+	 * How the top-bar menu words it, when the menu needs a different wording
+	 * from the palette.
+	 *
+	 * The palette lists every command flat with no heading, so a command that
+	 * only means something in context has to carry that context in its own
+	 * title to be findable by typing. A menu has a heading above the group, so
+	 * the same words are read twice. This is the one command in the app that
+	 * needs it, and it is here rather than special-cased in the menu because the
+	 * mismatch is a property of the command, not of either place it is shown.
+	 */
+	menuTitle?: string;
 	/** The keyboard shortcut to show beside it, when there is one. */
 	hint?: string;
 	run: () => void;
@@ -35,6 +49,7 @@ export interface Command {
 export const MENU = {
 	file: "File",
 	view: "View",
+	appearance: "Appearance",
 	go: "Go",
 	run: "Run",
 	settings: "Settings",
@@ -52,6 +67,17 @@ export type MenuName = (typeof MENU)[keyof typeof MENU];
  * an empty panel is worse than no header, because it says there is nothing here
  * and is right.
  *
+ * Appearance sits next to View because it is the part of View that was never
+ * about the view. A menu holding ten themes and three zoom steps does not belong
+ * under a heading about panels and disassembly; splitting it out costs one menu
+ * and leaves both halves saying what they are.
+ *
+ * View keeps its place for what a panel publishes to it, and is absent from the
+ * bar when nothing has: an empty menu that opens onto a blank panel says there
+ * is nothing here and is right, which is worse than not being there. Its two own
+ * commands are gone — the chat has a button in the activity bar and a shortcut,
+ * and a second route to the same two places is a second thing to keep straight.
+ *
  * Settings is last, and is its own menu rather than a section under File: it is
  * the one menu a reader goes looking for by name, and having to know that the
  * model picker and the debugger's settings are filed under "File ▸ Settings" is
@@ -60,6 +86,7 @@ export type MenuName = (typeof MENU)[keyof typeof MENU];
 export const MENU_ORDER: readonly MenuName[] = [
 	MENU.file,
 	MENU.view,
+	MENU.appearance,
 	MENU.go,
 	MENU.run,
 	MENU.settings,
@@ -160,28 +187,29 @@ export function buildCommands(): Command[] {
 				run: () => ui.setTab(tab),
 			});
 		}
-		cmds.push({
-			id: "chat",
-			title: "Toggle agent chat",
-			hint: "Ctrl+L",
-			menu: MENU.view,
-			section: "Appearance",
-			run: () => ui.toggleChat(),
-		});
 	}
 	cmds.push(
-		{
-			id: "toggle-theme",
-			title: "Toggle light / dark theme",
-			menu: MENU.view,
-			section: "Appearance",
-			run: () => settings.toggleTheme(),
-		},
+		// One command per theme rather than a submenu, because these are listed
+		// flat in the palette and a submenu there is a dead end. The palette title
+		// is prefixed so typing "theme" finds them — the palette has no heading to
+		// file them under — and the menu title is the bare name, because the menu
+		// has the "Theme" heading right above them and would otherwise read
+		// "Theme: Theme: Tokyo Night". The one in force is ticked, which is how a
+		// reader tells ten names apart without remembering which they are on.
+		...THEMES.map((theme) => ({
+			id: `theme-${theme.id}`,
+			title: `Theme: ${theme.label}`,
+			menuTitle: theme.label,
+			menu: MENU.appearance,
+			section: "Theme",
+			checked: settings.theme === theme.id,
+			run: () => settings.setTheme(theme.id),
+		})),
 		{
 			id: "zoom-in",
 			title: "Zoom in",
 			hint: "Ctrl +",
-			menu: MENU.view,
+			menu: MENU.appearance,
 			section: "Zoom",
 			run: () => void settings.zoomIn(),
 		},
@@ -189,7 +217,7 @@ export function buildCommands(): Command[] {
 			id: "zoom-out",
 			title: "Zoom out",
 			hint: "Ctrl −",
-			menu: MENU.view,
+			menu: MENU.appearance,
 			section: "Zoom",
 			run: () => void settings.zoomOut(),
 		},
@@ -197,7 +225,7 @@ export function buildCommands(): Command[] {
 			id: "zoom-reset",
 			title: "Reset zoom",
 			hint: "Ctrl 0",
-			menu: MENU.view,
+			menu: MENU.appearance,
 			section: "Zoom",
 			run: () => void settings.resetZoom(),
 		},

@@ -122,6 +122,41 @@ describe("sectionsFor", () => {
 		});
 	});
 
+	it("uses a command's menu wording where given, and its own title otherwise", () => {
+		// The palette has no headings, so a command that only means something in
+		// context carries that context in its own title to be findable by typing.
+		// A menu has the heading right above it, so the same words would read
+		// twice. The palette keeps filtering on `title`, so the two must differ
+		// only where one of them has something to hide.
+		const [section] = sectionsFor(
+			"View",
+			[
+				command({
+					title: "Theme: Tokyo Night",
+					menuTitle: "Tokyo Night",
+					menu: "View",
+				}),
+				command({
+					title: "Zoom in",
+					menuTitle: undefined,
+					menu: "View",
+				}),
+			],
+			[],
+		);
+		expect(section.items.map((i) => i.label)).toEqual([
+			"Tokyo Night",
+			"Zoom in",
+		]);
+	});
+
+	it("keeps the menu wording out of the palette by leaving title alone", () => {
+		// The palette builds its list from `title`, so a `menuTitle` must not
+		// become the thing it filters on or the two views stop agreeing.
+		const c = command({ title: "Theme: Dracula", menuTitle: "Dracula" });
+		expect(c.title).toBe("Theme: Dracula");
+	});
+
 	it("carries a command's ticked state into the menu, so a menu can answer which", () => {
 		// The engine in force is asked about more often than it is changed, and it
 		// cannot be answered by a highlighted row the way the header's dropdown

@@ -45,6 +45,8 @@ export interface MenuSection {
 export interface MenuCommand {
 	id: string;
 	title: string;
+	/** Wording for the menu when it differs from the palette's `title`. */
+	menuTitle?: string;
 	hint?: string;
 	run: () => void;
 	/** Set for a command that shows a state rather than doing a thing. */
@@ -137,7 +139,7 @@ export function sectionsFor(
 		if (command.menu !== menu) continue;
 		const item: MenuItem = {
 			id: command.id,
-			label: command.title,
+			label: command.menuTitle ?? command.title,
 			...(command.hint ? { hint: command.hint } : {}),
 			...(command.checked === undefined
 				? {}
