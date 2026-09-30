@@ -203,11 +203,51 @@ div.react-flow__controls {
 	fill: var(--muted-foreground);
 }
 
+/* The chat's own motion. Two things and no more: a turn arriving, and a caret
+ * while a reply is being written.
+ *
+ * Only `opacity` and `transform` are animated, never a layout property, so a new
+ * turn cannot push the rest of the transcript sideways while it fades in — the
+ * one animation a streaming chat must not have, because the transcript is being
+ * read while it happens. `will-change` is deliberately not set: a hundred
+ * settled turns would each hold a compositor layer for a one-off fade. */
+@keyframes chat-turn-in {
+	from {
+		opacity: 0;
+		transform: translateY(3px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.chat-turn {
+	animation: chat-turn-in 180ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* The streaming caret. A soft blink with a held-off phase rather than a hard
+ * one: 1Hz is a flash, and this is on screen for as long as the model takes. */
+@keyframes chat-caret-blink {
+	0%,
+	45% {
+		opacity: 1;
+	}
+	55%,
+	100% {
+		opacity: 0.15;
+	}
+}
+
+.chat-caret {
+	animation: chat-caret-blink 1.1s ease-in-out infinite;
+}
+
 /* Motion, for the analyst who has asked for less of it.
  *
- * The loaders and the thinking indicator are the only things here that move on
- * their own, and they are exactly the kind of repeated motion that a
- * motion-sensitive reader needs to be able to switch off. Durations are
+ * The loaders, the chat's turn fade and its streaming caret are the only things
+ * here that move on their own, and they are exactly the kind of repeated motion
+ * that a motion-sensitive reader needs to be able to switch off. Durations are
  * flattened rather than removed so that a transition still *ends* where it
  * would have: an element that finishes at a different state than it started in
  * would otherwise snap. */

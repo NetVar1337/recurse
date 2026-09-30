@@ -1,4 +1,11 @@
-import { memo, useEffect, useRef, useState, type RefObject } from "react";
+import {
+	memo,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type RefObject,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +34,16 @@ interface Props {
 	inputRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
+/**
+ * How close to the bottom still counts as being at the bottom, in pixels.
+ *
+ * A fraction of a scroll step rather than zero: "scrollTop + clientHeight ===
+ * scrollHeight" is never quite true once a subpixel is involved, and a reader
+ * who has scrolled to the end by dragging would be treated as looking back and
+ * the transcript would stop following.
+ */
+const TAIL_SLOP = 4;
+
 export function AgentChat({ inputRef }: Props) {
 	const messages = useAgentStore((s) => s.messages);
 	const busy = useAgentStore((s) => s.busy);
@@ -47,6 +64,11 @@ export function AgentChat({ inputRef }: Props) {
 		() => !useSessionStore.getState().current,
 	);
 	const scrollRef = useRef<HTMLDivElement>(null);
+	// The transcript's content, observed rather than measured. See the effect
+	// that pins to the bottom for why the two are separate nodes.
+	const transcriptRef = useRef<HTMLDivElement>(null);
+	// Whether the reader is looking back through the transcript.
+	const atTail = useRef(true);
 
 	const provider = useLlmStore((s) => s.provider);
 	const configured = useLlmStore((s) => s.configured);
@@ -59,9 +81,46 @@ export function AgentChat({ inputRef }: Props) {
 		prevBusy.current = busy;
 	}, [busy, refreshSessions]);
 
+	// Follow the tail as the reply grows. A ResizeObserver on the content, not an
+	// effect keyed on `messages` that reads `scrollHeight`: an observer is called
+	// once the browser has already laid out, so the read is free, where reading
+	// it during a commit forces the whole pane to lay out again — and this runs
+	// on every frame of a stream.
+	//
+	// Tail detection is what makes it a chat rather than a ticker. A transcript
+	// that always jumps to the newest token makes scrolling back to re-read an
+	// answer impossible, which is the one thing a long reply makes you want to
+	// do, so the pin only holds while the reader is already at the bottom.
+	const onTranscriptScroll = useCallback(() => {
+		const el = scrollRef.current;
+		if (!el) return;
+		atTail.current =
+			el.scrollHeight - el.scrollTop - el.clientHeight < TAIL_SLOP;
+	}, []);
+
 	useEffect(() => {
-		scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-	}, [messages, busy]);
+		const scroller = scrollRef.current;
+		const content = transcriptRef.current;
+		if (!scroller || !content) return;
+		scroller.addEventListener("scroll", onTranscriptScroll, {
+			passive: true,
+		});
+		const observer = new ResizeObserver(() => {
+			if (atTail.current) scroller.scrollTop = scroller.scrollHeight;
+		});
+		observer.observe(content);
+		return () => {
+			scroller.removeEventListener("scroll", onTranscriptScroll);
+			observer.disconnect();
+		};
+	}, [onTranscriptScroll]);
+
+	// Opening or closing the session list swaps the scroll container's contents
+	// without changing its height, so the observer does not fire for it.
+	useEffect(() => {
+		const el = scrollRef.current;
+		if (el) el.scrollTop = el.scrollHeight;
+	}, [showSessions]);
 
 	const openSessions = () => {
 		setShowSessions(true);
@@ -133,93 +192,77 @@ export function AgentChat({ inputRef }: Props) {
 
 			<div
 				ref={scrollRef}
-				className="scroll-host flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-4"
+				className="scroll-host min-h-0 flex-1 overflow-y-auto"
 			>
-				{showSessions && (
-					<div className="flex flex-col gap-3">
-						{sessionsError && (
-							<div className="bg-destructive/10 text-destructive rounded-md px-3 py-2 text-xs">
-								{sessionsError}
-							</div>
-						)}
-						{sessionsLoading ? (
-							<div className="text-muted-foreground px-2 py-3 text-xs">
-								Loading sessions…
-							</div>
-						) : sessions.length > 0 ? (
-							<ul className="border-border overflow-hidden rounded-[var(--radius-control)] border">
-								{sessions.map((s) => {
-									const active = current?.id === s.id;
-									return (
-										<li key={s.id} className="min-w-0">
-											<button
-												type="button"
-												onClick={() =>
-													void selectSession(s.id)
-												}
-												className={cn(
-													"hover:bg-accent focus-visible:ring-ring flex w-full min-w-0 flex-col px-3 py-2 text-left focus-visible:ring-1",
-													active && "ui-selected",
-												)}
-											>
-												<span className="block max-w-full truncate text-xs font-medium">
-													{s.name}
-												</span>
-												<span className="text-2xs mt-0.5 block truncate opacity-70">
-													{fmtDate(s.updated_at)}
-												</span>
-											</button>
-										</li>
-									);
-								})}
-							</ul>
-						) : (
-							<div className="text-muted-foreground border-border rounded-[var(--radius-control)] border px-3 py-8 text-center text-xs">
-								No chats yet. Start one with New.
-							</div>
-						)}
-					</div>
-				)}
-				{!showSessions &&
-					messages.map((m) => (
-						<div key={m.id}>
-							{m.role === "user" ? (
-								<div className="flex justify-end">
-									<div className="bg-secondary text-secondary-foreground max-w-[92%] rounded-lg px-2.5 py-2 text-xs leading-relaxed break-words whitespace-pre-wrap">
-										{m.blocks
-											.filter((b) => b.kind === "content")
-											.map((b) =>
-												b.kind === "content"
-													? b.text
-													: "",
-											)
-											.join("")}
-										{m.contextRefs &&
-											m.contextRefs.length > 0 && (
-												<div className="mt-1.5 flex flex-wrap gap-1">
-													{m.contextRefs.map(
-														(ref, i) => (
-															<span
-																key={i}
-																className="bg-foreground/10 text-2xs rounded px-1 py-px font-mono"
-															>
-																{ref}
-															</span>
-														),
-													)}
-												</div>
-											)}
-									</div>
+				{/* The observed element. Separate from the scroller because a
+				    ResizeObserver has to watch the thing that changed size, and the
+				    scroller's own box does not grow as the reply streams — only its
+				    content does. */}
+				<div ref={transcriptRef} className="flex flex-col gap-2.5 p-4">
+					{showSessions && (
+						<div className="flex flex-col gap-3">
+							{sessionsError && (
+								<div className="bg-destructive/10 text-destructive rounded-md px-3 py-2 text-xs">
+									{sessionsError}
 								</div>
+							)}
+							{sessionsLoading ? (
+								<div className="text-muted-foreground px-2 py-3 text-xs">
+									Loading sessions…
+								</div>
+							) : sessions.length > 0 ? (
+								<ul className="border-border overflow-hidden rounded-[var(--radius-control)] border">
+									{sessions.map((s) => {
+										const active = current?.id === s.id;
+										return (
+											<li key={s.id} className="min-w-0">
+												<button
+													type="button"
+													onClick={() =>
+														void selectSession(s.id)
+													}
+													className={cn(
+														"hover:bg-accent focus-visible:ring-ring flex w-full min-w-0 flex-col px-3 py-2 text-left focus-visible:ring-1",
+														active && "ui-selected",
+													)}
+												>
+													<span className="block max-w-full truncate text-xs font-medium">
+														{s.name}
+													</span>
+													<span className="text-2xs mt-0.5 block truncate opacity-70">
+														{fmtDate(s.updated_at)}
+													</span>
+												</button>
+											</li>
+										);
+									})}
+								</ul>
 							) : (
-								<AssistantMessage
-									blocks={m.blocks}
-									pending={m.pending}
-									error={m.error}
-								/>
+								<div className="text-muted-foreground border-border rounded-[var(--radius-control)] border px-3 py-8 text-center text-xs">
+									No chats yet. Start one with New.
+								</div>
 							)}
 						</div>
-					))}
+					)}
+					{!showSessions &&
+						messages.map((m) =>
+							m.role === "user" ? (
+								<UserMessage
+									key={m.id}
+									blocks={m.blocks}
+									contextRefs={m.contextRefs}
+								/>
+							) : (
+								<div key={m.id}>
+									<AssistantMessage
+										blocks={m.blocks}
+										pending={m.pending}
+										error={m.error}
+									/>
+								</div>
+							),
+						)}
+				</div>
 			</div>
 
 			<div className="border-border border-t px-3 py-2">
@@ -304,6 +347,49 @@ function ReasoningBlock({ text }: { text: string }) {
 }
 
 /**
+ * One question the analyst asked, as a bubble against the far edge.
+ *
+ * Memoized for the same reason `AssistantMessage` is: a streaming reply
+ * re-renders the transcript on every frame, and every question already asked is
+ * a question that did not change. Its blocks arrive by identity, so the
+ * comparison is free.
+ *
+ * @param props.blocks - The turn's blocks; only its content is shown.
+ * @param props.contextRefs - Addresses or symbols attached to the question.
+ * @returns The rendered question.
+ */
+const UserMessage = memo(function UserMessage({
+	blocks,
+	contextRefs,
+}: {
+	blocks: UiBlock[];
+	contextRefs?: string[];
+}) {
+	return (
+		<div className="chat-turn flex justify-end">
+			<div className="bg-secondary text-secondary-foreground max-w-[92%] rounded-lg px-2.5 py-2 text-xs leading-relaxed break-words whitespace-pre-wrap">
+				{blocks
+					.filter((b) => b.kind === "content")
+					.map((b) => (b.kind === "content" ? b.text : ""))
+					.join("")}
+				{contextRefs && contextRefs.length > 0 && (
+					<div className="mt-1.5 flex flex-wrap gap-1">
+						{contextRefs.map((ref, i) => (
+							<span
+								key={i}
+								className="bg-foreground/10 text-2xs rounded px-1 py-px font-mono"
+							>
+								{ref}
+							</span>
+						))}
+					</div>
+				)}
+			</div>
+		</div>
+	);
+});
+
+/**
  * One assistant turn: its reasoning, its tool calls, and its answer.
  *
  * Memoized because a streaming reply re-renders the whole transcript on every
@@ -332,7 +418,7 @@ const AssistantMessage = memo(function AssistantMessage({
 		(b) => b.kind !== "content" || b.text.length > 0,
 	);
 	return (
-		<div className="max-w-full min-w-0 text-xs leading-relaxed">
+		<div className="chat-turn max-w-full min-w-0 text-xs leading-relaxed">
 			{blocks.map((b, i) => {
 				switch (b.kind) {
 					case "reasoning":
@@ -353,8 +439,22 @@ const AssistantMessage = memo(function AssistantMessage({
 						return null;
 				}
 			})}
+			{/* A caret rather than an ellipsis. An ellipsis says "there is more
+			    coming and it is nothing in particular"; a caret says the reply is
+			    being written right now, which is what the analyst is waiting on, and
+			    it is the one piece of motion the chat actually needs. Hidden from
+			    assistive tech, which is told the turn is pending by the store. */}
+			{pending && hasAny && (
+				<span
+					aria-hidden
+					className="chat-caret bg-brand ml-0.5 inline-block h-[0.95em] w-[2px] translate-y-[0.15em] rounded-full"
+				/>
+			)}
 			{pending && !hasAny && (
-				<span className="text-muted-foreground animate-pulse">…</span>
+				<span
+					aria-hidden
+					className="chat-caret bg-brand inline-block h-[0.95em] w-[2px] rounded-full"
+				/>
 			)}
 			{error && (
 				<div className="text-destructive mt-1.5 text-xs">{error}</div>
