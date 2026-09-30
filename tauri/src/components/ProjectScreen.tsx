@@ -57,7 +57,7 @@ export function ProjectScreen() {
 	};
 
 	return (
-		<div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center overflow-auto px-6 py-14">
+		<div className="project-screen-scroll mx-auto flex w-full max-w-2xl flex-1 flex-col items-center overflow-auto px-6 py-14">
 			<div className="flex flex-col items-center text-center">
 				<Logo className="h-32 w-auto" />
 				<h1 className="mt-5 text-3xl font-bold tracking-tight">

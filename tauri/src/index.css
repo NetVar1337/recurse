@@ -156,6 +156,15 @@ body {
 	scrollbar-gutter: stable;
 }
 
+.project-screen-scroll {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.project-screen-scroll::-webkit-scrollbar {
+	display: none;
+}
+
 /* CFG graph nodes render their own card — strip React Flow's default box. */
 .react-flow__node-cfgnode {
 	background: transparent;
