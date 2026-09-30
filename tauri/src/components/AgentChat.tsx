@@ -6,6 +6,7 @@ import {
 	useState,
 	type RefObject,
 } from "react";
+import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -265,70 +266,77 @@ export function AgentChat({ inputRef }: Props) {
 				</div>
 			</div>
 
-			<div className="border-border border-t px-3 py-2">
-				<div className="flex w-full flex-col gap-1">
-					<div className="ui-composer">
-						{items.length > 0 && (
-							<div className="flex flex-wrap gap-1 px-1">
-								{items.map((it) => (
-									<Badge
-										key={it.id}
-										variant="secondary"
-										className="text-2xs font-mono"
+			<div className="border-border border-t p-2">
+				<div className="ui-composer">
+					{items.length > 0 && (
+						<div className="flex flex-wrap gap-1 px-1">
+							{items.map((it) => (
+								<Badge
+									key={it.id}
+									variant="secondary"
+									className="text-2xs font-mono"
+								>
+									<span className="max-w-[180px] truncate">
+										{it.label}
+									</span>
+									<button
+										className="hover:text-destructive ml-1"
+										onClick={() => removeItem(it.id)}
+										title="Remove from context"
+										aria-label="Remove from context"
 									>
-										<span className="max-w-[180px] truncate">
-											{it.label}
-										</span>
-										<button
-											className="hover:text-destructive ml-1"
-											onClick={() => removeItem(it.id)}
-											title="Remove from context"
-											aria-label="Remove from context"
-										>
-											×
-										</button>
-									</Badge>
-								))}
-							</div>
-						)}
-						<div className="flex items-end gap-1">
-							<Textarea
-								ref={inputRef}
-								placeholder="e.g. what does sym.main do? disassemble it"
-								rows={1}
-								className="min-h-[var(--control-h)] flex-1 resize-none border-0 bg-transparent px-1.5 py-1.5 shadow-none focus-visible:ring-0"
-								value={input}
-								onChange={(e) => setInput(e.target.value)}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" && !e.shiftKey) {
-										e.preventDefault();
-										doSend();
-									}
-								}}
-							/>
-							{busy ? (
-								<Button
-									variant="toolbar"
-									size="sm"
-									onClick={() => void api.agentCancel()}
-									title="Stop the agent (lands between tool steps)"
-								>
-									Stop
-								</Button>
-							) : (
-								<Button
-									variant="toolbar"
-									size="sm"
-									onClick={doSend}
-									disabled={!input.trim()}
-									title="Send"
-								>
-									Send
-								</Button>
-							)}
+										×
+									</button>
+								</Badge>
+							))}
 						</div>
+					)}
+					<div className="flex items-end gap-1.5">
+						<Textarea
+							ref={inputRef}
+							placeholder="e.g. what does sym.main do? disassemble it"
+							rows={1}
+							className="max-h-40 min-h-[1.25rem] flex-1 resize-none border-0 bg-transparent px-1 py-1 text-xs shadow-none focus-visible:ring-0"
+							value={input}
+							onChange={(e) => setInput(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" && !e.shiftKey) {
+									e.preventDefault();
+									doSend();
+								}
+							}}
+						/>
+						{busy ? (
+							<Button
+								variant="destructive"
+								size="icon"
+								className="size-[1.5rem] rounded-full"
+								onClick={() => void api.agentCancel()}
+								title="Stop the agent (lands between tool steps)"
+								aria-label="Stop the agent"
+							>
+								<Square className="size-2.5 fill-current" />
+							</Button>
+						) : (
+							<Button
+								size="icon"
+								className="size-[1.5rem] rounded-full"
+								onClick={doSend}
+								disabled={!input.trim()}
+								title="Send"
+								aria-label="Send"
+							>
+								<ArrowUp className="size-3" />
+							</Button>
+						)}
 					</div>
-					<ModelPicker />
+					{/* Inside the same box rather than below it. The model is a property
+					    of the message about to be sent, so it belongs on the thing that
+					    sends it; a row of its own made the composer two controls that had
+					    to be read together anyway. */}
+					<div className="flex items-center justify-between gap-2 px-0.5">
+						<ModelPicker />
+					</div>
 				</div>
 			</div>
 		</div>

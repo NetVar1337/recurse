@@ -444,21 +444,30 @@ body.dragging-suppress-select-row {
 	display: flex;
 	width: 100%;
 	flex-direction: column;
-	gap: var(--space-1);
+	gap: 2px;
 	border: 1px solid var(--border);
 	border-radius: var(--radius-control);
 	background: var(--background);
-	padding: var(--space-1);
+	padding: 4px 6px;
+	transition: border-color 120ms ease-out;
+}
+
+/* The focus ring is the input's own, drawn on the box rather than the field, so
+   the whole composer lights up instead of one line of it. */
+.ui-composer:focus-within {
+	border-color: var(--ring);
 }
 
 .ui-composer textarea {
-	min-height: var(--control-h);
+	min-height: 1.25rem;
+	max-height: 10rem;
 	flex: 1 1 auto;
 	resize: none;
 	border: 0;
 	background: transparent;
 	box-shadow: none;
 	outline: none;
+	line-height: 1.45;
 }
 
 .ui-composer textarea:focus,

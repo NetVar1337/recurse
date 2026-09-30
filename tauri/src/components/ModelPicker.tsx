@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	ArrowUpDown,
 	Check,
+	ChevronDown,
 	Eye,
 	EyeOff,
 	ExternalLink,
@@ -494,10 +495,12 @@ export function ModelPicker() {
 				<Button
 					variant="toolbar"
 					size="sm"
-					className="max-w-[220px] truncate"
+					className="ui-model-chip text-2xs text-muted-foreground h-[1.25rem] max-w-[15rem] gap-1 px-1.5 font-normal"
 				>
-					{selectedActiveLabel(providers, model)}
-					<span className="text-muted-foreground">▾</span>
+					<span className="truncate">
+						{selectedActiveLabel(providers, model)}
+					</span>
+					<ChevronDown className="size-2.5 shrink-0 opacity-60" />
 				</Button>
 			</DialogTrigger>
 			<DialogContent className="max-h-[90vh] w-[95vw] max-w-4xl overflow-hidden p-0 sm:max-w-4xl">
