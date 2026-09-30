@@ -4,6 +4,7 @@ import {
 	useContext,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 import {
@@ -37,6 +38,7 @@ import {
 import { useVarRename, VarNameField } from "@/components/VarNameChip";
 import { frameOf, slotIn, type Frame } from "@/lib/debugVars";
 import { useAnalysisStore } from "@/store/analysisStore";
+import { useSettingsStore } from "@/store/settingsStore";
 import type { Function, FunctionGraph } from "@/types";
 
 const BLOCK_W = 380;
@@ -359,7 +361,15 @@ const nodeTypes = { cfgnode: BlockNodeComponent };
 function makeEdge(src: string, dst: number, label: string | undefined): Edge {
 	const taken = label === "T";
 	const failed = label === "F";
-	const color = taken ? "#8fd694" : failed ? "#ff7a5c" : "#69727f";
+	// Read off the document rather than named here: an edge is drawn to SVG by
+	// React Flow, so a class cannot style it, and a literal would leave the
+	// graph in the default palette in all twelve themes.
+	const styles = getComputedStyle(document.documentElement);
+	const color = styles
+		.getPropertyValue(
+			taken ? "--graph-taken" : failed ? "--graph-fall" : "--graph-edge",
+		)
+		.trim();
 	return {
 		id: `${src}->${dst}`,
 		source: src,
@@ -482,9 +492,26 @@ function GraphCanvas({ addr }: { addr: number }) {
 	const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 	const [loading, setLoading] = useState(true);
 	const [err, setErr] = useState<string | null>(null);
+	// Edges carry a resolved colour, because React Flow draws them to SVG and a
+	// class cannot reach them. That makes them a function of the theme, so a
+	// theme change has to rebuild them — but only the edges, from the graph
+	// already fetched, not the whole graph over IPC a second time.
+	const theme = useSettingsStore((s) => s.theme);
+	const graphRef = useRef<FunctionGraph | null>(null);
+	const byAddrRef = useRef(new Map<number, Function>());
+
+	useEffect(() => {
+		if (!graphRef.current) return;
+		setEdges(toGraph(graphRef.current, byAddrRef.current).edges);
+	}, [theme, setEdges]);
 
 	useEffect(() => {
 		let cancelled = false;
+		// The previous function's graph, dropped at once: a theme change arriving
+		// while the next one is still in flight must not repaint edges belonging
+		// to a function that is no longer on screen.
+		graphRef.current = null;
+		byAddrRef.current = new Map();
 		// Read at fetch time rather than subscribing: the address is what decides
 		// which graph to show, and taking the function list as a dependency meant
 		// every background indexing tick re-fetched the graph over IPC and laid it
@@ -502,6 +529,10 @@ function GraphCanvas({ addr }: { addr: number }) {
 					return;
 				}
 				const { nodes: ns, edges: es } = toGraph(g, byAddr);
+				// Kept so a theme change can recolour the edges without going back
+				// over IPC for a graph it already has.
+				graphRef.current = g;
+				byAddrRef.current = byAddr;
 				const placed = await layout(ns, es);
 				// A graph that took a moment to lay out can be overtaken by the
 				// analyst moving to the next function; the old one must not land.

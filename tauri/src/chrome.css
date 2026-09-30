@@ -1,36 +1,15 @@
 /*
- * Chrome tokens. Reuse these instead of one-off radii, control heights, and
- * selection fills. Class names are also exported from src/lib/chrome.ts.
+ * Chrome geometry: control heights, the row rhythm, and the space scale. Every
+ * colour is a theme token and lives in themes.css — this file must not name one,
+ * or a theme other than the default would miss it.
  *
- * --selection          quiet selected/pressed fill (not an inverted slab)
- * --past               debugger text for the code leading into the cursor
- * --changed            a register that moved at the last stop
- * --taken              a conditional branch the cursor is about to take
- * --fall               a conditional branch it is about to skip
  * --control-h          toolbar control height
  * --chrome-h           bar / tab-strip height
  * --radius-control     shared corner radius
  * --space-1/2/3        4 / 8 / 12px rhythm
- * --kbd                shortcut text
- * --warning            non-destructive notice
  */
 
 :root {
-	--selection: rgba(0, 122, 204, 0.14);
-	--selection-foreground: #0b0d12;
-	/* Debugger: the code above the cursor is context, not a record of what ran,
-	 * so it is dimmed rather than filled. Nothing but the cursor row is
-	 * highlighted, which is what keeps a branch from reading as a wall of
-	 * "already executed" it never claimed to be. */
-	--past-foreground: #6b7280;
-	--changed: #b45309;
-	--taken: #0f766e;
-	--fall: #9a3b3b;
-	--peek-foreground: #5b6b78;
-	--warning: #9a6a00;
-	--warning-foreground: #6b4a00;
-	--kbd: #6b7280;
-	--brand: #1f7fd0;
 	--control-h: 1.75rem;
 	--chrome-h: 2.25rem;
 	--activity-w: 3rem;
@@ -40,43 +19,6 @@
 	--space-3: 0.75rem;
 	/* One row height for every data list, so columns line up across panes. */
 	--row-h: 1.125rem;
-
-	--activity-bg: #f3f3f3;
-
-	/* Disassembly palette: colour carries meaning, nothing else. */
-	--asm-addr: #6b7280;
-	--asm-bytes: #9ca3af;
-	--asm-mnemonic: #1f7fd0;
-	--asm-register: #0b4a80;
-	--asm-number: #9a6a00;
-	--asm-string: #9a6a00;
-	--asm-symbol: #0f766e;
-	--asm-jump: #7c3aed;
-}
-
-.dark {
-	--selection: rgba(126, 200, 255, 0.14);
-	--selection-foreground: #e9edf3;
-	--past-foreground: #5f6873;
-	--changed: #f0b429;
-	--taken: #7fd6b0;
-	--fall: #e08b8b;
-	--peek-foreground: #8b98a5;
-	--warning: #e5c07b;
-	--warning-foreground: #e5c07b;
-	--kbd: #69727f;
-	--brand: #7ec8ff;
-
-	--activity-bg: #0e1117;
-
-	--asm-addr: #7d8794;
-	--asm-bytes: #5c6673;
-	--asm-mnemonic: #7fb4e0;
-	--asm-register: #bfe3ff;
-	--asm-number: #e5c07b;
-	--asm-string: #e5c07b;
-	--asm-symbol: #9ad4c0;
-	--asm-jump: #c9a2e0;
 }
 
 @theme inline {
@@ -91,6 +33,14 @@
 	--color-warning-foreground: var(--warning-foreground);
 	--color-kbd: var(--kbd);
 	--color-brand: var(--brand);
+	--color-graph-edge: var(--graph-edge);
+	--color-graph-taken: var(--graph-taken);
+	--color-graph-fall: var(--graph-fall);
+	--color-minimap-bg: var(--minimap-bg);
+	--color-minimap-mask: var(--minimap-mask);
+	--color-minimap-mask-stroke: var(--minimap-mask-stroke);
+	--color-minimap-node: var(--minimap-node);
+	--color-minimap-node-stroke: var(--minimap-node-stroke);
 	--color-asm-addr: var(--asm-addr);
 	--color-asm-bytes: var(--asm-bytes);
 	--color-asm-mnemonic: var(--asm-mnemonic);

@@ -1,6 +1,12 @@
 import { create } from "zustand";
 
 import { api } from "../api";
+import {
+	DEFAULT_THEME,
+	isLightTheme,
+	resolveTheme,
+	themeById,
+} from "../lib/themes";
 import type { Backend } from "../types";
 import { useAnalysisStore } from "./analysisStore";
 import { useBinaryStore } from "./binaryStore";
@@ -32,12 +38,14 @@ function scaleFor(level: number): number {
 	return Math.pow(1.2, level);
 }
 
-export type Theme = "dark" | "light";
+/** The id of the applied theme, e.g. `recurse-dark` or `tokyo-night`. */
+export type ThemeId = string;
 
 interface SettingsState {
 	zoomLevel: number;
 	backend: Backend;
-	theme: Theme;
+	/** The id of the theme in force; see THEMES in src/lib/themes.ts. */
+	theme: ThemeId;
 	/**
 	 * How many instructions of context the debugger CPU view keeps above the
 	 * program counter.
@@ -56,7 +64,7 @@ interface SettingsState {
 	setBackend: (backend: Backend) => Promise<void>;
 	initTheme: () => void;
 	toggleTheme: () => void;
-	setTheme: (theme: Theme) => void;
+	setTheme: (theme: ThemeId) => void;
 	setDebugContext: (n: number) => void;
 	nudgeDebugContext: (delta: number) => void;
 	resetDebugContext: () => void;
@@ -84,19 +92,32 @@ function readInitial(): number {
 }
 
 /**
- * Reads the initial theme from localStorage or system prefers-color-scheme.
+ * Reads the initial theme from localStorage, or from the system when nothing has
+ * been chosen.
  *
- * @returns 'light' or 'dark'.
+ * A stored value of `light` or `dark` is a choice this app made before it had
+ * named themes, and it is read as the Recurse theme of that handedness rather
+ * than discarded. Reinterpreting it keeps the reader on the side of the light
+ * they asked for; writing a fresh default over it would answer a question they
+ * had already answered, in the one setting where doing that is least forgivable.
+ *
+ * @returns The id of the theme to apply.
  */
-function readInitialTheme(): Theme {
+export function readInitialTheme(): string {
 	const v = localStorage.getItem(THEME_KEY);
-	if (v === "light" || v === "dark") return v;
+	// Already a named theme.
+	if (themeById(v)) return v as string;
+	// The old two-valued setting, migrated to the matching Recurse theme.
+	if (v === "light") return "recurse-light";
+	if (v === "dark") return "recurse-dark";
+	// Nothing stored, or something unreadable: follow the system, so a reader
+	// who has never opened the settings still gets a theme they can read.
 	if (typeof window !== "undefined" && window.matchMedia) {
 		return window.matchMedia("(prefers-color-scheme: light)").matches
-			? "light"
-			: "dark";
+			? "recurse-light"
+			: DEFAULT_THEME;
 	}
-	return "dark";
+	return DEFAULT_THEME;
 }
 
 /**
@@ -133,15 +154,29 @@ function readInitialDebugContext(): number {
 }
 
 /**
- * Applies the given theme to document.documentElement.
+ * Applies a theme to the document.
  *
- * @param theme - The theme to apply ('light' or 'dark').
+ * Two things are written, and they are not redundant. `data-theme` selects the
+ * palette, and is the only thing a theme needs. The `dark` class is kept because
+ * `dark:invert-0` on the logo and the `@custom-variant dark` both key off it, so
+ * a light theme that left it off would draw the logo the wrong way round.
+ *
+ * An id that is not a shipped theme is refused rather than written: a theme with
+ * no palette behind it resolves every token to nothing, and the window comes up
+ * with no colours at all instead of with the wrong ones.
+ *
+ * @param id - The theme to apply. Anything unrecognised falls back to the default.
  */
-function applyTheme(theme: Theme) {
+function applyTheme(id: string) {
 	if (typeof document === "undefined") return;
+	const theme = resolveTheme(id);
 	const root = document.documentElement;
-	root.classList.toggle("dark", theme === "dark");
-	root.style.colorScheme = theme;
+	root.dataset.theme = theme.id;
+	root.classList.toggle("dark", !theme.light);
+	// The window's own scrollbars and form controls follow this, and it is what
+	// `color-scheme` in each theme block would set anyway; assigning it here means
+	// a theme that forgot the declaration still gets correct native controls.
+	root.style.colorScheme = theme.light ? "light" : "dark";
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -240,16 +275,23 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 	},
 
 	toggleTheme: () => {
-		const next: Theme = get().theme === "dark" ? "light" : "dark";
+		// Toggle by handedness, not by name: from Tokyo Night this lands on
+		// Recurse Light, which is the other side of the same switch. Stepping
+		// through the twelve in order would make a two-press shortcut a
+		// twelve-press one and a second press land nowhere near the inverse.
+		const next = isLightTheme(get().theme)
+			? "recurse-dark"
+			: "recurse-light";
 		set({ theme: next });
 		localStorage.setItem(THEME_KEY, next);
 		applyTheme(next);
 	},
 
-	setTheme: (theme: Theme) => {
-		set({ theme });
-		localStorage.setItem(THEME_KEY, theme);
-		applyTheme(theme);
+	setTheme: (theme: ThemeId) => {
+		const resolved = resolveTheme(theme);
+		set({ theme: resolved.id });
+		localStorage.setItem(THEME_KEY, resolved.id);
+		applyTheme(resolved.id);
 	},
 
 	setDebugContext: (n: number) => {

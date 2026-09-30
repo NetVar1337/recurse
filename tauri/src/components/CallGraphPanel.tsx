@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/api";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
+import { useSettingsStore } from "@/store/settingsStore";
 import type { CallGraph } from "@/types";
 
 function fmtAddr(a: number): string {
@@ -64,6 +65,27 @@ function FnNodeComponent({ data }: NodeProps<FnNode>) {
 }
 
 const nodeTypes = { fnnode: FnNodeComponent };
+
+/**
+ * Read one of the minimap's colours out of the applied theme.
+ *
+ * The minimap is drawn by React Flow to SVG with colours handed in as props, so
+ * a class cannot reach it and a literal would leave it in the default palette in
+ * every other theme. Each caller asks again on each render, which is what makes
+ * the minimap follow a theme change rather than the theme it was built under.
+ *
+ * @param part - Which part of the minimap: `bg`, `mask`, `mask-stroke`, `node`
+ *   or `node-stroke`.
+ * @returns The colour, trimmed for use as an SVG paint value.
+ *
+ * @example
+ * mini("bg"); // => "rgba(8, 12, 20, 0.94)" under recurse-dark
+ */
+function mini(part: "bg" | "mask" | "mask-stroke" | "node" | "node-stroke") {
+	return getComputedStyle(document.documentElement)
+		.getPropertyValue(`--minimap-${part}`)
+		.trim();
+}
 
 const NODE_WIDTH = 160;
 const NODE_HEIGHT = 44;
@@ -190,6 +212,12 @@ function Canvas() {
 	const flow = useReactFlow<FnNode, Edge>();
 	const selectFn = useAnalysisStore((s) => s.selectFn);
 	const funcs = useAnalysisStore((s) => s.funcs);
+	// Read so this component re-renders when the theme changes. The minimap's
+	// colours are read from the document at render, so without a subscription
+	// here a theme switch would leave the minimap painted in the old palette
+	// until something else happened to re-render it. Assigned nowhere: the
+	// subscription is the point, not the value.
+	useSettingsStore((s) => s.theme);
 
 	const build = async () => {
 		setLoading(true);
@@ -305,12 +333,12 @@ function Canvas() {
 									ariaLabel="Call graph overview"
 									className="border-border pointer-events-auto !relative !right-auto !bottom-auto overflow-hidden rounded-md border shadow-lg"
 									style={{ width: 190, height: 120 }}
-									bgColor="rgba(8, 12, 20, 0.94)"
-									maskColor="rgba(2, 6, 12, 0.72)"
-									maskStrokeColor="rgba(148, 163, 184, 0.55)"
+									bgColor={mini("bg")}
+									maskColor={mini("mask")}
+									maskStrokeColor={mini("mask-stroke")}
 									maskStrokeWidth={1}
-									nodeColor="#64748b"
-									nodeStrokeColor="#94a3b8"
+									nodeColor={mini("node")}
+									nodeStrokeColor={mini("node-stroke")}
 									nodeBorderRadius={2}
 									nodeStrokeWidth={1}
 								/>

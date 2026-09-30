@@ -1,0 +1,581 @@
+/*
+ * Themes. One `[data-theme]` block per palette, each defining the same tokens.
+ *
+ * The tokens live here rather than in index.css/chrome.css so that adding a
+ * theme is a matter of writing one more block that copies the same list, instead
+ * of editing two files that each own half a palette. A theme that misses a token
+ * inherits it from the block above it, which is deliberate: geometry tokens are
+ * not here at all, and a colour a particular theme has no opinion about can fall
+ * through to the default.
+ *
+ * Every block sets `color-scheme`, which is what tells the window whether to
+ * paint its own scrollbars, form controls and spell-check underline for a light
+ * or a dark ground.
+ *
+ * The disassembly palette is the reason a theme is more than six colours. In
+ * here colour carries meaning and nothing else does: a mnemonic, a register, an
+ * immediate, a string, a symbol and a jump target each have to be told apart at a
+ * glance in a 60px-tall pane, so those eight tokens are chosen against each
+ * other rather than picked to match the background.
+ *
+ * Kept in sync with THEMES in src/lib/themes.ts, which is what a menu reads to
+ * list them. The pairing is enforced by a test rather than by hand.
+ */
+
+:root,
+[data-theme="recurse-dark"] {
+	color-scheme: dark;
+	--background: #06070a;
+	--foreground: #e9edf3;
+	--card: #0a0c11;
+	--card-foreground: #e9edf3;
+	--popover: #0e1117;
+	--popover-foreground: #e9edf3;
+	--primary: #e9edf3;
+	--primary-foreground: #06070a;
+	--secondary: #14171d;
+	--secondary-foreground: #e9edf3;
+	--muted: #0e1117;
+	--muted-foreground: #9aa4b2;
+	--accent: #14171d;
+	--accent-foreground: #e9edf3;
+	--destructive: #ff7a5c;
+	--destructive-foreground: #06070a;
+	--border: rgba(255, 255, 255, 0.09);
+	--input: rgba(255, 255, 255, 0.16);
+	--ring: #7ec8ff;
+	--radius: 0.25rem;
+
+	--selection: rgba(126, 200, 255, 0.14);
+	--selection-foreground: #e9edf3;
+	/* Debugger: the code above the cursor is context, not a record of what ran,
+	 * so it is dimmed rather than filled. Nothing but the cursor row is
+	 * highlighted, which is what keeps a branch from reading as a wall of
+	 * "already executed" it never claimed to be. */
+	--past-foreground: #5f6873;
+	--changed: #f0b429;
+	--taken: #7fd6b0;
+	--fall: #e08b8b;
+	--peek-foreground: #8b98a5;
+	--warning: #e5c07b;
+	--warning-foreground: #e5c07b;
+	--kbd: #69727f;
+	--brand: #7ec8ff;
+
+	--activity-bg: #0e1117;
+
+	--asm-addr: #7d8794;
+	--asm-bytes: #5c6673;
+	--asm-mnemonic: #7fb4e0;
+	--asm-register: #bfe3ff;
+	--asm-number: #e5c07b;
+	--asm-string: #e5c07b;
+	--asm-symbol: #9ad4c0;
+	--asm-jump: #c9a2e0;
+
+	/* Graph edges, which are drawn to SVG rather than styled by a class. */
+	--graph-edge: #69727f;
+	--graph-taken: #8fd694;
+	--graph-fall: #ff7a5c;
+	--minimap-bg: rgba(8, 12, 20, 0.94);
+	--minimap-mask: rgba(2, 6, 12, 0.72);
+	--minimap-mask-stroke: rgba(148, 163, 184, 0.55);
+	--minimap-node: #64748b;
+	--minimap-node-stroke: #94a3b8;
+}
+
+[data-theme="recurse-light"] {
+	color-scheme: light;
+	--background: #fbfcfe;
+	--foreground: #0b0d12;
+	--card: #ffffff;
+	--card-foreground: #0b0d12;
+	--popover: #ffffff;
+	--popover-foreground: #0b0d12;
+	--primary: #0b0d12;
+	--primary-foreground: #ffffff;
+	--secondary: #eef1f6;
+	--secondary-foreground: #0b0d12;
+	--muted: #eef1f6;
+	--muted-foreground: #5b6472;
+	--accent: #eef1f6;
+	--accent-foreground: #0b0d12;
+	--destructive: #d4432a;
+	--destructive-foreground: #ffffff;
+	--border: rgba(0, 0, 0, 0.1);
+	--input: rgba(0, 0, 0, 0.16);
+	--ring: #1f7fd0;
+
+	--selection: rgba(0, 122, 204, 0.14);
+	--selection-foreground: #0b0d12;
+	--past-foreground: #6b7280;
+	--changed: #b45309;
+	--taken: #0f766e;
+	--fall: #9a3b3b;
+	--peek-foreground: #5b6b78;
+	--warning: #9a6a00;
+	--warning-foreground: #6b4a00;
+	--kbd: #6b7280;
+	--brand: #1f7fd0;
+
+	--activity-bg: #f3f3f3;
+
+	--asm-addr: #6b7280;
+	--asm-bytes: #9ca3af;
+	--asm-mnemonic: #1f7fd0;
+	--asm-register: #0b4a80;
+	--asm-number: #9a6a00;
+	--asm-string: #9a6a00;
+	--asm-symbol: #0f766e;
+	--asm-jump: #7c3aed;
+
+	--graph-edge: #64748b;
+	--graph-taken: #0f766e;
+	--graph-fall: #c0392b;
+	--minimap-bg: rgba(255, 255, 255, 0.94);
+	--minimap-mask: rgba(250, 250, 250, 0.72);
+	--minimap-mask-stroke: rgba(100, 116, 139, 0.55);
+	--minimap-node: #94a3b8;
+	--minimap-node-stroke: #64748b;
+}
+
+/* VS Code's own dark, which is the one a reader arriving from there expects. */
+[data-theme="dark-plus"] {
+	color-scheme: dark;
+	--background: #1e1e1e;
+	--foreground: #d4d4d4;
+	--card: #252526;
+	--card-foreground: #d4d4d4;
+	--popover: #252526;
+	--popover-foreground: #d4d4d4;
+	--primary: #cccccc;
+	--primary-foreground: #1e1e1e;
+	--secondary: #2d2d2d;
+	--secondary-foreground: #d4d4d4;
+	--muted: #2d2d2d;
+	--muted-foreground: #9d9d9d;
+	--accent: #3a3d41;
+	--accent-foreground: #d4d4d4;
+	--destructive: #f48771;
+	--destructive-foreground: #1e1e1e;
+	--border: #3c3c3c;
+	--input: #3c3c3c;
+	--ring: #3794ff;
+
+	--selection: rgba(38, 79, 120, 0.72);
+	--selection-foreground: #ffffff;
+	--past-foreground: #6e7681;
+	--changed: #cca700;
+	--taken: #89d185;
+	--fall: #f14c4c;
+	--peek-foreground: #8a8a8a;
+	--warning: #cca700;
+	--warning-foreground: #cca700;
+	--kbd: #7f7f7f;
+	--brand: #3794ff;
+
+	--activity-bg: #333333;
+
+	--asm-addr: #858585;
+	--asm-bytes: #6a737d;
+	--asm-mnemonic: #569cd6;
+	--asm-register: #9cdcfe;
+	--asm-number: #b5cea8;
+	--asm-string: #ce9178;
+	--asm-symbol: #4ec9b0;
+	--asm-jump: #c586c0;
+
+	--graph-edge: #6a737d;
+	--graph-taken: #89d185;
+	--graph-fall: #f14c4c;
+	--minimap-bg: rgba(30, 30, 30, 0.94);
+	--minimap-mask: rgba(18, 18, 18, 0.72);
+	--minimap-mask-stroke: rgba(204, 204, 204, 0.4);
+	--minimap-node: #6a737d;
+	--minimap-node-stroke: #9cdcfe;
+}
+
+[data-theme="light-plus"] {
+	color-scheme: light;
+	--background: #ffffff;
+	--foreground: #333333;
+	--card: #f8f8f8;
+	--card-foreground: #333333;
+	--popover: #f8f8f8;
+	--popover-foreground: #333333;
+	--primary: #333333;
+	--primary-foreground: #ffffff;
+	--secondary: #e5e5e5;
+	--secondary-foreground: #333333;
+	--muted: #f3f3f3;
+	--muted-foreground: #6b6b6b;
+	--accent: #e8e8e8;
+	--accent-foreground: #333333;
+	--destructive: #cd3131;
+	--destructive-foreground: #ffffff;
+	--border: #cecece;
+	--input: #cecece;
+	--ring: #005fb8;
+
+	--selection: rgba(173, 214, 255, 0.7);
+	--selection-foreground: #1f1f1f;
+	--past-foreground: #8a8a8a;
+	--changed: #b26a00;
+	--taken: #0f7b6f;
+	--fall: #c72e0f;
+	--peek-foreground: #767676;
+	--warning: #bf8803;
+	--warning-foreground: #7a5d00;
+	--kbd: #7a7a7a;
+	--brand: #005fb8;
+
+	--activity-bg: #f3f3f3;
+
+	--asm-addr: #808080;
+	--asm-bytes: #a0a0a0;
+	--asm-mnemonic: #0000ff;
+	--asm-register: #001080;
+	--asm-number: #098658;
+	--asm-string: #a31515;
+	--asm-symbol: #267f99;
+	--asm-jump: #af00db;
+
+	--graph-edge: #8a8a8a;
+	--graph-taken: #0f7b6f;
+	--graph-fall: #c72e0f;
+	--minimap-bg: rgba(255, 255, 255, 0.94);
+	--minimap-mask: rgba(240, 240, 240, 0.72);
+	--minimap-mask-stroke: rgba(51, 51, 51, 0.35);
+	--minimap-node: #a0a0a0;
+	--minimap-node-stroke: #005fb8;
+}
+
+[data-theme="tokyo-night"] {
+	color-scheme: dark;
+	--background: #1a1b26;
+	--foreground: #c0caf5;
+	--card: #1f2335;
+	--card-foreground: #c0caf5;
+	--popover: #24283b;
+	--popover-foreground: #c0caf5;
+	--primary: #c0caf5;
+	--primary-foreground: #1a1b26;
+	--secondary: #292e42;
+	--secondary-foreground: #c0caf5;
+	--muted: #1f2335;
+	--muted-foreground: #868eb5;
+	--accent: #2f344c;
+	--accent-foreground: #c0caf5;
+	--destructive: #f7768e;
+	--destructive-foreground: #1a1b26;
+	--border: #2f344c;
+	--input: #3b4261;
+	--ring: #7aa2f7;
+
+	--selection: rgba(122, 162, 247, 0.18);
+	--selection-foreground: #e6eaff;
+	--past-foreground: #565f89;
+	--changed: #e0af68;
+	--taken: #9ece6a;
+	--fall: #f7768e;
+	--peek-foreground: #7a83ab;
+	--warning: #e0af68;
+	--warning-foreground: #e0af68;
+	--kbd: #565f89;
+	--brand: #7aa2f7;
+
+	--activity-bg: #16161e;
+
+	--asm-addr: #565f89;
+	--asm-bytes: #414868;
+	--asm-mnemonic: #7aa2f7;
+	--asm-register: #bb9af7;
+	--asm-number: #e0af68;
+	--asm-string: #9ece6a;
+	--asm-symbol: #7dcfff;
+	--asm-jump: #bb9af7;
+
+	--graph-edge: #414868;
+	--graph-taken: #9ece6a;
+	--graph-fall: #f7768e;
+	--minimap-bg: rgba(26, 27, 38, 0.94);
+	--minimap-mask: rgba(16, 16, 26, 0.72);
+	--minimap-mask-stroke: rgba(192, 202, 245, 0.4);
+	--minimap-node: #414868;
+	--minimap-node-stroke: #7aa2f7;
+}
+
+[data-theme="solarized-dark"] {
+	color-scheme: dark;
+	--background: #002b36;
+	--foreground: #93a1a1;
+	--card: #01323d;
+	--card-foreground: #93a1a1;
+	--popover: #04313c;
+	--popover-foreground: #93a1a1;
+	--primary: #93a1a1;
+	--primary-foreground: #002b36;
+	--secondary: #073642;
+	--secondary-foreground: #93a1a1;
+	--muted: #073642;
+	--muted-foreground: #7c9a9d;
+	--accent: #0b4450;
+	--accent-foreground: #c3d5d6;
+	--destructive: #dc322f;
+	--destructive-foreground: #002b36;
+	--border: #0b4450;
+	--input: #17505c;
+	--ring: #268bd2;
+
+	--selection: rgba(38, 139, 210, 0.18);
+	--selection-foreground: #d7e5e6;
+	--past-foreground: #4a5f68;
+	--changed: #b58900;
+	--taken: #2aa198;
+	--fall: #dc322f;
+	--peek-foreground: #6b8087;
+	--warning: #b58900;
+	--warning-foreground: #cb9c00;
+	--kbd: #586e75;
+	--brand: #268bd2;
+
+	--activity-bg: #00252e;
+
+	--asm-addr: #566d76;
+	--asm-bytes: #3f5b63;
+	--asm-mnemonic: #268bd2;
+	--asm-register: #93c5fd;
+	--asm-number: #b58900;
+	--asm-string: #2aa198;
+	--asm-symbol: #859900;
+	--asm-jump: #d33682;
+
+	--graph-edge: #4a5f68;
+	--graph-taken: #2aa198;
+	--graph-fall: #dc322f;
+	--minimap-bg: rgba(0, 43, 54, 0.94);
+	--minimap-mask: rgba(0, 30, 38, 0.72);
+	--minimap-mask-stroke: rgba(147, 161, 161, 0.4);
+	--minimap-node: #3f5b63;
+	--minimap-node-stroke: #268bd2;
+}
+
+[data-theme="solarized-light"] {
+	color-scheme: light;
+	--background: #fdf6e3;
+	--foreground: #586e75;
+	--card: #fdf6e3;
+	--card-foreground: #586e75;
+	--popover: #eee8d5;
+	--popover-foreground: #586e75;
+	--primary: #586e75;
+	--primary-foreground: #fdf6e3;
+	--secondary: #eee8d5;
+	--secondary-foreground: #586e75;
+	--muted: #eee8d5;
+	--muted-foreground: #8a8f7c;
+	--accent: #e6ddc8;
+	--accent-foreground: #586e75;
+	--destructive: #dc322f;
+	--destructive-foreground: #fdf6e3;
+	--border: #ddd6c1;
+	--input: #c9c2ab;
+	--ring: #268bd2;
+
+	--selection: rgba(38, 139, 210, 0.16);
+	--selection-foreground: #2f4247;
+	--past-foreground: #a8a091;
+	--changed: #b58900;
+	--taken: #2aa198;
+	--fall: #dc322f;
+	--peek-foreground: #93a1a1;
+	--warning: #b58900;
+	--warning-foreground: #8a6d00;
+	--kbd: #93a1a1;
+	--brand: #268bd2;
+
+	--activity-bg: #eee8d5;
+
+	--asm-addr: #93a1a1;
+	--asm-bytes: #b0ab98;
+	--asm-mnemonic: #268bd2;
+	--asm-register: #1f5c7a;
+	--asm-number: #b58900;
+	--asm-string: #2aa198;
+	--asm-symbol: #859900;
+	--asm-jump: #d33682;
+
+	--graph-edge: #93a1a1;
+	--graph-taken: #2aa198;
+	--graph-fall: #dc322f;
+	--minimap-bg: rgba(253, 246, 227, 0.94);
+	--minimap-mask: rgba(238, 232, 213, 0.72);
+	--minimap-mask-stroke: rgba(88, 110, 117, 0.35);
+	--minimap-node: #b0ab98;
+	--minimap-node-stroke: #268bd2;
+}
+
+[data-theme="monokai"] {
+	color-scheme: dark;
+	--background: #272822;
+	--foreground: #f8f8f2;
+	--card: #2e2f28;
+	--card-foreground: #f8f8f2;
+	--popover: #32332b;
+	--popover-foreground: #f8f8f2;
+	--primary: #f8f8f2;
+	--primary-foreground: #272822;
+	--secondary: #3e3d32;
+	--secondary-foreground: #f8f8f2;
+	--muted: #2e2f28;
+	--muted-foreground: #b8b6ad;
+	--accent: #3e3d32;
+	--accent-foreground: #f8f8f2;
+	--destructive: #f92672;
+	--destructive-foreground: #272822;
+	--border: #49483e;
+	--input: #5a594f;
+	--ring: #a6e22e;
+
+	--selection: rgba(166, 226, 46, 0.16);
+	--selection-foreground: #f8f8f2;
+	--past-foreground: #75715e;
+	--changed: #e6db74;
+	--taken: #a6e22e;
+	--fall: #f92672;
+	--peek-foreground: #8a8672;
+	--warning: #e6db74;
+	--warning-foreground: #e6db74;
+	--kbd: #75715e;
+	--brand: #a6e22e;
+
+	--activity-bg: #1e1f1a;
+
+	--asm-addr: #8f8f87;
+	--asm-bytes: #6b6b63;
+	--asm-mnemonic: #f92672;
+	--asm-register: #fd971f;
+	--asm-number: #ae81ff;
+	--asm-string: #e6db74;
+	--asm-symbol: #a6e22e;
+	--asm-jump: #66d9ef;
+
+	--graph-edge: #75715e;
+	--graph-taken: #a6e22e;
+	--graph-fall: #f92672;
+	--minimap-bg: rgba(39, 40, 34, 0.94);
+	--minimap-mask: rgba(24, 25, 20, 0.72);
+	--minimap-mask-stroke: rgba(248, 248, 242, 0.4);
+	--minimap-node: #6b6b63;
+	--minimap-node-stroke: #a6e22e;
+}
+
+[data-theme="one-dark"] {
+	color-scheme: dark;
+	--background: #282c34;
+	--foreground: #abb2bf;
+	--card: #21252b;
+	--card-foreground: #abb2bf;
+	--popover: #21252b;
+	--popover-foreground: #abb2bf;
+	--primary: #abb2bf;
+	--primary-foreground: #282c34;
+	--secondary: #3a3f4b;
+	--secondary-foreground: #abb2bf;
+	--muted: #21252b;
+	--muted-foreground: #828997;
+	--accent: #3e4451;
+	--accent-foreground: #abb2bf;
+	--destructive: #e06c75;
+	--destructive-foreground: #282c34;
+	--border: #3e4451;
+	--input: #4b5263;
+	--ring: #61afef;
+
+	--selection: rgba(97, 175, 239, 0.18);
+	--selection-foreground: #e6e6e6;
+	--past-foreground: #5c6370;
+	--changed: #e5c07b;
+	--taken: #98c379;
+	--fall: #e06c75;
+	--peek-foreground: #7f848e;
+	--warning: #e5c07b;
+	--warning-foreground: #e5c07b;
+	--kbd: #5c6370;
+	--brand: #61afef;
+
+	--activity-bg: #21252b;
+
+	--asm-addr: #495162;
+	--asm-bytes: #3b4048;
+	--asm-mnemonic: #c678dd;
+	--asm-register: #e06c75;
+	--asm-number: #d19a66;
+	--asm-string: #98c379;
+	--asm-symbol: #61afef;
+	--asm-jump: #56b6c2;
+
+	--graph-edge: #4b5263;
+	--graph-taken: #98c379;
+	--graph-fall: #e06c75;
+	--minimap-bg: rgba(40, 44, 52, 0.94);
+	--minimap-mask: rgba(26, 30, 36, 0.72);
+	--minimap-mask-stroke: rgba(171, 178, 191, 0.4);
+	--minimap-node: #3b4048;
+	--minimap-node-stroke: #61afef;
+}
+
+[data-theme="dracula"] {
+	color-scheme: dark;
+	--background: #282a36;
+	--foreground: #f8f8f2;
+	--card: #21222c;
+	--card-foreground: #f8f8f2;
+	--popover: #343746;
+	--popover-foreground: #f8f8f2;
+	--primary: #f8f8f2;
+	--primary-foreground: #282a36;
+	--secondary: #343746;
+	--secondary-foreground: #f8f8f2;
+	--muted: #21222c;
+	--muted-foreground: #8b95c4;
+	--accent: #44475a;
+	--accent-foreground: #f8f8f2;
+	--destructive: #ff5555;
+	--destructive-foreground: #282a36;
+	--border: #44475a;
+	--input: #6272a4;
+	--ring: #bd93f9;
+
+	--selection: rgba(189, 147, 249, 0.18);
+	--selection-foreground: #ffffff;
+	--past-foreground: #6272a4;
+	--changed: #ffb86c;
+	--taken: #50fa7b;
+	--fall: #ff5555;
+	--peek-foreground: #7d8bb5;
+	--warning: #ffb86c;
+	--warning-foreground: #ffb86c;
+	--kbd: #6272a4;
+	--brand: #bd93f9;
+
+	--activity-bg: #21222c;
+
+	--asm-addr: #6272a4;
+	--asm-bytes: #4d5666;
+	--asm-mnemonic: #ff79c6;
+	--asm-register: #8be9fd;
+	--asm-number: #bd93f9;
+	--asm-string: #f1fa8c;
+	--asm-symbol: #50fa7b;
+	--asm-jump: #ffb86c;
+
+	--graph-edge: #6272a4;
+	--graph-taken: #50fa7b;
+	--graph-fall: #ff5555;
+	--minimap-bg: rgba(40, 42, 54, 0.94);
+	--minimap-mask: rgba(24, 25, 33, 0.72);
+	--minimap-mask-stroke: rgba(248, 248, 242, 0.4);
+	--minimap-node: #4d5666;
+	--minimap-node-stroke: #bd93f9;
+}

@@ -26,6 +26,7 @@ import {
 	DEBUG_CONTEXT_DEFAULT,
 	DEBUG_CONTEXT_MAX,
 	DEBUG_CONTEXT_MIN,
+	readInitialTheme,
 	useSettingsStore,
 } from "./settingsStore";
 import { api } from "../api";
@@ -258,6 +259,68 @@ describe("settingsStore debugger context depth", () => {
 			DEBUG_CONTEXT_DEFAULT,
 		);
 		expect(store.get("recurse.debugContext")).toBeUndefined();
+	});
+});
+
+describe("settingsStore theme", () => {
+	beforeEach(() => {
+		store.clear();
+	});
+
+	it("applies a named theme and persists its id", () => {
+		useSettingsStore.getState().setTheme("tokyo-night");
+		expect(useSettingsStore.getState().theme).toBe("tokyo-night");
+		expect(store.get("recurse.theme")).toBe("tokyo-night");
+	});
+
+	it("falls back to the default rather than storing an unknown theme", () => {
+		// An id that is not a theme has no palette behind it. Writing it would
+		// leave the reader on the second run with every token resolving to
+		// nothing, so it is refused on the way in rather than on the way out.
+		useSettingsStore.getState().setTheme("nope");
+		expect(useSettingsStore.getState().theme).toBe("recurse-dark");
+		expect(store.get("recurse.theme")).toBe("recurse-dark");
+	});
+
+	it("toggles across the light/dark line rather than through the list", () => {
+		// Stepping through ten themes in order would make a two-press switch a
+		// ten-press one whose second press lands nowhere near the inverse.
+		useSettingsStore.getState().setTheme("dracula");
+		useSettingsStore.getState().toggleTheme();
+		expect(useSettingsStore.getState().theme).toBe("recurse-light");
+		useSettingsStore.getState().toggleTheme();
+		expect(useSettingsStore.getState().theme).toBe("recurse-dark");
+	});
+
+	it("keeps a light theme from toggling to another light theme", () => {
+		useSettingsStore.getState().setTheme("solarized-light");
+		useSettingsStore.getState().toggleTheme();
+		expect(useSettingsStore.getState().theme).toBe("recurse-dark");
+	});
+});
+
+describe("settingsStore theme migration", () => {
+	beforeEach(() => {
+		store.clear();
+	});
+
+	// The theme was "light" or "dark" before there were themes. Reinterpreting
+	// those keeps the reader on the side they asked for; overwriting them with a
+	// fresh default would re-ask a question they had answered, in the one
+	// setting where that is least forgivable.
+	it("reads an old 'light' as Recurse Light", () => {
+		store.set("recurse.theme", "light");
+		expect(readInitialTheme()).toBe("recurse-light");
+	});
+
+	it("reads an old 'dark' as Recurse Dark", () => {
+		store.set("recurse.theme", "dark");
+		expect(readInitialTheme()).toBe("recurse-dark");
+	});
+
+	it("reads an unreadable stored value as the default, not as a theme", () => {
+		store.set("recurse.theme", "{not json");
+		expect(readInitialTheme()).toBe("recurse-dark");
 	});
 });
 

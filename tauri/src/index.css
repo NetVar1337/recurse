@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "./chrome.css";
+/* Every palette, one `[data-theme]` block each. */
+@import "./themes.css";
 /* Bundled locally so the Tauri build renders identically offline. The Inter
    `opsz` cut carries the optical-size axis, which the app needs: its dense
    10–11px labels look muddy without it. */
@@ -7,49 +9,15 @@
 @import "@fontsource-variable/jetbrains-mono/wght.css";
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Geometry, and only geometry. Every colour lives in themes.css, one block per
+ * palette, so a theme is a single self-contained place and the default has to be
+ * named twice if it is ever changed.
+ *
+ * `--radius` sits here rather than with the colours because it is not a colour.
+ */
 :root {
-	--background: #fbfcfe;
-	--foreground: #0b0d12;
-	--card: #ffffff;
-	--card-foreground: #0b0d12;
-	--popover: #ffffff;
-	--popover-foreground: #0b0d12;
-	--primary: #0b0d12;
-	--primary-foreground: #ffffff;
-	--secondary: #eef1f6;
-	--secondary-foreground: #0b0d12;
-	--muted: #eef1f6;
-	--muted-foreground: #5b6472;
-	--accent: #eef1f6;
-	--accent-foreground: #0b0d12;
-	--destructive: #d4432a;
-	--destructive-foreground: #ffffff;
-	--border: rgba(0, 0, 0, 0.1);
-	--input: rgba(0, 0, 0, 0.16);
-	--ring: #1f7fd0;
 	--radius: 0.25rem;
-}
-
-.dark {
-	--background: #06070a;
-	--foreground: #e9edf3;
-	--card: #0a0c11;
-	--card-foreground: #e9edf3;
-	--popover: #0e1117;
-	--popover-foreground: #e9edf3;
-	--primary: #e9edf3;
-	--primary-foreground: #06070a;
-	--secondary: #14171d;
-	--secondary-foreground: #e9edf3;
-	--muted: #0e1117;
-	--muted-foreground: #9aa4b2;
-	--accent: #14171d;
-	--accent-foreground: #e9edf3;
-	--destructive: #ff7a5c;
-	--destructive-foreground: #06070a;
-	--border: rgba(255, 255, 255, 0.09);
-	--input: rgba(255, 255, 255, 0.16);
-	--ring: #7ec8ff;
 }
 
 @theme inline {
