@@ -458,11 +458,30 @@ body.dragging-suppress-select-row {
 	border-color: var(--ring);
 }
 
+/* The composer's text box.
+ *
+ * The height is written by `autoGrow` in AgentChat as the text is typed, up to
+ * a ceiling and no further; `max-height` is that ceiling and `overflow-y: auto`
+ * is what takes over once it is reached. Both are needed: the inline height says
+ * how tall to be, and these two say what happens after.
+ *
+ * The ceiling is COMPOSER_MAX_HEIGHT, and the two must be equal — a CSS ceiling
+ * above the one the arithmetic stops at is a ceiling that never binds, and a
+ * textarea that scrolls from the first line. `composerHeight.test.ts` reads
+ * this value out of the stylesheet and fails if they part company. It is
+ * written in px rather than rem for that reason: 87.75px is not expressible in
+ * rem, and rounding it is a disagreement that clips a line.
+ *
+ * `scrollbar-gutter: stable` for the same reason the transcript has it — a box
+ * that gains a scrollbar as it fills would otherwise shift the send button
+ * sideways on the keystroke that crosses the ceiling. */
 .ui-composer textarea {
-	min-height: 1.25rem;
-	max-height: 10rem;
+	min-height: 1.5rem;
+	max-height: 87.75px;
 	flex: 1 1 auto;
 	resize: none;
+	overflow-y: auto;
+	scrollbar-gutter: stable;
 	border: 0;
 	background: transparent;
 	box-shadow: none;

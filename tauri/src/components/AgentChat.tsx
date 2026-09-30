@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { composerHeight, composerLines } from "@/lib/composerHeight";
 import { api } from "@/api";
 import { Markdown } from "@/components/Markdown";
 import { ToolCallCard } from "@/components/ToolCallCard";
@@ -149,6 +150,29 @@ export function AgentChat({ inputRef }: Props) {
 		const sessionId = useSessionStore.getState().current?.id ?? "";
 		await send(text, ctxs, sessionId);
 	};
+
+	// Grow the box with what is being typed, up to a ceiling, then scroll. Not a
+	// CSS `field-sizing: content` because that is not yet in the WebView this
+	// ships in, and not a height derived from `input` in state because that
+	// re-renders the composer on every keystroke to set a number the DOM already
+	// knows. The height is written straight to the element, the way the divider
+	// drags write their position, so typing causes one style write and no
+	// render.
+	//
+	// Reset to the minimum first: a box that has grown keeps its height when the
+	// text is deleted otherwise, and the box stays tall for one line of typing.
+	const autoGrow = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+		const el = e.currentTarget;
+		// The box's own line height, not a constant: at 11px on 1.45 it is
+		// 15.95px, and assuming 20px made every line of growth a quarter taller
+		// than the text it was making room for.
+		const lineHeight = parseFloat(getComputedStyle(el).lineHeight);
+		el.style.height = "auto";
+		el.style.height = `${composerHeight(lineHeight, composerLines(el.scrollHeight, lineHeight))}px`;
+		// Past the ceiling the box scrolls instead of growing, and a box that has
+		// stopped growing does not bring its own caret into view.
+		el.scrollTop = el.scrollHeight;
+	}, []);
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
@@ -296,7 +320,8 @@ export function AgentChat({ inputRef }: Props) {
 							ref={inputRef}
 							placeholder="e.g. what does sym.main do? disassemble it"
 							rows={1}
-							className="max-h-40 min-h-[1.25rem] flex-1 resize-none border-0 bg-transparent px-1 py-1 text-xs shadow-none focus-visible:ring-0"
+							onInput={autoGrow}
+							className="min-h-[1.25rem] flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1 py-1 text-xs shadow-none focus-visible:ring-0"
 							value={input}
 							onChange={(e) => setInput(e.target.value)}
 							onKeyDown={(e) => {
