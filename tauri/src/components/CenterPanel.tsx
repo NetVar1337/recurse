@@ -1,10 +1,9 @@
-import { ChevronRight, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronRight, Loader2 } from "lucide-react";
 import {
 	lazy,
 	Suspense,
 	useCallback,
 	useEffect,
-	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -14,7 +13,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-	DisasmBytes,
 	readDisasmView,
 	storeDisasmView,
 	type DisasmViewOptions,
@@ -22,17 +20,7 @@ import {
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
 import { cn } from "@/lib/utils";
-import { chrome } from "@/lib/chrome";
-import { callTarget } from "@/lib/calls";
-import { frameOf, type Frame } from "@/lib/debugVars";
-import { VarNameChip } from "@/components/VarNameChip";
-import { FunctionVariables } from "@/components/VariableList";
-import {
-	DisasmComment,
-	DisasmInstr,
-	formatInstructionBytes,
-	splitComment,
-} from "@/lib/disasm";
+import { ListingView } from "@/components/ListingView";
 import { MENU } from "@/lib/commands";
 import { disasmMenuSections } from "@/lib/disasmMenu";
 import { clearSections, publishSections } from "@/lib/menuRegistry";
@@ -40,11 +28,9 @@ import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
+import { navBack, navForward, useNavStore } from "@/store/navStore";
 import { useUiStore } from "@/store/uiStore";
-import type { DebugInsn, DecompileAnnotation, Function, Xref } from "@/types";
-
-const RAW_BYTE_PREVIEW = 128;
-const RAW_BYTE_CHUNK = 16 * 1024;
+import type { DecompileAnnotation, Function, Xref } from "@/types";
 
 const R2Console = lazy(() =>
 	import("@/components/R2Console").then((m) => ({ default: m.R2Console })),
@@ -155,154 +141,6 @@ function highlight(
 	return spans;
 }
 
-/** An instruction reduced to what variable naming reads from it. */
-type FrameOp = DebugInsn;
-
-/**
- * Normalize a function's instructions for variable naming.
- *
- * Every row of a listing carries the same answer to "how does this function
- * address its frame", so the answer is computed once per function and handed
- * down, rather than rebuilt per row.
- *
- * @param ops - The function's instructions, as the engine reports them.
- * @returns The instructions in the shape `frameOf` reads, or `undefined` when
- *   there is no listing to read.
- *
- * @example
- * frameOpsFor([{ addr: 0, text: "mov [rbp-8], rdi" }]);
- * // => [{ addr: 0, bytes: "", text: "mov [rbp-8], rdi" }]
- */
-function frameOpsFor(
-	ops: readonly { text?: string; disasm?: string }[] | undefined,
-): FrameOp[] | undefined {
-	return ops?.map((i) => ({
-		addr: 0,
-		bytes: "",
-		text: i.text ?? i.disasm ?? "",
-	}));
-}
-
-/**
- * Render one disassembly instruction with optional source columns and the
- * active-row treatment used by the function listing.
- *
- * @param props.op - The instruction to render.
- * @param props.frame - How the function addresses its frame, worked out once by
- *   the caller. Reading it per row would walk the whole function once per row.
- * @returns The row element.
- *
- * @example
- * <OpRow op={op} frame={frame} active={op.addr === selectedAddress} />
- */
-function OpRow({
-	op,
-	target,
-	onGoTo,
-	onSelect,
-	active,
-	showAddress,
-	showBytes,
-	showComments,
-	wideSpacing,
-	func,
-	frame,
-}: {
-	/** The function this instruction belongs to, for its variable names. */
-	func?: number | null;
-	/**
-	 * How the function addresses its frame, worked out once for the whole
-	 * listing. Each row needs it, and reading it per row walked every instruction
-	 * of the function once per instruction.
-	 */
-	frame?: Frame;
-	op: {
-		addr: number;
-		bytes?: string | null;
-		text?: string;
-		disasm?: string;
-		jump?: number | null;
-		ptr?: number | null;
-	};
-	target?: Function | null;
-	onGoTo?: (f: Function) => void;
-	onSelect?: (addr: number) => void;
-	active?: boolean;
-	showAddress?: boolean;
-	showBytes?: boolean;
-	showComments?: boolean;
-	wideSpacing?: boolean;
-}) {
-	const text = op.text ?? op.disasm ?? "";
-	const { instr, comment } = splitComment(text);
-	const clickable = !!target;
-	return (
-		<div
-			className={cn(
-				chrome.row,
-				// A large function is thousands of instructions, read by scrolling.
-				// Letting the browser skip laying out and painting the ones that are
-				// not on screen is most of what windowing would buy — and unlike a
-				// row virtualizer, it does not need the rows to be a known height,
-				// which they are not: comments, byte columns and named variables all
-				// change a row's height.
-				"offscreen-row",
-				"min-w-max pl-3",
-				wideSpacing ? "gap-5" : "gap-3",
-				active && "ui-selected border-brand border-l-2 pl-[10px]",
-				clickable && "hover:bg-accent/70 cursor-pointer",
-			)}
-			onClick={() => {
-				onSelect?.(op.addr);
-				if (clickable && onGoTo && target) onGoTo(target);
-			}}
-			title={
-				clickable
-					? `Select and go to ${target.name ?? fmtAddr(target.addr)}`
-					: "Select instruction"
-			}
-		>
-			{showAddress !== false && (
-				<span
-					className="nums text-asm-addr w-[19ch] shrink-0 font-mono"
-					title="Virtual address"
-				>
-					{`.text:${op.addr.toString(16).toUpperCase().padStart(8, "0")}`}
-				</span>
-			)}
-			{showBytes !== false && (
-				<span
-					className="text-asm-bytes w-[50ch] shrink-0 pr-2 font-mono whitespace-pre"
-					title="Machine code bytes (hex)"
-				>
-					{formatInstructionBytes(op.bytes)}
-				</span>
-			)}
-			<span
-				className={cn(
-					"text-foreground",
-					clickable &&
-						"text-primary underline decoration-dotted underline-offset-2",
-				)}
-				title="Disassembly (mnemonic + operands)"
-			>
-				{instr && <DisasmInstr text={instr} />}
-				{showComments !== false && <DisasmComment comment={comment} />}
-				<VarNameChip func={func ?? null} frame={frame} text={instr} />
-				{typeof op.jump === "number" && (
-					<span className="text-asm-jump"> → {fmtAddr(op.jump)}</span>
-				)}
-				{showComments !== false && typeof op.ptr === "number" && (
-					<span className="text-asm-jump">
-						{" "}
-						; [{fmtAddr(op.ptr)}]
-					</span>
-				)}
-			</span>
-		</div>
-	);
-}
-
 export function CenterPanel() {
 	const tab = useUiStore((s) => s.tab);
 	const selected = useAnalysisStore((s) => s.selected);
@@ -325,12 +163,6 @@ export function CenterPanel() {
 	// (decompile / raw console on native). Undefined = older host, show them.
 	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
 	const binaryPath = useBinaryStore((s) => s.binary?.path);
-	// The frame belongs to the function, not to a row, so it is worked out once
-	// for the whole listing rather than once per instruction.
-	const frame = useMemo(
-		() => frameOf(frameOpsFor(asm?.ops) ?? []),
-		[asm?.ops],
-	);
 	// Coloring walks every character of the source, so it is done when the
 	// source changes and not when the window does.
 	const highlighted = useMemo(
@@ -416,6 +248,8 @@ export function CenterPanel() {
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
+	const navCursor = useNavStore((s) => s.cursor);
+	const navLen = useNavStore((s) => s.history.length);
 	const [consoleMounted, setConsoleMounted] = useState(false);
 	const [viewMode, setViewMode] = useState<"linear" | "graph">("linear");
 	const [xrefs, setXrefs] = useState<Xref[]>([]);
@@ -427,30 +261,14 @@ export function CenterPanel() {
 	const [importQuery, setImportQuery] = useState("");
 	const [viewOptions, setViewOptions] =
 		useState<DisasmViewOptions>(readDisasmView);
-	const [rawState, setRawState] = useState<{
-		key: string | null;
-		bytes: number[];
-		error: string | null;
-	}>({ key: null, bytes: [], error: null });
-	const [rawByteLimit, setRawByteLimit] = useState(RAW_BYTE_PREVIEW);
 	const [insnSelection, setInsnSelection] = useState<{
 		address: number;
 		instruction: number | null;
 	}>({ address: selectedAddr ?? 0, instruction: selectedAddr ?? null });
-	const selectedSize = selected?.size ?? asm?.size ?? 0;
-	const sectionName = ".text";
 	const activeInsn =
 		insnSelection.address === selectedAddr
 			? insnSelection.instruction
 			: (selectedAddr ?? null);
-	const rawLimit = Math.min(selectedSize, rawByteLimit);
-	const rawKey =
-		selected && viewOptions.showRawBytes && selectedSize > 0
-			? `${selected.addr}:${selectedSize}:${rawLimit}`
-			: null;
-	const rawBytes = rawState.key === rawKey ? rawState.bytes : [];
-	const rawBytesLoading = rawKey !== null && rawState.key !== rawKey;
-	const rawBytesError = rawState.key === rawKey ? rawState.error : null;
 
 	const updateViewOption = useCallback(
 		(key: keyof DisasmViewOptions, value: boolean) => {
@@ -463,40 +281,9 @@ export function CenterPanel() {
 		[],
 	);
 
-	useEffect(() => {
-		setRawByteLimit(RAW_BYTE_PREVIEW);
-	}, [selectedAddr]);
-
 	// Withdrawn when the panel goes, so the View menu stops offering commands that
 	// act on a disassembly that is no longer on screen.
 	useEffect(() => clearSections, []);
-
-	useEffect(() => {
-		let cancelled = false;
-		if (!rawKey || !selected)
-			return () => {
-				cancelled = true;
-			};
-		void api
-			.readBytes(selected.addr, rawLimit)
-			.then((bytes) => {
-				if (!cancelled) {
-					setRawState({ key: rawKey, bytes, error: null });
-				}
-			})
-			.catch((error) => {
-				if (!cancelled) {
-					setRawState({
-						key: rawKey,
-						bytes: [],
-						error: String(error),
-					});
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [rawKey, rawLimit, selected, selectedAddr, selectedSize]);
 
 	// Large Rust binaries can carry 100k+ strings (youki: 113k). Rendering
 	// them all freezes the webview, so filter first and cap the row count.
@@ -539,15 +326,6 @@ export function CenterPanel() {
 		};
 	}, [imports, importQuery]);
 
-	// Address → function lookup so call instructions can resolve to their target.
-	const funcByAddr = useMemo(() => {
-		const m = new Map<number, Function>();
-		for (const f of funcs) {
-			if (typeof f.addr === "number") m.set(f.addr, f);
-		}
-		return m;
-	}, [funcs]);
-
 	// Mount (and keep mounted) the console the first time its tab is opened, so
 	// its state survives tab switches. Adjusting state during render is the
 	// documented React pattern here (guarded, no effect).
@@ -580,12 +358,31 @@ export function CenterPanel() {
 		});
 	};
 
-	// Reset scroll whenever the selected function changes so a new function
-	// always renders from the top (no stale scroll position from the previous
-	// function's assembly/decompiled view). Runs pre-paint to avoid a flash.
-	useLayoutEffect(() => {
-		scrollRef.current?.scrollTo({ top: 0 });
+	// Every selected address is a step on the path, so the back/forward arrows
+	// can walk it. Returning via an arrow re-selects an address already at the
+	// cursor, which `push` ignores, so history is not corrupted by it.
+	useEffect(() => {
+		if (selectedAddr != null) useNavStore.getState().push(selectedAddr);
 	}, [selectedAddr]);
+	useEffect(() => {
+		useNavStore.getState().reset();
+	}, [binaryPath]);
+
+	const gotoAddr = useCallback(
+		(addr: number) => {
+			const f = funcs.find((x) => x.addr === addr);
+			if (f) selectFn(f);
+		},
+		[funcs, selectFn],
+	);
+	const onNavBack = useCallback(() => {
+		const addr = navBack();
+		if (addr != null) gotoAddr(addr);
+	}, [gotoAddr]);
+	const onNavForward = useCallback(() => {
+		const addr = navForward();
+		if (addr != null) gotoAddr(addr);
+	}, [gotoAddr]);
 
 	const loadXrefs = useCallback(async () => {
 		if (!selected) return;
@@ -735,6 +532,24 @@ export function CenterPanel() {
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
 			{tab === "disasm" && (
 				<div className="border-border bg-card ui-bar shrink-0 gap-2 border-b px-3">
+					<Button
+						variant="toolbar"
+						size="sm"
+						title="Go back"
+						disabled={navCursor <= 0}
+						onClick={onNavBack}
+					>
+						<ArrowLeft className="h-3.5 w-3.5" />
+					</Button>
+					<Button
+						variant="toolbar"
+						size="sm"
+						title="Go forward"
+						disabled={navCursor >= navLen - 1}
+						onClick={onNavForward}
+					>
+						<ArrowRight className="h-3.5 w-3.5" />
+					</Button>
 					{selected && (
 						<>
 							<span className="text-muted-foreground truncate text-xs">
@@ -862,50 +677,6 @@ export function CenterPanel() {
 							)}
 							{tab === "disasm" && (
 								<>
-									{viewOptions.showRawBytes && selected && (
-										<DisasmBytes
-											address={selected.addr}
-											bytes={rawBytes}
-											size={selectedSize}
-											loading={rawBytesLoading}
-											error={rawBytesError}
-											showAscii={viewOptions.showAscii}
-											canShowMore={
-												rawLimit < selectedSize ||
-												(rawLimit === selectedSize &&
-													rawLimit > RAW_BYTE_PREVIEW)
-											}
-											showAll={rawLimit === selectedSize}
-											onShowMore={() =>
-												setRawByteLimit((current) =>
-													current >= selectedSize
-														? RAW_BYTE_PREVIEW
-														: Math.min(
-																selectedSize,
-																current +
-																	RAW_BYTE_CHUNK,
-															),
-												)
-											}
-										/>
-									)}
-									{viewOptions.showSectionHeaders &&
-										selected && (
-											<div className="text-asm-number bg-card px-3 py-1 font-mono text-[11px]">
-												; segment {sectionName} r-x{" "}
-												{selected.addr
-													.toString(16)
-													.toUpperCase()
-													.padStart(8, "0")}{" "}
-												-{" "}
-												{(selected.addr + selectedSize)
-													.toString(16)
-													.toUpperCase()
-													.padStart(8, "0")}{" "}
-												(0x{selectedSize.toString(16)}{" "}
-												bytes)
-											</div>
-										)}
 									{xrefsOpen &&
 										selected &&
 										xrefsAddress === selectedAddr && (
@@ -982,94 +753,31 @@ export function CenterPanel() {
 											</div>
 										)}
 									<div className="font-mono text-xs">
-										{viewOptions.showFunctionMarkers &&
-											selected && (
-												<div className="text-asm-number px-3 py-1">
-													;{" "}
-													{selected.name ??
-														selected.signature ??
-														"function"}{" "}
-													proc
-												</div>
-											)}
-										{selected && asm?.ops && (
-											<FunctionVariables
-												funcAddr={selectedAddr ?? null}
-												ops={asm.ops}
-											/>
-										)}
-										{asmLoading && (
-											<div className="text-muted-foreground px-3 py-3">
-												disassembling…
-											</div>
-										)}
-										{!selected && !asmLoading && (
-											<div className="text-muted-foreground px-3 py-3">
-												Select a function to disassemble
-												it.
-											</div>
-										)}
-										{selected &&
-											!asmLoading &&
-											(!asm?.ops ||
-												asm.ops.length === 0) && (
-												<div className="text-muted-foreground px-3 py-3">
-													No instructions.
-												</div>
-											)}
-										{selected &&
-											!asmLoading &&
-											(asm?.ops?.length ?? 0) > 0 && (
-												<div className="border-border bg-card text-2xs flex gap-3 border-b px-3 py-1 font-semibold tracking-wider uppercase">
-													{viewOptions.showAddresses && (
-														<span className="text-asm-addr w-[19ch] shrink-0">
-															Address
-														</span>
-													)}
-													{viewOptions.showInstructionBytes && (
-														<span className="text-asm-bytes w-[50ch] shrink-0 pr-2">
-															Bytes
-														</span>
-													)}
-													<span className="text-muted-foreground">
-														Instruction
-													</span>
-												</div>
-											)}
-										{asm?.ops?.map((op) => (
-											<OpRow
-												key={op.addr}
-												op={op}
-												func={selectedAddr}
-												frame={frame}
-												target={callTarget(
-													op,
-													funcByAddr,
-												)}
-												onGoTo={selectFn}
-												onSelect={(address) =>
-													setInsnSelection({
-														address:
-															selectedAddr ??
-															address,
-														instruction: address,
-													})
-												}
-												active={activeInsn === op.addr}
-												showAddress={
-													viewOptions.showAddresses
-												}
-												showBytes={
-													viewOptions.showInstructionBytes
-												}
-												showComments={
-													viewOptions.showComments
-												}
-												wideSpacing={
-													viewOptions.wideSpacing
-												}
-											/>
-										))}
+										<div className="border-border bg-card text-2xs flex gap-3 border-b px-3 py-1 font-semibold tracking-wider uppercase">
+											<span className="text-asm-addr w-[19ch] shrink-0">
+												Address
+											</span>
+											<span className="text-asm-bytes w-[26ch] shrink-0 pr-3">
+												Bytes
+											</span>
+											<span className="text-muted-foreground">
+												Instruction / Data
+											</span>
+										</div>
+										<ListingView
+											scrollRef={scrollRef}
+											binaryPath={binaryPath}
+											selectedAddr={activeInsn}
+											focusAddr={selectedAddr}
+											onGoTo={selectFn}
+											onSelectAddress={(address) =>
+												setInsnSelection({
+													address:
+														selectedAddr ?? address,
+													instruction: address,
+												})
+											}
+										/>
 									</div>
 								</>
 							)}

@@ -32,3 +32,45 @@ edition = "2021"
 license = "Apache-2.0"
 authors = ["Aayush Khanna"]
 repository = "https://github.com/Recurse-Labs/recurse"
+
+# Performance profiles.
+#
+# The analysis backends are CPU-bound: disassembly, linear sweep,
+# cross-reference recovery and unwind-table parsing run in-process, on the
+# UI's critical path. Cargo's default `dev` profile compiles all of that —
+# and every dependency — at `opt-level = 0`, which makes the whole app one to
+# two orders of magnitude slower than the optimized engines it is compared
+# against (radare2, IDA, Ghidra). That is a build-mode artifact, not a design
+# one; the profiles below remove it.
+#
+# `opt-level = 1` for the app keeps local iteration quick while still giving
+# the code some optimization. The wildcard raises every dependency
+# (capstone, object, rusqlite, …) to full optimization in dev. The workspace
+# analysis crates are members rather than registry dependencies, so the
+# wildcard does not reach them and they are named explicitly.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.recurse-static]
+opt-level = 3
+
+[profile.dev.package.recurse-agent]
+opt-level = 3
+
+[profile.dev.package.recurse-debug]
+opt-level = 3
+
+[profile.dev.package.recurse-vtil]
+opt-level = 3
+
+# Shipped builds: thin LTO across crates and a single codegen unit, so the
+# analysis hot paths inline across the crate boundary they were split into for
+# testability. `strip` keeps the binary near the size of the dependency graph
+# rather than the debug info.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

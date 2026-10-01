@@ -42,7 +42,7 @@ pub fn record_if_stop(state: &crate::AppState, value: &Value) {
 }
 
 /// The trace so far, oldest first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn debug_trace(state: tauri::State<'_, crate::AppState>) -> Result<Vec<Value>, String> {
     let trace = state
         .debug_trace
@@ -53,7 +53,7 @@ pub fn debug_trace(state: tauri::State<'_, crate::AppState>) -> Result<Vec<Value
 
 /// Clear the trace (a fresh `launch`/`attach` starts a new one implicitly
 /// by appending; this is for an explicit "clear" action in the UI).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn debug_trace_clear(state: tauri::State<'_, crate::AppState>) -> Result<(), String> {
     {
         let mut trace = state

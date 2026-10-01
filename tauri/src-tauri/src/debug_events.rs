@@ -191,7 +191,7 @@ impl Events {
 /// # Errors
 /// Never; the lock failures are swallowed because a missing forwarder only
 /// costs the window the events it would have polled for.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn debug_subscribe(
     on_event: EventChannel,
     state: tauri::State<'_, AppState>,

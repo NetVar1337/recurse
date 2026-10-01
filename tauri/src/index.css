@@ -156,6 +156,11 @@ body {
 	scrollbar-gutter: stable;
 }
 
+.chat-message {
+	content-visibility: auto;
+	contain-intrinsic-size: auto 12rem;
+}
+
 .project-screen-scroll {
 	scrollbar-width: none;
 	-ms-overflow-style: none;
@@ -171,6 +176,10 @@ body {
 	border: none;
 	box-shadow: none;
 	padding: 0;
+}
+.react-flow__node-cfgnode > div,
+.react-flow__node-fnnode > div {
+	box-shadow: none;
 }
 /* Let React Flow handle all touch gestures (incl. pinch-zoom) on the graph. */
 .react-flow {

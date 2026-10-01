@@ -271,21 +271,20 @@ export function AgentChat({ inputRef }: Props) {
 					)}
 					{!showSessions &&
 						messages.map((m) =>
-							m.role === "user" ? (
-								<UserMessage
-									key={m.id}
+							<div key={m.id} className="chat-message">
+								{m.role === "user" ? (
+									<UserMessage
 									blocks={m.blocks}
 									contextRefs={m.contextRefs}
 								/>
-							) : (
-								<div key={m.id}>
+								) : (
 									<AssistantMessage
 										blocks={m.blocks}
 										pending={m.pending}
 										error={m.error}
 									/>
-								</div>
-							),
+								)}
+							</div>
 						)}
 				</div>
 			</div>

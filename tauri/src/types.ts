@@ -165,6 +165,25 @@ export interface BoundarySymbol {
 }
 
 /** Everything in the image that is not executable code. */
+/** One row of the whole-image listing: a section header, an instruction, or a
+ * run of data bytes. */
+export interface ListingRow {
+	addr: number;
+	kind: "code" | "data" | "header";
+	size: number;
+	bytes?: string | null;
+	text?: string | null;
+	label?: string | null;
+	jump?: number | null;
+	type?: string | null;
+}
+
+/** A window of the whole-image listing plus the total row count. */
+export interface ListingWindow {
+	total: number;
+	rows: ListingRow[];
+}
+
 export interface DataRegions {
 	sections: DataSection[];
 	boundaries: BoundarySymbol[];

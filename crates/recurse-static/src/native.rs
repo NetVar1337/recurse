@@ -48,7 +48,7 @@ use crate::arch;
 use crate::engine::{
     BackendKind, BasicBlock, BoundarySymbol, Capabilities, DataRegions, DataSection, DataSegment,
     Decompilation, Disassembly, Engine, FunctionGraph, FunctionInfo, Import, Instruction,
-    StringRef, Target, Xref, XrefDirection,
+    ListingRow, ListingWindow, StringRef, Target, Xref, XrefDirection,
 };
 
 /// Maximum functions discovered per binary; guards recursive descent and caps
@@ -119,6 +119,51 @@ struct NativeState {
     entry_main: Option<(u64, u64)>,
     /// True while the background indexer is still expanding the function set.
     indexing: bool,
+    /// Whole-image listing index, built lazily on the first listing request.
+    listing: Option<ListingIndex>,
+}
+
+/// The whole-image listing, built once on first request. [`ListingEntry`] is
+/// compact (no text) and one per row; a row's text is materialized only for the
+/// window a caller asks for, so a multi-megabyte image never holds its rendered
+/// listing in memory.
+struct ListingIndex {
+    entries: Vec<ListingEntry>,
+    sections: Vec<ListingSection>,
+}
+
+/// One row's identity: where it is, how long it is, and what it is. `kind` is
+/// `0` code, `1` data, `2` section header.
+struct ListingEntry {
+    addr: u64,
+    len: u32,
+    kind: u8,
+    section: u32,
+}
+
+/// A section as the listing sees it: enough to render its header row and to
+/// slice its bytes back out of the image during materialization.
+#[derive(Clone)]
+struct ListingSection {
+    /// Header title, e.g. `.rodata  r--  read-only data`.
+    title: String,
+    addr: u64,
+    file_offset: u64,
+    file_len: u64,
+}
+
+/// Bytes a listing row covers. `len` is added as zero bytes for a section with
+/// no file backing (`.bss`), which is what the image actually maps there.
+fn listing_slice(data: &[u8], section: &ListingSection, addr: u64, len: u32) -> Vec<u8> {
+    if section.file_len == 0 {
+        return vec![0u8; len as usize];
+    }
+    let file_off = section.file_offset + (addr - section.addr);
+    let end = file_off.saturating_add(len as u64);
+    match data.get(file_off as usize..end as usize) {
+        Some(slice) if slice.len() as u64 == len as u64 => slice.to_vec(),
+        _ => vec![0u8; len as usize],
+    }
 }
 
 /// Address indexes used to annotate disassembly with names.
@@ -144,6 +189,7 @@ impl NativeState {
             xrefs_by_target: HashMap::new(),
             entry_main: None,
             indexing: false,
+            listing: None,
         }
     }
 }
@@ -635,6 +681,27 @@ impl NativeEngine {
         Ok(())
     }
 
+    /// Build the whole-image listing index once, on first use, then reuse it.
+    fn ensure_listing(&self) -> Result<(), String> {
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            if state.listing.is_some() {
+                return Ok(());
+            }
+        }
+        let file = self.parse()?;
+        let listing = build_listing(&file);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        state.listing = Some(listing);
+        Ok(())
+    }
+
     /// Append `; name` / `; "string"` comments to `ops`, so the model does not
     /// have to cross-reference addresses by hand.
     ///
@@ -901,6 +968,92 @@ fn section_access(kind: SectionKind, flags: object::SectionFlags) -> (bool, bool
 /// image it does (that is where `.bss` begins); in a hand-written one it can sit
 /// past the last section entirely, which is exactly the case where it is the
 /// only description of where the image stops.
+/// Build the whole-image listing: every allocated section in address order,
+/// a header row for each, then one row per instruction for code and one row per
+/// 16 bytes for data. `.bss` and other uninitialized sections have no file
+/// bytes but still occupy address space, so they are listed as zero bytes.
+///
+/// Only the row identities are kept; text is rendered per window by
+/// [`Engine::listing_window`].
+fn build_listing(file: &object::File<'_>) -> ListingIndex {
+    /// Bytes per data row, matching the hex columns the UI shows.
+    const DATA_ROW: u64 = 16;
+
+    let cs = build_capstone(file).ok();
+    let mut sections: Vec<ListingSection> = Vec::new();
+    let mut entries: Vec<ListingEntry> = Vec::new();
+
+    let mut secs: Vec<_> = file
+        .sections()
+        .filter(|s| s.size() > 0 && s.address() != 0)
+        .collect();
+    secs.sort_by_key(|s| s.address());
+
+    for s in secs {
+        let (readable, writable, executable) = section_access(s.kind(), s.flags());
+        // Allocated sections only; the symbol/string tables and other
+        // file-only bookkeeping are not part of the image's address space.
+        if !readable {
+            continue;
+        }
+        let (file_offset, file_len) = s.file_range().unwrap_or((0, 0));
+        let name = s.name().unwrap_or("<unnamed>");
+        let access = if executable {
+            "r-x"
+        } else if writable {
+            "rw-"
+        } else {
+            "r--"
+        };
+        let kind_label = if executable {
+            "code"
+        } else {
+            section_kind_label(name, s.kind())
+        };
+        let index = sections.len() as u32;
+        sections.push(ListingSection {
+            title: format!("{name}  {access}  {kind_label}"),
+            addr: s.address(),
+            file_offset,
+            file_len,
+        });
+        entries.push(ListingEntry {
+            addr: s.address(),
+            len: 0,
+            kind: 2,
+            section: index,
+        });
+
+        if executable {
+            if let (Some(cs), Ok(bytes)) = (cs.as_ref(), s.data()) {
+                for op in decode_with(cs, bytes, s.address(), usize::MAX, false, true) {
+                    entries.push(ListingEntry {
+                        addr: op.addr,
+                        len: op.len,
+                        kind: 0,
+                        section: index,
+                    });
+                }
+            }
+        } else {
+            let mut addr = s.address();
+            let end = s.address().saturating_add(s.size());
+            while addr < end {
+                let len = DATA_ROW.min(end - addr) as u32;
+                entries.push(ListingEntry {
+                    addr,
+                    len,
+                    kind: 1,
+                    section: index,
+                });
+                addr += len as u64;
+            }
+        }
+    }
+
+    ListingIndex { entries, sections }
+}
+
 fn data_regions(file: &object::File<'_>, data: &[u8]) -> DataRegions {
     // Read from the headers rather than inferred from the format-agnostic
     // `SectionKind`, which folds `.dynsym`, `.dynstr` and `.note.*` into one
@@ -3042,6 +3195,139 @@ impl Engine for NativeEngine {
         Ok(data_regions(&file, &self.data[..]))
     }
 
+    fn listing_len(&self) -> Result<u64, String> {
+        self.ensure_listing()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        Ok(state
+            .listing
+            .as_ref()
+            .map(|l| l.entries.len() as u64)
+            .unwrap_or(0))
+    }
+
+    fn listing_locate(&self, addr: u64) -> Result<u64, String> {
+        self.ensure_listing()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        let listing = state
+            .listing
+            .as_ref()
+            .ok_or_else(|| "listing was not built".to_string())?;
+        // `entries` is in ascending address order, so the first row strictly
+        // past `addr` sits at the partition point; the row before it covers
+        // `addr` (an instruction or the 16-byte data row containing it).
+        let after = listing.entries.partition_point(|e| e.addr <= addr);
+        Ok(after.saturating_sub(1) as u64)
+    }
+
+    fn listing_window(&self, offset: u64, count: u64) -> Result<ListingWindow, String> {
+        self.ensure_listing()?;
+        // Taken out of the lock before materializing: `annotate_ops` takes the
+        // state lock again, so holding it here would deadlock.
+        let (entries, sections, total) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            let listing = state
+                .listing
+                .as_ref()
+                .ok_or_else(|| "listing was not built".to_string())?;
+            let total = listing.entries.len() as u64;
+            let start = offset.min(total) as usize;
+            let end = offset.saturating_add(count).min(total) as usize;
+            let entries: Vec<ListingEntry> = listing.entries[start..end]
+                .iter()
+                .map(|e| ListingEntry {
+                    addr: e.addr,
+                    len: e.len,
+                    kind: e.kind,
+                    section: e.section,
+                })
+                .collect();
+            (entries, listing.sections.clone(), total)
+        };
+
+        let file = self.parse()?;
+        let cs = build_capstone(&file).ok();
+        let data = &self.data[..];
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let section = &sections[entry.section as usize];
+            match entry.kind {
+                2 => rows.push(ListingRow {
+                    addr: entry.addr,
+                    kind: "header".to_string(),
+                    size: 0,
+                    bytes: None,
+                    text: None,
+                    label: Some(section.title.clone()),
+                    jump: None,
+                    op: None,
+                }),
+                0 => {
+                    let slice = listing_slice(data, section, entry.addr, entry.len);
+                    let mut ops = match cs.as_ref() {
+                        Some(cs) => decode_with(cs, &slice, entry.addr, 1, false, true),
+                        None => Vec::new(),
+                    };
+                    self.annotate_ops(&mut ops);
+                    match ops.into_iter().next() {
+                        Some(op) => rows.push(ListingRow {
+                            addr: op.addr,
+                            kind: "code".to_string(),
+                            size: op.len as u64,
+                            bytes: op.bytes,
+                            text: Some(op.disasm),
+                            label: None,
+                            jump: op.jump,
+                            op: op.kind,
+                        }),
+                        None => rows.push(ListingRow {
+                            addr: entry.addr,
+                            kind: "code".to_string(),
+                            size: entry.len as u64,
+                            bytes: Some(hex_bytes(&slice)),
+                            text: Some("(invalid instruction)".to_string()),
+                            label: None,
+                            jump: None,
+                            op: None,
+                        }),
+                    }
+                }
+                _ => {
+                    let slice = listing_slice(data, section, entry.addr, entry.len);
+                    let ascii: String = slice
+                        .iter()
+                        .map(|&b| {
+                            if (0x20..0x7f).contains(&b) {
+                                b as char
+                            } else {
+                                '.'
+                            }
+                        })
+                        .collect();
+                    rows.push(ListingRow {
+                        addr: entry.addr,
+                        kind: "data".to_string(),
+                        size: entry.len as u64,
+                        bytes: Some(hex_bytes(&slice)),
+                        text: Some(ascii),
+                        label: None,
+                        jump: None,
+                        op: None,
+                    });
+                }
+            }
+        }
+        Ok(ListingWindow { total, rows })
+    }
+
     fn strings(&self) -> Result<Vec<StringRef>, String> {
         self.ensure_labels()?;
         let state = self
@@ -4041,6 +4327,61 @@ mod tests {
     /// with their sizes and permissions, and `.bss` is flagged as occupying no
     /// file bytes. The test binary is a genuine ELF with all three.
     #[test]
+    fn listing_covers_headers_and_code_and_clamps() {
+        let exe = std::env::current_exe().expect("current test binary");
+        let engine = NativeEngine::open(&exe).expect("open test binary");
+        let total = engine.listing_len().expect("listing len");
+        assert!(total > 100, "the image should list into many rows, got {total}");
+
+        let first = engine.listing_window(0, 64).expect("listing window");
+        assert_eq!(first.total, total);
+        assert_eq!(first.rows.len(), 64);
+        assert!(
+            first.rows.iter().any(|r| r.kind == "header"),
+            "the listing must carry section headers"
+        );
+
+        // Code does not start at the lowest address (the dynamic tables are
+        // small data sections below it), so scan forward for the first code row.
+        let mut found_code = false;
+        let mut offset = 0u64;
+        while offset < total {
+            let window = engine.listing_window(offset, 512).expect("listing window");
+            if window.rows.is_empty() {
+                break;
+            }
+            if window.rows.iter().any(|r| r.kind == "code") {
+                found_code = true;
+                break;
+            }
+            offset += window.rows.len() as u64;
+        }
+        assert!(found_code, "the listing must contain disassembled code");
+
+        // A window past the last row clamps to what exists rather than erroring.
+        let tail = engine.listing_window(total - 1, 10).expect("tail window");
+        assert_eq!(tail.rows.len(), 1);
+
+        // Locating a real instruction always yields a row inside the listing,
+        // and that row is at or before the address.
+        let func_addr = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .map(|f| f.addr)
+            .expect("a discovered function");
+        let located = engine.listing_locate(func_addr).expect("locate");
+        assert!(located < total);
+        let row = engine
+            .listing_window(located, 1)
+            .expect("located row")
+            .rows
+            .into_iter()
+            .next()
+            .expect("a row");
+        assert!(row.addr <= func_addr);
+    }
+
     fn data_regions_report_real_data_sections() {
         let exe = std::env::current_exe().expect("current test binary");
         let engine = NativeEngine::open(&exe).expect("open test binary");

@@ -390,6 +390,45 @@ pub struct Disassembly {
     pub ops: Vec<Instruction>,
 }
 
+/// One row of the whole-image listing: a section header, an instruction, or a
+/// run of data bytes. This is the linear "Listing" view — every mapped byte of
+/// the image in address order, code and data alike — as opposed to
+/// [`Disassembly`], which is one function.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ListingRow {
+    /// Address the row starts at. Zero for a section header.
+    pub addr: u64,
+    /// `code`, `data`, or `header`.
+    pub kind: String,
+    /// Bytes the row covers: an instruction's length, a data row's width, or 0
+    /// for a section header.
+    pub size: u64,
+    /// Raw bytes as hex, for code and data rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<String>,
+    /// Instruction text (code), or the printable rendering of the bytes (data).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A name or title to show on the row: a section name, a symbol, or a
+    /// referenced string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Direct branch/call destination, for code rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jump: Option<u64>,
+    /// Instruction category (`call`, `jmp`, `ret`, `cjmp`, …), for code rows.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub op: Option<String>,
+}
+
+/// A window of the whole-image listing plus the total row count, so the UI can
+/// virtualize over a length it does not have to materialize.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ListingWindow {
+    pub total: u64,
+    pub rows: Vec<ListingRow>,
+}
+
 /// One basic block inside a control-flow graph.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BasicBlock {
@@ -572,6 +611,27 @@ pub trait Engine: Send + Sync {
     /// image with no data at all.
     fn data_regions(&self) -> Result<DataRegions, String> {
         Err("this backend does not report data regions".to_string())
+    }
+
+    /// Total rows in the whole-image listing (see [`ListingRow`]). Backends
+    /// that do not build one return an error, and the UI keeps its
+    /// per-function view instead.
+    fn listing_len(&self) -> Result<u64, String> {
+        Err("this backend does not provide a whole-image listing".to_string())
+    }
+
+    /// A window of `count` listing rows starting at `offset`, with the total
+    /// row count. Windows are small so a multi-megabyte image never crosses the
+    /// IPC boundary in one payload.
+    fn listing_window(&self, _offset: u64, _count: u64) -> Result<ListingWindow, String> {
+        Err("this backend does not provide a whole-image listing".to_string())
+    }
+
+    /// Row index in the whole-image listing that covers `addr` (or the nearest
+    /// preceding row), so a view can scroll to an address without downloading
+    /// the listing. Backends without a listing return an error.
+    fn listing_locate(&self, _addr: u64) -> Result<u64, String> {
+        Err("this backend does not provide a whole-image listing".to_string())
     }
 
     /// List imported symbols.

@@ -15,6 +15,8 @@ pub mod sessions;
 /// Test-only helpers (HOME isolation) for the storage modules' unit tests.
 #[doc(hidden)]
 pub mod testhome;
+/// Per-platform webview rendering configuration, applied before startup.
+pub mod webkit;
 
 use std::sync::{Arc, Mutex};
 
@@ -75,17 +77,10 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Belt-and-suspenders Wayland fix for direct `cargo run` / tests
-    // without going through `main.rs`. Mirrors the env setup in `main.rs`.
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
-            // SAFETY: still before GTK/WebKit init, single-threaded setup path.
-            unsafe {
-                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-            }
-        }
-    }
+    // Belt-and-suspenders for direct `cargo run` / tests without going through
+    // `main.rs`, which applies the same configuration before calling here. A
+    // no-op on Windows and macOS.
+    crate::webkit::configure();
     // Startup failure is unrecoverable by design: without an event loop
     // there is no app. This is the one sanctioned expect().
     #[allow(clippy::expect_used)]
@@ -133,6 +128,8 @@ pub fn run() {
             commands::function_graph,
             commands::strings,
             commands::data_regions,
+            commands::listing,
+            commands::listing_locate,
             commands::imports,
             commands::xrefs_to,
             commands::decompile,

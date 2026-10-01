@@ -144,7 +144,7 @@ fn ioctl_handlers_json(engine: &dyn Engine, funcs: &[FunctionInfo]) -> (Vec<Valu
 /// active binary. Every sub-scan degrades independently (a backend with
 /// no DWARF info, or a file `cpp::recover_classes` cannot parse, yields
 /// an empty list for that section rather than failing the whole call).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn findings(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = locked_engine(&state)?;
     let engine = require_engine(&guard)?;
@@ -259,7 +259,7 @@ fn summarize_binary(path: &std::path::Path) -> Result<Vec<diff::FunctionSummary>
 
 /// Diff the active binary's functions against another binary on disk
 /// (opened fresh, native backend, never mutates the active session).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn diff_with(other_path: String, state: State<'_, AppState>) -> Result<Value, String> {
     let a_path = {
         let guard = locked_engine(&state)?;
@@ -298,7 +298,7 @@ pub fn diff_with(other_path: String, state: State<'_, AppState>) -> Result<Value
 /// `addr`, built from its own disassembled instruction lengths/targets —
 /// useful for cross-version symbol migration (see
 /// `docs/sig.md`/the `binary-diff` skill).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn generate_signature(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = locked_engine(&state)?;
     let engine = require_engine(&guard)?;
@@ -365,7 +365,7 @@ fn save_semantic_memory(memory: &semantic_memory::Memory) -> Result<(), String> 
 /// cross-binary similarity corpus at `~/.recurse/semantic_memory.json`.
 /// Re-indexing the same binary replaces its previous entries (keyed by
 /// `binary path + address`) rather than duplicating them.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn semantic_index(state: State<'_, AppState>) -> Result<Value, String> {
     let (binary, funcs, ops_by_addr) = {
         let guard = locked_engine(&state)?;
@@ -405,7 +405,7 @@ pub fn semantic_index(state: State<'_, AppState>) -> Result<Value, String> {
 
 /// The corpus's closest matches to the function at `addr`, by SimHash
 /// distance then LCS-ratio re-scoring (see `semantic_memory` module doc).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn semantic_similar(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = locked_engine(&state)?;
     let engine = require_engine(&guard)?;
@@ -504,7 +504,7 @@ fn build_call_graph(funcs: &[FunctionInfo], call_edges: &[(u64, u64)]) -> Value 
 /// Aggregate call edges across the binary's functions (capped — see
 /// [`CALL_GRAPH_FUNCTION_CAP`]) into `{nodes, edges}`, for a global
 /// navigation view distinct from `function_graph`'s per-function CFG.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn call_graph(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = locked_engine(&state)?;
     let engine = require_engine(&guard)?;

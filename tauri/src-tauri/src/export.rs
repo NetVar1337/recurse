@@ -16,7 +16,7 @@ use crate::AppState;
 /// claims are a natural follow-up once a run's `verify::Report` is
 /// retained on `AppState`) and write it next to the project, returning
 /// both the path and the rendered text so the UI can show it immediately.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn generate_report(state: State<'_, AppState>) -> Result<Value, String> {
     let (binary_label, matches) = {
         let guard = crate::analysis_extra::locked_engine(&state)?;
@@ -74,7 +74,7 @@ pub fn generate_report(state: State<'_, AppState>) -> Result<Value, String> {
 /// `~/.recurse/<name>/` directory into `<name>-export.zip` in the user's
 /// home directory, for handing the analysis off to someone else or
 /// archiving it outside `~/.recurse`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_project(name: String) -> Result<String, String> {
     let project = crate::project::get(&name)?;
     let home =
@@ -123,7 +123,7 @@ pub fn export_project(name: String) -> Result<String, String> {
 /// with that name would) and every file under `files/` in the archive.
 /// The referenced binary itself is not part of the archive and must
 /// still exist at `binary_path` (or be reopened) for analysis to work.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_project(zip_path: String) -> Result<crate::project::Project, String> {
     let file = std::fs::File::open(&zip_path).map_err(|e| format!("open {zip_path}: {e}"))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("read zip {zip_path}: {e}"))?;
