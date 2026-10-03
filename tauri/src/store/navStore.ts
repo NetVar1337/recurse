@@ -1,9 +1,12 @@
 import { create } from "zustand";
 
 /**
- * Navigation history for address jumps — the back/forward arrows a reverse
- * engineering tool puts beside the listing. Only the addresses are kept; the
- * caller resolves one back to a function when it navigates.
+ * Navigation history for address jumps.
+ *
+ * Only the addresses are kept; a caller that wants one back as a function
+ * resolves it itself. Nothing moves the cursor yet — `push` is the whole of
+ * the recorded history, kept so a back/forward control has something to read
+ * when one is added.
  */
 interface NavState {
 	/** Visited addresses, oldest first. */
@@ -12,7 +15,7 @@ interface NavState {
 	cursor: number;
 	/**
 	 * Record a visit. Selecting the address already at the cursor is a no-op,
-	 * so returning via back/forward does not push a duplicate.
+	 * so revisiting an address does not push a duplicate.
 	 *
 	 * @param addr - The address being visited.
 	 */
@@ -34,28 +37,4 @@ export const useNavStore = create<NavState>((set) => ({
 	reset: () => set({ history: [], cursor: -1 }),
 }));
 
-/**
- * Move the cursor one entry back.
- *
- * @returns The address to navigate to, or `null` at the start of history.
- */
-export function navBack(): number | null {
-	const { history, cursor } = useNavStore.getState();
-	if (cursor <= 0) return null;
-	const next = cursor - 1;
-	useNavStore.setState({ cursor: next });
-	return history[next] ?? null;
-}
 
-/**
- * Move the cursor one entry forward.
- *
- * @returns The address to navigate to, or `null` at the end of history.
- */
-export function navForward(): number | null {
-	const { history, cursor } = useNavStore.getState();
-	if (cursor >= history.length - 1) return null;
-	const next = cursor + 1;
-	useNavStore.setState({ cursor: next });
-	return history[next] ?? null;
-}
