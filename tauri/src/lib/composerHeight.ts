@@ -13,7 +13,7 @@
  */
 
 /** How many lines the box will show before it stops growing. */
-export const COMPOSER_MAX_LINES = 5;
+export const COMPOSER_MAX_LINES = 8;
 
 /**
  * The line height used when the element's own cannot be read.
@@ -49,7 +49,7 @@ export const COMPOSER_MIN_HEIGHT = COMPOSER_RENDERED_LINE + COMPOSER_PADDING;
  * Exactly the height the line count produces, not a round number near it. A
  * ceiling rounded up leaves a fraction of a pixel the box can grow into and
  * then be clipped by the stylesheet's `max-height`; rounded down clips the
- * fifth line. `chrome.css` declares the same value, and a test reads it back
+ * last line. `chrome.css` declares the same value, and a test reads it back
  * out of the stylesheet so the two cannot part company.
  */
 export const COMPOSER_MAX_HEIGHT =
@@ -74,8 +74,8 @@ export const COMPOSER_MAX_HEIGHT =
  * @example
  * composerHeight(15.95, 1)   // => 24
  * composerHeight(15.95, 3)   // => 56
- * composerHeight(15.95, 5)   // => 88 — the ceiling
- * composerHeight(15.95, 50)  // => 88 — it scrolls instead
+ * composerHeight(15.95, 8)   // => 135.6 — the ceiling
+ * composerHeight(15.95, 50)  // => 135.6 — it scrolls instead
  * composerHeight(15.95, NaN) // => 24
  * composerHeight(0, 3)       // => 56 — an unreadable line height still grows
  */

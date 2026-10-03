@@ -317,7 +317,7 @@ export function AgentChat({ inputRef }: Props) {
 					<div className="flex items-end gap-1.5">
 						<Textarea
 							ref={inputRef}
-							placeholder="e.g. what does sym.main do? disassemble it"
+							placeholder="Ask the agent"
 							rows={1}
 							onInput={autoGrow}
 							className="min-h-[1.25rem] flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1 py-1 text-xs shadow-none focus-visible:ring-0"

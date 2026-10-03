@@ -34,7 +34,9 @@ describe("composerHeight", () => {
 	it("stops at the ceiling however much is typed", () => {
 		// A composer with no ceiling eventually takes the window, and the
 		// transcript is the thing it is talking about.
-		expect(composerHeight(LH, 6)).toBe(COMPOSER_MAX_HEIGHT);
+		expect(composerHeight(LH, COMPOSER_MAX_LINES + 1)).toBe(
+			COMPOSER_MAX_HEIGHT,
+		);
 		expect(composerHeight(LH, 50)).toBe(COMPOSER_MAX_HEIGHT);
 		expect(composerHeight(LH, 10_000)).toBe(COMPOSER_MAX_HEIGHT);
 	});
@@ -116,7 +118,7 @@ describe("composerLines", () => {
 });
 
 describe("the ceiling", () => {
-	it("is the same height whether reached at 5 lines or 500", () => {
+	it("is the same height whether reached at the last line or 500", () => {
 		// The two must be equal or the box jumps as it crosses the ceiling.
 		expect(composerHeight(LH, COMPOSER_MAX_LINES)).toBe(
 			composerHeight(LH, 500),
