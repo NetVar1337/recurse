@@ -102,11 +102,27 @@ export const useBinaryStore = create<BinaryState>((set) => ({
 						}`,
 					);
 			}
+			// Types the analyst has given a return value, an argument or a local
+			// travel with the names: same key, same scope, same reasoning about
+			// degrading loudly rather than looking like a target with none.
+			let variableTypes: Record<string, string> = {};
+			try {
+				variableTypes = await api.variableTypes();
+			} catch (e) {
+				useUiStore
+					.getState()
+					.setErr(
+						`variable types could not be read: ${
+							e instanceof Error ? e.message : String(e)
+						}`,
+					);
+			}
 			useAnalysisStore.getState().setAll({
 				funcs: f ?? [],
 				strings: s ?? [],
 				imports: i ?? [],
 				variableNames,
+				variableTypes,
 				dataRegions,
 			});
 			await useSessionStore.getState().ensure();

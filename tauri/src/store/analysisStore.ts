@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { api } from "../api";
+import { annotationKey } from "../lib/listingFormat";
 import type {
 	AsmResult,
 	DataRegions,
@@ -31,6 +32,16 @@ interface AnalysisState {
 	 */
 	variableNames: Record<string, string>;
 	/**
+	 * Analyst types for the return value, arguments and locals, keyed exactly as
+	 * `variableNames` is.
+	 *
+	 * A name says what a datum is called and a type says what it holds; they are
+	 * independent edits, so they are two records rather than one row that cannot
+	 * exist until both are filled in. Same key: a frame offset for a local, a
+	 * register for an argument, `RETURN_KEY` for the return value.
+	 */
+	variableTypes: Record<string, string>;
+	/**
 	 * The image's non-executable regions. Empty until a binary is opened, and
 	 * for a backend that does not report them at all.
 	 */
@@ -42,12 +53,19 @@ interface AnalysisState {
 
 	/** Record one variable's name, or drop it when the name is blank. */
 	setVariableName: (func: number, key: string | number, name: string) => void;
+	/** Record one datum's type, or drop it when the type is blank. */
+	setVariableType: (
+		func: number,
+		key: string | number,
+		typeName: string,
+	) => void;
 	beginOpen: () => void;
 	setAll: (data: {
 		funcs: Function[];
 		strings: R2String[];
 		imports: Import[];
 		variableNames: Record<string, string>;
+		variableTypes: Record<string, string>;
 		dataRegions: DataRegions;
 	}) => void;
 	setFunctions: (funcs: Function[]) => void;
@@ -69,6 +87,7 @@ const initial = {
 	strings: [] as R2String[],
 	imports: [] as Import[],
 	variableNames: {} as Record<string, string>,
+	variableTypes: {} as Record<string, string>,
 	dataRegions: { sections: [], boundaries: [] } as DataRegions,
 	decompiled: null as string | null,
 	decompiledAnnotations: [] as DecompileAnnotation[],
@@ -78,23 +97,67 @@ const initial = {
 
 const setErr = (e: string) => useUiStore.getState().setErr(e);
 
+/**
+ * One annotation recorded, or the record dropped when the text is blank.
+ *
+ * Shared by names and types because blank means the same thing to both — "no
+ * annotation" — and a record holding `""` would read back as a name or a type
+ * of nothing, which is a different claim from having none at all.
+ *
+ * @param records - The current record, keyed by `"<func>:<key>"`.
+ * @param func - The function's static address.
+ * @param key - The datum: a frame offset, a register, or `RETURN_KEY`.
+ * @param text - What the analyst typed.
+ * @returns A new record with the entry set or removed.
+ *
+ * @example
+ * withEntry({}, 4198400, -24, "len ")  // => { "4198400:-24": "len" }
+ * withEntry({ "1:rdi": "char *" }, 1, "rdi", "  ") // => {}
+ */
+function withEntry(
+	records: Record<string, string>,
+	func: number,
+	key: string | number,
+	text: string,
+): Record<string, string> {
+	const next = { ...records };
+	const trimmed = text.trim();
+	if (trimmed) next[annotationKey(func, key)] = trimmed;
+	else delete next[annotationKey(func, key)];
+	return next;
+}
+
 export const useAnalysisStore = create<AnalysisState>((set, get) => ({
 	...initial,
 
 	beginOpen: () => set({ ...initial }),
 
-	setAll: ({ funcs, strings, imports, variableNames, dataRegions }) =>
-		set({ funcs, strings, imports, variableNames, dataRegions }),
-	/** Record one variable's name, or drop it when the name is blank. */
-	setVariableName: (func: number, key: string | number, name: string) =>
-		set((s) => {
-			const record = `${func}:${key}`;
-			const next = { ...s.variableNames };
-			const trimmed = name.trim();
-			if (trimmed) next[record] = trimmed;
-			else delete next[record];
-			return { variableNames: next };
+	setAll: ({
+		funcs,
+		strings,
+		imports,
+		variableNames,
+		variableTypes,
+		dataRegions,
+	}) =>
+		set({
+			funcs,
+			strings,
+			imports,
+			variableNames,
+			variableTypes,
+			dataRegions,
 		}),
+	/** Record one variable's name, or drop it when the name is blank. */
+	setVariableName: (func, key, name) =>
+		set((s) => ({
+			variableNames: withEntry(s.variableNames, func, key, name),
+		})),
+	/** Record one datum's type, or drop it when the type is blank. */
+	setVariableType: (func, key, typeName) =>
+		set((s) => ({
+			variableTypes: withEntry(s.variableTypes, func, key, typeName),
+		})),
 
 	setFunctions: (funcs) =>
 		set((state) => ({

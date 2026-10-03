@@ -45,6 +45,10 @@ not use. No crate depends on Tauri, and each builds/tests standalone;
   no external `checksec`), and analysis counts
 - Rename functions from the list (double-click or the ✎ button); names persist in
   SQLite and show up in the function list, disassembly annotations, and to the agent
+- Annotate from the listing's function header: click a variable's name to name it, or
+  a `undefinedN` cell to give it a type. A return type you set is shown in the header's
+  signature line. Both persist in SQLite, keyed by function, and clearing a cell reverts
+  it to what the instructions say
 - Grounded agent: every address is a clickable object (function list, graph nodes,
   xrefs, decompiler annotations) — not pasted text that the model can hallucinate
 - Live analysis session on any binary — including extension-less files

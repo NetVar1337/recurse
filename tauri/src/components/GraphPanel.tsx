@@ -212,8 +212,12 @@ function GraphVarName({
 	text: string;
 }) {
 	const { names } = useContext(GraphDetail);
-	const rename = useVarRename({ func, slot: slotIn(text, frame), names });
-	if (!rename.present) return null;
+	const rename = useVarRename({
+		func,
+		datum: slotIn(text, frame),
+		names,
+	});
+	if (rename.shown === "") return null;
 	if (rename.editing) {
 		// Sized for the graph's own type scale, which is a step below the
 		// listing's.
@@ -223,13 +227,13 @@ function GraphVarName({
 		<span
 			className={cn(
 				"text-2xs mx-1 font-mono",
-				rename.named
+				rename.value
 					? "text-asm-symbol italic"
 					: "text-muted-foreground/70",
 				"hover:bg-accent/50 hover:text-foreground rounded px-0.5",
 			)}
 			title={
-				rename.named
+				rename.value
 					? "Click to rename this variable"
 					: "Derived from the slot's offset — click to name it"
 			}

@@ -7,32 +7,9 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::params;
 
 use crate::db;
-
-/// Every row `sql` returns for `binary_path`, or why they could not be read.
-///
-/// The two answers have to stay apart. A name that is absent and a name that
-/// could not be loaded are different facts, and returning an empty map for both
-/// makes a database that cannot be opened look exactly like a binary nobody has
-/// named anything in — which is how a broken table passed for an empty one for
-/// long enough to be diagnosed as a UI problem.
-fn rows_for<T>(
-    sql: &str,
-    binary_path: &str,
-    read: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
-) -> Result<Vec<T>, String> {
-    let conn: Connection = db::connect()?;
-    let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare renames: {e}"))?;
-    let rows = stmt
-        .query_map(params![binary_path], read)
-        .map_err(|e| format!("query renames: {e}"))?;
-    // Collected rather than flattened: a row that fails to decode is a fault to
-    // report, not one to drop on the way past.
-    rows.collect::<rusqlite::Result<Vec<T>>>()
-        .map_err(|e| format!("read renames: {e}"))
-}
 
 /// Every rename recorded for `binary_path`, as `address -> name`.
 ///
@@ -43,7 +20,8 @@ fn rows_for<T>(
 /// deliberately, and say so where they do.
 pub fn load(binary_path: &str) -> Result<HashMap<u64, String>, String> {
     let mut out = HashMap::new();
-    for (addr, name) in rows_for(
+    for (addr, name) in db::rows_for(
+        "renames",
         "SELECT addr, name FROM function_names WHERE binary_path = ?1",
         binary_path,
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
@@ -192,7 +170,8 @@ mod tests {
 /// read is not that.
 pub fn load_variables(binary_path: &str) -> Result<HashMap<(u64, String), String>, String> {
     let mut out = HashMap::new();
-    for (func, key, name) in rows_for(
+    for (func, key, name) in db::rows_for(
+        "variable renames",
         "SELECT func_addr, key, name FROM variable_names WHERE binary_path = ?1",
         binary_path,
         |row| {

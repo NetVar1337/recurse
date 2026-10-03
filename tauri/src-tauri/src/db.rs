@@ -3,8 +3,9 @@
 //! Single file at `~/.recurse/recurse.db` (WAL mode). Table ownership:
 //!
 //! - host (`db.rs`, `project.rs`, `sessions.rs`, `config.rs`, `renames.rs`,
-//!   `providers.rs`): `config`, `projects`, `sessions`, `models`,
-//!   `function_names`, `variable_names`, `provider_credentials`
+//!   `annotations.rs`, `providers.rs`): `config`, `projects`, `sessions`,
+//!   `models`, `function_names`, `variable_names`, `variable_types`,
+//!   `provider_credentials`
 //! - recurse_agent (`recurse_agent::memory`): `memories`, `memories_fts`
 //!
 //! The filesystem under `~/.recurse/<project>/` is reserved for
@@ -15,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS config (
@@ -64,6 +65,22 @@ CREATE TABLE IF NOT EXISTS variable_names (
     -- things, and an argument is not an offset at all.
     key TEXT NOT NULL,
     name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (binary_path, func_addr, key)
+);
+-- The type the analyst has given a datum: the function's return value, an
+-- argument register or a frame slot. Keyed exactly as `variable_names` is, and
+-- deliberately a separate table: a name and a type are independent edits, and
+-- folding them into one row would mean a row cannot exist without both.
+CREATE TABLE IF NOT EXISTS variable_types (
+    binary_path TEXT NOT NULL,
+    func_addr INTEGER NOT NULL,
+    -- `<RETURN>` for the return value, `rdi` for an argument register, `-8` for
+    -- a frame slot. `<RETURN>` cannot be a register name, so it cannot collide
+    -- with an argument, and it cannot be a number, so it cannot collide with a
+    -- frame offset.
+    key TEXT NOT NULL,
+    type_name TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (binary_path, func_addr, key)
 );
@@ -126,6 +143,35 @@ pub fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Every row `sql` returns for `binary_path`, or why they could not be read.
+///
+/// The two answers have to stay apart. A row that is absent and a row that
+/// could not be read are different facts, and returning an empty map for both
+/// makes a database that cannot be opened look exactly like a target nobody has
+/// annotated — which is how a broken table passed for an empty one for long
+/// enough to be diagnosed as a UI problem.
+///
+/// Shared rather than private to one module because the tables are queried the
+/// same way: a parameter binding for the path, and one row decoder per query.
+pub(crate) fn rows_for<T>(
+    what: &str,
+    sql: &str,
+    binary_path: &str,
+    read: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, String> {
+    let conn: Connection = connect()?;
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("prepare {what}: {e}"))?;
+    let rows = stmt
+        .query_map(params![binary_path], read)
+        .map_err(|e| format!("query {what}: {e}"))?;
+    // Collected rather than flattened: a row that fails to decode is a fault to
+    // report, not one to drop on the way past.
+    rows.collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(|e| format!("read {what}: {e}"))
 }
 
 /// The user's home directory, honoring a `HOME` environment variable

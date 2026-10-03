@@ -1,4 +1,5 @@
 pub mod analysis_extra;
+pub mod annotations;
 pub mod commands;
 pub mod config;
 pub mod db;
@@ -116,6 +117,8 @@ pub fn run() {
             commands::rename_function,
             commands::rename_variable,
             commands::variable_names,
+            annotations::set_variable_type,
+            annotations::variable_types,
             commands::analysis_progress,
             commands::debug_command,
             commands::debug_modules,

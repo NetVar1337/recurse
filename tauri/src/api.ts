@@ -55,6 +55,9 @@ export const api = {
 	renameVariable: (func: number, key: string, name: string) =>
 		invoke<void>("rename_variable", { func, key, name }),
 	variableNames: () => invoke<Record<string, string>>("variable_names"),
+	setVariableType: (func: number, key: string, typeName: string) =>
+		invoke<void>("set_variable_type", { func, key, typeName }),
+	variableTypes: () => invoke<Record<string, string>>("variable_types"),
 	debugCommand: (op: string, args?: Record<string, unknown>) =>
 		invoke<unknown>("debug_command", { op, args: args ?? null }),
 	debugSnapshot: () => invoke<DebugSnapshot | null>("debug_snapshot"),
@@ -88,8 +91,7 @@ export const api = {
 	dataRegions: () => invoke<DataRegions>("data_regions"),
 	listing: (offset: number, count: number) =>
 		invoke<ListingWindow>("listing", { offset, count }),
-	listingLocate: (addr: number) =>
-		invoke<number>("listing_locate", { addr }),
+	listingLocate: (addr: number) => invoke<number>("listing_locate", { addr }),
 	imports: () => invoke<Import[]>("imports"),
 	xrefsTo: (addr: number) => invoke<Xref[]>("xrefs_to", { addr }),
 	decompile: (addr: number) => invoke<DecompileResult>("decompile", { addr }),

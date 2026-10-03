@@ -10,7 +10,7 @@ use crate::sessions::{self, Session};
 use crate::AppState;
 use recurse_agent::agent::{self, AgentEvent, ModelInfo, ToolCall};
 
-fn session_of(
+pub(crate) fn session_of(
     state: &AppState,
 ) -> Result<std::sync::MutexGuard<'_, Option<Box<dyn Engine>>>, String> {
     state
@@ -28,7 +28,7 @@ fn session<'a>(
         .map_err(|e| format!("session lock poisoned: {e}"))
 }
 
-fn with_sess<'a>(
+pub(crate) fn with_sess<'a>(
     guard: &'a std::sync::MutexGuard<'a, Option<Box<dyn Engine>>>,
 ) -> Result<&'a dyn Engine, String> {
     guard

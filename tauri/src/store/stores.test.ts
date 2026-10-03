@@ -16,6 +16,7 @@ vi.mock("../api", () => ({
 		decompile: vi.fn(),
 		setZoom: vi.fn().mockResolvedValue(undefined),
 		renameVariable: vi.fn().mockResolvedValue(undefined),
+		setVariableType: vi.fn().mockResolvedValue(undefined),
 	},
 }));
 
@@ -130,6 +131,60 @@ describe("analysisStore variable names", () => {
 			.setVariableName(0x401000, "-24", "flag_len");
 		useAnalysisStore.getState().setVariableName(0x401000, "-24", "   ");
 		expect(useAnalysisStore.getState().variableNames).toEqual({});
+	});
+});
+
+describe("analysisStore variable types", () => {
+	beforeEach(() => {
+		useAnalysisStore.setState({ variableTypes: {} });
+		vi.mocked(api.setVariableType).mockReset();
+		vi.mocked(api.setVariableType).mockResolvedValue(undefined);
+	});
+
+	it("records a type against the same key a name uses", () => {
+		// A name says what a datum is called and a type says what it holds, so
+		// the two are separate records over one identity — which is what lets a
+		// local be named without being typed.
+		useAnalysisStore.getState().setVariableName(0x401000, "-24", "buf");
+		useAnalysisStore.getState().setVariableType(0x401000, "-24", "char[8]");
+		const s = useAnalysisStore.getState();
+		expect(s.variableNames).toEqual({ [`${0x401000}:-24`]: "buf" });
+		expect(s.variableTypes).toEqual({ [`${0x401000}:-24`]: "char[8]" });
+	});
+
+	it("keys the return value separately from any local", () => {
+		useAnalysisStore
+			.getState()
+			.setVariableType(0x401000, "<RETURN>", "int");
+		expect(useAnalysisStore.getState().variableTypes).toEqual({
+			[`${0x401000}:<RETURN>`]: "int",
+		});
+	});
+
+	it("trims what the analyst typed", () => {
+		useAnalysisStore
+			.getState()
+			.setVariableType(0x401000, "rdi", " char * ");
+		expect(useAnalysisStore.getState().variableTypes).toEqual({
+			[`${0x401000}:rdi`]: "char *",
+		});
+	});
+
+	it("forgets a type when it is cleared", () => {
+		useAnalysisStore.getState().setVariableType(0x401000, "-24", "char[8]");
+		useAnalysisStore.getState().setVariableType(0x401000, "-24", "  ");
+		expect(useAnalysisStore.getState().variableTypes).toEqual({});
+	});
+
+	it("keeps each function's types apart", () => {
+		useAnalysisStore.getState().setVariableType(0x401000, "-24", "char[8]");
+		useAnalysisStore
+			.getState()
+			.setVariableType(0x402000, "-24", "uint64_t");
+		expect(useAnalysisStore.getState().variableTypes).toEqual({
+			[`${0x401000}:-24`]: "char[8]",
+			[`${0x402000}:-24`]: "uint64_t",
+		});
 	});
 });
 
