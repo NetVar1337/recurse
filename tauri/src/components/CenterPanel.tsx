@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import {
 	lazy,
 	Suspense,
@@ -28,7 +28,7 @@ import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
-import { navBack, navForward, useNavStore } from "@/store/navStore";
+import { useNavStore } from "@/store/navStore";
 import { useUiStore } from "@/store/uiStore";
 import type { DecompileAnnotation, Function, Xref } from "@/types";
 
@@ -248,8 +248,6 @@ export function CenterPanel() {
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
-	const navCursor = useNavStore((s) => s.cursor);
-	const navLen = useNavStore((s) => s.history.length);
 	const [consoleMounted, setConsoleMounted] = useState(false);
 	const [viewMode, setViewMode] = useState<"linear" | "graph">("linear");
 	const [xrefs, setXrefs] = useState<Xref[]>([]);
@@ -358,31 +356,15 @@ export function CenterPanel() {
 		});
 	};
 
-	// Every selected address is a step on the path, so the back/forward arrows
-	// can walk it. Returning via an arrow re-selects an address already at the
-	// cursor, which `push` ignores, so history is not corrupted by it.
+	// Every selected address is a step on the path, so history can walk it.
+	// Returning to an address already at the cursor re-selects it, which `push`
+	// ignores, so the record is not corrupted by walking back over it.
 	useEffect(() => {
 		if (selectedAddr != null) useNavStore.getState().push(selectedAddr);
 	}, [selectedAddr]);
 	useEffect(() => {
 		useNavStore.getState().reset();
 	}, [binaryPath]);
-
-	const gotoAddr = useCallback(
-		(addr: number) => {
-			const f = funcs.find((x) => x.addr === addr);
-			if (f) selectFn(f);
-		},
-		[funcs, selectFn],
-	);
-	const onNavBack = useCallback(() => {
-		const addr = navBack();
-		if (addr != null) gotoAddr(addr);
-	}, [gotoAddr]);
-	const onNavForward = useCallback(() => {
-		const addr = navForward();
-		if (addr != null) gotoAddr(addr);
-	}, [gotoAddr]);
 
 	const loadXrefs = useCallback(async () => {
 		if (!selected) return;
@@ -532,24 +514,6 @@ export function CenterPanel() {
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
 			{tab === "disasm" && (
 				<div className="border-border bg-card ui-bar shrink-0 gap-2 border-b px-3">
-					<Button
-						variant="toolbar"
-						size="sm"
-						title="Go back"
-						disabled={navCursor <= 0}
-						onClick={onNavBack}
-					>
-						<ArrowLeft className="h-3.5 w-3.5" />
-					</Button>
-					<Button
-						variant="toolbar"
-						size="sm"
-						title="Go forward"
-						disabled={navCursor >= navLen - 1}
-						onClick={onNavForward}
-					>
-						<ArrowRight className="h-3.5 w-3.5" />
-					</Button>
 					{selected && (
 						<>
 							<span className="text-muted-foreground truncate text-xs">
