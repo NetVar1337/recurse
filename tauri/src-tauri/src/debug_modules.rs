@@ -63,6 +63,8 @@ pub fn modules(pid: u32) -> Result<Vec<Module>, String> {
 /// wrong, and skipping the check would cost a syscall per candidate.
 ///
 /// ```
+/// use recurse_lib::debug_modules::parse_maps;
+///
 /// let text = "\
 /// 55b0d4000000-55b0d4002000 r--p 00000000 08:01 1234 /bin/target
 /// 55b0d4002000-55b0d4007000 r-xp 00002000 08:01 1234 /bin/target

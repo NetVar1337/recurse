@@ -36,5 +36,3 @@ export const useNavStore = create<NavState>((set) => ({
 		}),
 	reset: () => set({ history: [], cursor: -1 }),
 }));
-
-

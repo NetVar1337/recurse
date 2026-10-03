@@ -270,13 +270,13 @@ export function AgentChat({ inputRef }: Props) {
 						</div>
 					)}
 					{!showSessions &&
-						messages.map((m) =>
+						messages.map((m) => (
 							<div key={m.id} className="chat-message">
 								{m.role === "user" ? (
 									<UserMessage
-									blocks={m.blocks}
-									contextRefs={m.contextRefs}
-								/>
+										blocks={m.blocks}
+										contextRefs={m.contextRefs}
+									/>
 								) : (
 									<AssistantMessage
 										blocks={m.blocks}
@@ -285,7 +285,7 @@ export function AgentChat({ inputRef }: Props) {
 									/>
 								)}
 							</div>
-						)}
+						))}
 				</div>
 			</div>
 
