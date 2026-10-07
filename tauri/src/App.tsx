@@ -1,15 +1,18 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ActivityBar } from "@/components/ActivityBar";
 import { AgentChat } from "@/components/AgentChat";
 import { CenterPanel } from "@/components/CenterPanel";
 import { CommandPalette } from "@/components/CommandPalette";
-import { FunctionList } from "@/components/FunctionList";
-import { Header } from "@/components/Header";
+import { DebuggerSettingsDialog } from "@/components/DebuggerSettingsDialog";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
+import { MenuBar } from "@/components/MenuBar";
 import { ProjectScreen } from "@/components/ProjectScreen";
-import { StatusBar } from "@/components/StatusBar";
+import { Sidebar } from "@/components/Sidebar";
+import { useResizableColumn } from "@/components/ui/resizable-column";
+import { CHAT_DEFAULT } from "@/lib/chatWidth";
+import { SIDEBAR_DEFAULT } from "@/lib/sidebarWidth";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useDebugStore } from "@/store/debugStore";
 import { useLlmStore } from "@/store/llmStore";
@@ -26,10 +29,26 @@ function App() {
 	const chatOpen = useUiStore((s) => s.chatOpen);
 	const setChatOpen = useUiStore((s) => s.setChatOpen);
 	const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+	const debuggerSettingsOpen = useUiStore((s) => s.debuggerSettingsOpen);
+	const setDebuggerSettingsOpen = useUiStore(
+		(s) => s.setDebuggerSettingsOpen,
+	);
+	// The grid is state, not a ref: it is a value the layout reads during render,
+	// and a ref would put the columns in reach of it.
+	const [grid, setGrid] = useState<HTMLDivElement | null>(null);
+	// Both columns read each other off the grid, so neither has to know the other
+	// one's render order; each charges the centre's floor against the width its
+	// sibling is really holding.
+	const sidebar = useResizableColumn("sidebar", grid);
+	const chat = useResizableColumn("chat", grid);
 
 	useEffect(() => {
 		useLlmStore.getState().init();
 		useSettingsStore.getState().initZoom();
+		useSettingsStore.getState().initTheme();
+		// Came in with the header that used to hold it: the backend actually in use
+		// is the backend's answer, not whatever localStorage last remembered.
+		void useSettingsStore.getState().initBackend();
 		useProjectStore.getState().loadProjects();
 		void useUpdateStore.getState().checkForUpdates();
 	}, []);
@@ -92,7 +111,9 @@ function App() {
 
 	return (
 		<div className="flex h-full flex-col">
-			<Header />
+			{/* The bar is the top row, where the title bar was: a window's menus sit
+			    above its content, not below a heading. */}
+			<MenuBar />
 
 			{err && (
 				<div className="border-destructive bg-destructive/15 text-destructive flex items-center justify-between gap-2 border-b px-3 py-1.5 text-xs">
@@ -113,31 +134,43 @@ function App() {
 				<div className="flex min-h-0 flex-1 overflow-hidden">
 					<ActivityBar />
 					<div
+						ref={setGrid}
 						className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
 						style={{
+							// The widths live in CSS variables so a drag can write
+							// them without re-rendering the panels either side; the
+							// fallbacks are what the panes start at before that.
 							gridTemplateColumns: chatOpen
-								? "260px 1fr 340px"
-								: "260px 1fr",
+								? `var(--recurse-sidebar, ${SIDEBAR_DEFAULT}px) 4px minmax(0, 1fr) 4px var(--recurse-chat, ${CHAT_DEFAULT}px)`
+								: `var(--recurse-sidebar, ${SIDEBAR_DEFAULT}px) 4px minmax(0, 1fr)`,
 						}}
 					>
 						<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-r">
-							<FunctionList />
+							<Sidebar />
 						</aside>
+
+						<div {...sidebar.divider} />
 
 						<CenterPanel />
 
 						{chatOpen && (
-							<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
-								<AgentChat inputRef={chatInputRef} />
-							</aside>
+							<>
+								<div {...chat.divider} />
+								<aside className="border-border bg-card flex min-h-0 min-w-0 flex-col border-l">
+									<AgentChat inputRef={chatInputRef} />
+								</aside>
+							</>
 						)}
 					</div>
 				</div>
 			)}
 
-			{binary && <StatusBar />}
 			<CommandPalette />
 			<NewProjectDialog />
+			<DebuggerSettingsDialog
+				open={debuggerSettingsOpen}
+				onOpenChange={setDebuggerSettingsOpen}
+			/>
 		</div>
 	);
 }

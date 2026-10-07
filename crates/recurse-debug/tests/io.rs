@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use recurse_debug::model::{LaunchOptions, ProcessState, StepKind, StopReason};
-use recurse_debug::Debugger;
+use recurse_debug::{Debugger, SessionEvent};
 
 /// A crackme that prompts on stdout and reads a flag from stdin.
 const FIXTURE: &str = "crates/recurse-eval/corpus/5b81014933c5d41f5c6ba944/just see";
@@ -196,6 +196,67 @@ fn pause_interrupts_a_running_target() {
         "pause stop: {:?}",
         stop.reason
     );
+
+    let _ = dbg.kill();
+}
+
+/// A prompt the program prints *before* it blocks on a read must reach a
+/// subscriber, with nobody asking for it.
+///
+/// The UI no longer polls for output, so this is the only way a prompt can
+/// appear: the session pushes it as the debuggee's reader thread sees it. The
+/// read is the point — the program is stopped in `read` and will produce nothing
+/// else for as long as the analyst takes to type, so a prompt that is not pushed
+/// is a prompt the analyst never sees, with a target that looks hung.
+#[test]
+fn a_prompt_before_a_read_is_pushed_to_a_subscriber() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(FIXTURE);
+    if !path.is_file() {
+        return;
+    }
+    let dbg = match Debugger::new() {
+        Ok(d) => Arc::new(d),
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    dbg.launch(&LaunchOptions {
+        path: path.to_string_lossy().to_string(),
+        ..Default::default()
+    })
+    .expect("launch");
+
+    // Subscribed before the run, the way the window's forwarder is: nothing is
+    // replayed, so an event missed here would have to wait for a later one.
+    let events = dbg.subscribe();
+    let runner = dbg.clone();
+    let cont = std::thread::spawn(move || runner.resume().map(|s| s.reason));
+
+    let mut seen = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline && !seen.contains("Give Me Your Flag") {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match events.recv_timeout(remaining) {
+            // The `output` op is deliberately never called: draining the buffer
+            // is the poll's job, and this is the push's.
+            Ok(SessionEvent::Output { text }) => seen.push_str(&text),
+            Ok(SessionEvent::Snapshot { .. }) => {}
+            Err(e) => panic!("no prompt pushed: {seen:?} ({e})"),
+        }
+    }
+    assert!(
+        seen.contains("Give Me Your Flag"),
+        "prompt pushed before input: {seen:?}"
+    );
+
+    // The target is blocked in `read`, and only the interrupt can end that, so
+    // this is also the check that a run in progress is still answerable.
+    dbg.interrupt().expect("interrupt");
+    let stop = cont.join().unwrap().expect("resume returns a stop");
+    assert!(matches!(stop, StopReason::Paused), "pause stop: {stop:?}");
 
     let _ = dbg.kill();
 }

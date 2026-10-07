@@ -1,10 +1,13 @@
 import {
 	Bug,
 	Code2,
+	FileSearch,
+	FileText,
 	Info,
 	MessageSquare,
 	Package,
 	Quote,
+	Share2,
 	Terminal,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -23,9 +26,12 @@ interface View {
 const VIEWS: View[] = [
 	{ tab: "recon", icon: Info, label: "Recon" },
 	{ tab: "disasm", icon: Code2, label: "Disassembly" },
+	{ tab: "callgraph", icon: Share2, label: "Call Graph" },
 	{ tab: "debug", icon: Bug, label: "Debug" },
 	{ tab: "strings", icon: Quote, label: "Strings" },
 	{ tab: "imports", icon: Package, label: "Imports" },
+	{ tab: "findings", icon: FileSearch, label: "Findings" },
+	{ tab: "hex", icon: FileText, label: "Hex" },
 	{ tab: "console", icon: Terminal, label: "Console" },
 ];
 
@@ -33,6 +39,11 @@ const VIEWS: View[] = [
  * The far-left icon rail: one square button per center view, the current one
  * marked with an accent bar on its leading edge. The agent chat lives in its
  * own column rather than a tab, so it is toggled from the foot of the rail.
+ *
+ * The marks are small and their strokes thin on purpose. A rail is a strip of
+ * nine icons read at a glance, and at a size where they are competing for
+ * attention with the code beside them, they are a way of changing view rather
+ * than something to look at.
  *
  * ```
  * <ActivityBar />
@@ -65,10 +76,7 @@ export function ActivityBar() {
 						aria-pressed={tab === v.tab}
 						onClick={() => setTab(v.tab)}
 					>
-						<v.icon
-							className="h-[18px] w-[18px]"
-							strokeWidth={1.6}
-						/>
+						<v.icon className="h-4 w-4" strokeWidth={1.25} />
 					</button>
 				))}
 			</div>
@@ -81,10 +89,7 @@ export function ActivityBar() {
 				aria-pressed={chatOpen}
 				onClick={toggleChat}
 			>
-				<MessageSquare
-					className="h-[18px] w-[18px]"
-					strokeWidth={1.6}
-				/>
+				<MessageSquare className="h-4 w-4" strokeWidth={1.25} />
 			</button>
 		</nav>
 	);

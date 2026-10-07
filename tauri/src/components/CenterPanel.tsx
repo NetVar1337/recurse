@@ -2,7 +2,8 @@ import { ChevronRight, Loader2 } from "lucide-react";
 import {
 	lazy,
 	Suspense,
-	useLayoutEffect,
+	useCallback,
+	useEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -11,17 +12,23 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DebugPanel } from "@/components/DebugPanel";
+import {
+	readDisasmView,
+	storeDisasmView,
+	type DisasmViewOptions,
+} from "@/components/DisasmBytes";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { ReconPanel } from "@/components/ReconPanel";
 import { cn } from "@/lib/utils";
-import { chrome } from "@/lib/chrome";
-import { callTarget } from "@/lib/calls";
-import { DisasmComment, DisasmInstr, splitComment } from "@/lib/disasm";
+import { ListingView } from "@/components/ListingView";
+import { MENU } from "@/lib/commands";
+import { disasmMenuSections } from "@/lib/disasmMenu";
+import { clearSections, publishSections } from "@/lib/menuRegistry";
 import { api } from "@/api";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useBinaryStore } from "@/store/binaryStore";
 import { useContextStore } from "@/store/contextStore";
+import { useNavStore } from "@/store/navStore";
 import { useUiStore } from "@/store/uiStore";
 import type { DecompileAnnotation, Function, Xref } from "@/types";
 
@@ -31,6 +38,30 @@ const R2Console = lazy(() =>
 
 const GraphPanel = lazy(() =>
 	import("@/components/GraphPanel").then((m) => ({ default: m.GraphPanel })),
+);
+
+const CallGraphPanel = lazy(() =>
+	import("@/components/CallGraphPanel").then((m) => ({
+		default: m.CallGraphPanel,
+	})),
+);
+
+const FindingsPanel = lazy(() =>
+	import("@/components/FindingsPanel").then((m) => ({
+		default: m.FindingsPanel,
+	})),
+);
+
+const HexPanel = lazy(() =>
+	import("@/components/HexPanel").then((m) => ({ default: m.HexPanel })),
+);
+
+// The debugger pane, deferred like its siblings. It carries the registers pane,
+// the CPU view, the stack and the output transcript — none of which are needed
+// until the analyst opens the Debug tab, and all of which were in the first
+// chunk until they were.
+const DebugPanel = lazy(() =>
+	import("@/components/DebugPanel").then((m) => ({ default: m.DebugPanel })),
 );
 
 function fmtAddr(a?: number | null) {
@@ -62,6 +93,21 @@ const HL_COLORS: Record<string, string> = {
 	constant_variable: "text-asm-number",
 };
 
+/**
+ * Color a decompiled source according to the engine's annotations.
+ *
+ * Annotations are byte ranges over the source, so they are flattened into a
+ * per-character category first and then coalesced back into runs — which is
+ * linear in the source, and is why the caller memoizes the result.
+ *
+ * @param code - The decompiled source.
+ * @param annotations - Ranges to color, from the engine.
+ * @returns Runs of text, each in a `<span>` when the engine named a category.
+ *
+ * @example
+ * highlight("mov a, b", [{ start: 0, end: 3, syntax_highlight: "instruction" }]);
+ * // => [<span className="text-asm-instruction">"mov"</span>, " a, b"]
+ */
 function highlight(
 	code: string,
 	annotations: DecompileAnnotation[],
@@ -95,75 +141,6 @@ function highlight(
 	return spans;
 }
 
-function OpRow({
-	op,
-	target,
-	onGoTo,
-}: {
-	op: {
-		addr: number;
-		bytes?: string | null;
-		text?: string;
-		disasm?: string;
-		jump?: number | null;
-		ptr?: number | null;
-	};
-	target?: Function | null;
-	onGoTo?: (f: Function) => void;
-}) {
-	const text = op.text ?? op.disasm ?? "";
-	const { instr, comment } = splitComment(text);
-	const clickable = !!target;
-	return (
-		<div
-			className={cn(
-				chrome.row,
-				"gap-3 pl-3",
-				clickable && "hover:bg-accent/70 cursor-pointer",
-			)}
-			onClick={clickable && onGoTo ? () => onGoTo(target) : undefined}
-			title={
-				clickable
-					? `Go to ${target.name ?? fmtAddr(target.addr)}`
-					: undefined
-			}
-		>
-			<span
-				className="nums text-asm-addr min-w-[9ch] shrink-0 font-mono"
-				title="Virtual address"
-			>
-				{fmtAddr(op.addr)}
-			</span>
-			<span
-				className="text-asm-bytes min-w-[16ch] shrink-0 font-mono"
-				title="Machine code bytes (hex)"
-			>
-				{op.bytes ?? ""}
-			</span>
-			<span
-				className={cn(
-					"text-foreground",
-					clickable &&
-						"text-primary underline decoration-dotted underline-offset-2",
-				)}
-				title="Disassembly (mnemonic + operands)"
-			>
-				{instr && <DisasmInstr text={instr} />}
-				<DisasmComment comment={comment} />
-				{typeof op.jump === "number" && (
-					<span className="text-asm-jump"> → {fmtAddr(op.jump)}</span>
-				)}
-				{typeof op.ptr === "number" && (
-					<span className="text-asm-jump">
-						{" "}
-						; [{fmtAddr(op.ptr)}]
-					</span>
-				)}
-			</span>
-		</div>
-	);
-}
-
 export function CenterPanel() {
 	const tab = useUiStore((s) => s.tab);
 	const selected = useAnalysisStore((s) => s.selected);
@@ -186,10 +163,88 @@ export function CenterPanel() {
 	// (decompile / raw console on native). Undefined = older host, show them.
 	const capabilities = useBinaryStore((s) => s.binary?.capabilities);
 	const binaryPath = useBinaryStore((s) => s.binary?.path);
+	// Coloring walks every character of the source, so it is done when the
+	// source changes and not when the window does.
+	const highlighted = useMemo(
+		() =>
+			decompiled ? highlight(decompiled, decompiledAnnotations) : null,
+		[decompiled, decompiledAnnotations],
+	);
 
 	const pending = useContextStore((s) => s.pending);
 	const setPending = useContextStore((s) => s.setPending);
 	const commitPending = useContextStore((s) => s.commitPending);
+
+	// Signature-generation / semantic-similarity results for the selected
+	// function, shown inline below the disasm toolbar until dismissed.
+	const [toolResult, setToolResult] = useState<{
+		title: string;
+		lines: string[];
+	} | null>(null);
+	const [toolBusy, setToolBusy] = useState(false);
+
+	const runGenerateSignature = useCallback(async () => {
+		if (!selected) return;
+		setToolBusy(true);
+		try {
+			const sig = await api.generateSignature(selected.addr);
+			setToolResult({
+				title: `Signature: ${sig.name}`,
+				lines: [
+					sig.pattern,
+					`${sig.concrete_byte_count}/${sig.byte_count} concrete bytes`,
+				],
+			});
+		} catch (e) {
+			setToolResult({ title: "Signature failed", lines: [String(e)] });
+		} finally {
+			setToolBusy(false);
+		}
+	}, [selected]);
+
+	const runIndexBinary = useCallback(async () => {
+		setToolBusy(true);
+		try {
+			const res = await api.semanticIndex();
+			setToolResult({
+				title: "Indexed for similarity search",
+				lines: [
+					`${res.indexed} functions added — corpus now holds ${res.corpus_size.toLocaleString()}`,
+				],
+			});
+		} catch (e) {
+			setToolResult({ title: "Indexing failed", lines: [String(e)] });
+		} finally {
+			setToolBusy(false);
+		}
+	}, []);
+
+	const runShowSimilar = useCallback(async () => {
+		if (!selected) return;
+		setToolBusy(true);
+		try {
+			const res = await api.semanticSimilar(selected.addr);
+			setToolResult({
+				title: `Similar functions (corpus: ${res.corpus_size.toLocaleString()})`,
+				lines:
+					res.matches.length === 0
+						? [
+								'No matches. Use "Index" (this binary, or others opened previously) to populate the corpus first.',
+							]
+						: res.matches.map(
+								(m) =>
+									`${(m.similarity * 100).toFixed(0)}%  ${m.name} @ 0x${m.address.toString(16)}  (${m.binary})`,
+							),
+			});
+		} catch (e) {
+			setToolResult({
+				title: "Similarity search failed",
+				lines: [String(e)],
+			});
+		} finally {
+			setToolBusy(false);
+		}
+	}, [selected]);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const selectedAddr = selected?.addr;
@@ -202,6 +257,31 @@ export function CenterPanel() {
 	const [xrefsError, setXrefsError] = useState<string | null>(null);
 	const [stringQuery, setStringQuery] = useState("");
 	const [importQuery, setImportQuery] = useState("");
+	const [viewOptions, setViewOptions] =
+		useState<DisasmViewOptions>(readDisasmView);
+	const [insnSelection, setInsnSelection] = useState<{
+		address: number;
+		instruction: number | null;
+	}>({ address: selectedAddr ?? 0, instruction: selectedAddr ?? null });
+	const activeInsn =
+		insnSelection.address === selectedAddr
+			? insnSelection.instruction
+			: (selectedAddr ?? null);
+
+	const updateViewOption = useCallback(
+		(key: keyof DisasmViewOptions, value: boolean) => {
+			setViewOptions((current) => {
+				const next = { ...current, [key]: value };
+				storeDisasmView(next);
+				return next;
+			});
+		},
+		[],
+	);
+
+	// Withdrawn when the panel goes, so the View menu stops offering commands that
+	// act on a disassembly that is no longer on screen.
+	useEffect(() => clearSections, []);
 
 	// Large Rust binaries can carry 100k+ strings (youki: 113k). Rendering
 	// them all freezes the webview, so filter first and cap the row count.
@@ -224,22 +304,25 @@ export function CenterPanel() {
 		};
 	}, [strings, stringQuery]);
 
+	// A large binary can import tens of thousands of symbols, and the table has
+	// no pagination: it renders what it is given. Capped the way the strings
+	// table is, with the count saying so rather than the list stopping silently.
 	const visibleImports = useMemo(() => {
+		const IMPORTS_CAP = 2000;
 		const q = importQuery.trim().toLowerCase();
-		if (!q) return imports;
-		return imports.filter((imp) =>
+		if (!q)
+			return {
+				rows: imports.slice(0, IMPORTS_CAP),
+				capped: imports.length > IMPORTS_CAP,
+			};
+		const matched = imports.filter((imp) =>
 			(imp.name ?? "").toLowerCase().includes(q),
 		);
+		return {
+			rows: matched.slice(0, IMPORTS_CAP),
+			capped: matched.length > IMPORTS_CAP,
+		};
 	}, [imports, importQuery]);
-
-	// Address → function lookup so call instructions can resolve to their target.
-	const funcByAddr = useMemo(() => {
-		const m = new Map<number, Function>();
-		for (const f of funcs) {
-			if (typeof f.addr === "number") m.set(f.addr, f);
-		}
-		return m;
-	}, [funcs]);
 
 	// Mount (and keep mounted) the console the first time its tab is opened, so
 	// its state survives tab switches. Adjusting state during render is the
@@ -273,14 +356,17 @@ export function CenterPanel() {
 		});
 	};
 
-	// Reset scroll whenever the selected function changes so a new function
-	// always renders from the top (no stale scroll position from the previous
-	// function's assembly/decompiled view). Runs pre-paint to avoid a flash.
-	useLayoutEffect(() => {
-		scrollRef.current?.scrollTo({ top: 0 });
+	// Every selected address is a step on the path, so history can walk it.
+	// Returning to an address already at the cursor re-selects it, which `push`
+	// ignores, so the record is not corrupted by walking back over it.
+	useEffect(() => {
+		if (selectedAddr != null) useNavStore.getState().push(selectedAddr);
 	}, [selectedAddr]);
+	useEffect(() => {
+		useNavStore.getState().reset();
+	}, [binaryPath]);
 
-	const loadXrefs = async () => {
+	const loadXrefs = useCallback(async () => {
 		if (!selected) return;
 		const addr = selected.addr;
 		setXrefsAddress(addr);
@@ -298,35 +384,131 @@ export function CenterPanel() {
 		} finally {
 			setXrefsLoading(false);
 		}
-	};
+	}, [selected]);
 
-	const toggleXrefs = () => {
+	const toggleXrefs = useCallback(() => {
 		if (xrefsOpen && xrefsAddress === selectedAddr) {
 			setXrefsOpen(false);
 			return;
 		}
 		setXrefsOpen(true);
 		void loadXrefs();
-	};
+	}, [xrefsOpen, xrefsAddress, selectedAddr, loadXrefs]);
+
+	// The commands live in the bar at the top of the window, and they answer to
+	// what this panel is holding: which function is selected, which tool is busy,
+	// which columns are on. Publishing on every render is a field assignment and
+	// nothing more, and the bar reads it only when a menu is opened — so the
+	// alternative, a store written from an effect, would buy a re-render nobody
+	// asked for.
+	useEffect(() => {
+		// Only while the disassembly is the thing on screen: a menu offering to
+		// decompile the function under a cursor that is showing a list of strings
+		// is offering to act on nothing.
+		if (tab !== "disasm") {
+			publishSections(MENU.view, []);
+			return;
+		}
+		publishSections(
+			MENU.view,
+			disasmMenuSections({
+				viewMode,
+				viewOptions,
+				canDecompile: capabilities?.decompile !== false,
+				decompiling,
+				xrefsOpen,
+				toolBusy,
+				asmLoading,
+				hasSelection: !!selected,
+				onViewModeChange: setViewMode,
+				onOptionChange: updateViewOption,
+				onDecompile: () => void decompile(),
+				onToggleXrefs: () => toggleXrefs(),
+				onGenerateSignature: () => void runGenerateSignature(),
+				onShowSimilar: () => void runShowSimilar(),
+				onIndexBinary: () => void runIndexBinary(),
+				onRefresh: () => void refreshDisasm(),
+			}),
+		);
+	}, [
+		tab,
+		viewMode,
+		viewOptions,
+		capabilities?.decompile,
+		decompiling,
+		xrefsOpen,
+		toolBusy,
+		asmLoading,
+		selected,
+		setViewMode,
+		updateViewOption,
+		decompile,
+		toggleXrefs,
+		runGenerateSignature,
+		runShowSimilar,
+		runIndexBinary,
+		refreshDisasm,
+	]);
 
 	const currentXrefs = xrefsAddress === selectedAddr ? xrefs : [];
 	const currentXrefsError = xrefsAddress === selectedAddr ? xrefsError : null;
 	const currentXrefsLoading = xrefsAddress === selectedAddr && xrefsLoading;
 
-	const sourceFunction = (xref: Xref): Function | undefined => {
-		if (xref.fcn_name) {
-			const byName = funcs.find(
-				(f) => f.name === xref.fcn_name || f.realname === xref.fcn_name,
-			);
-			if (byName) return byName;
+	// An incoming-reference list is one row per reference, and each row has to
+	// find the function it came from. Doing that with a `find` per row made the
+	// list quadratic in the binary's function count, so both lookups are built
+	// once: by name, and by the address ranges a reference can fall inside.
+	const funcsByName = useMemo(() => {
+		const m = new Map<string, Function>();
+		for (const f of funcs) {
+			if (f.name && !m.has(f.name)) m.set(f.name, f);
+			if (f.realname && !m.has(f.realname)) m.set(f.realname, f);
 		}
-		return funcs.find(
-			(f) =>
-				typeof f.size === "number" &&
-				xref.from >= f.addr &&
-				xref.from < f.addr + f.size,
-		);
-	};
+		return m;
+	}, [funcs]);
+
+	const sizedFuncs = useMemo(
+		() =>
+			funcs
+				.filter((f) => typeof f.size === "number")
+				.slice()
+				.sort((a, b) => a.addr - b.addr),
+		[funcs],
+	);
+
+	const sourceFunction = useCallback(
+		(xref: Xref): Function | undefined => {
+			if (xref.fcn_name) {
+				const byName = funcsByName.get(xref.fcn_name);
+				if (byName) return byName;
+			}
+			// The last function starting at or before the reference whose range
+			// contains it. Sorted by address, so this is a binary search rather
+			// than a walk over every function in the binary.
+			let lo = 0;
+			let hi = sizedFuncs.length - 1;
+			let found: Function | undefined;
+			while (lo <= hi) {
+				const mid = (lo + hi) >> 1;
+				const f = sizedFuncs[mid];
+				if (f.addr <= xref.from) {
+					found = f;
+					lo = mid + 1;
+				} else {
+					hi = mid - 1;
+				}
+			}
+			if (
+				found &&
+				typeof found.size === "number" &&
+				xref.from < found.addr + found.size
+			) {
+				return found;
+			}
+			return undefined;
+		},
+		[funcsByName, sizedFuncs],
+	);
 
 	return (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -349,56 +531,32 @@ export function CenterPanel() {
 							</span>
 						</>
 					)}
-					<div className="ml-auto flex items-center gap-1">
-						<div className="ui-seg" role="group" aria-label="View">
-							<button
-								type="button"
-								aria-pressed={viewMode === "linear"}
-								onClick={() => setViewMode("linear")}
-								title="Linear disassembly"
-							>
-								Linear
-							</button>
-							<button
-								type="button"
-								aria-pressed={viewMode === "graph"}
-								onClick={() => setViewMode("graph")}
-								title="Control-flow graph (pan/zoom)"
-							>
-								Graph
-							</button>
+				</div>
+			)}
+			{toolResult && (
+				<div className="border-border bg-muted/30 flex items-start justify-between gap-3 border-b px-3 py-2">
+					<div className="min-w-0 flex-1">
+						<div className="text-xs font-semibold">
+							{toolResult.title}
 						</div>
-						{capabilities?.decompile !== false && (
-							<Button
-								variant="toolbar"
-								size="sm"
-								onClick={decompile}
-								disabled={decompiling || !selected}
+						{toolResult.lines.map((l, i) => (
+							<div
+								key={i}
+								className="text-muted-foreground mt-0.5 max-w-full truncate font-mono text-[11px]"
+								title={l}
 							>
-								{decompiling ? "Decompiling…" : "Decompile"}
-							</Button>
-						)}
-						<Button
-							variant="toolbar"
-							size="sm"
-							className="ui-press"
-							aria-pressed={xrefsOpen}
-							onClick={toggleXrefs}
-							disabled={!selected}
-							title="Show incoming cross-references"
-						>
-							Xrefs
-						</Button>
-						<Button
-							variant="toolbar"
-							size="sm"
-							onClick={refreshDisasm}
-							disabled={asmLoading}
-							title="Reload"
-						>
-							{asmLoading ? "Loading" : "Reload"}
-						</Button>
+								{l}
+							</div>
+						))}
 					</div>
+					<Button
+						variant="toolbar"
+						size="sm"
+						onClick={() => setToolResult(null)}
+						title="Dismiss"
+					>
+						Dismiss
+					</Button>
 				</div>
 			)}
 
@@ -406,7 +564,45 @@ export function CenterPanel() {
 				{tab === "recon" ? (
 					<ReconPanel key={binaryPath} />
 				) : tab === "debug" ? (
-					<DebugPanel />
+					<Suspense
+						fallback={
+							<div className="text-muted-foreground px-3 py-3 text-xs">
+								loading debugger…
+							</div>
+						}
+					>
+						<DebugPanel />
+					</Suspense>
+				) : tab === "callgraph" ? (
+					<Suspense
+						fallback={
+							<div className="text-muted-foreground px-3 py-3 text-xs">
+								loading call graph…
+							</div>
+						}
+					>
+						<CallGraphPanel />
+					</Suspense>
+				) : tab === "findings" ? (
+					<Suspense
+						fallback={
+							<div className="text-muted-foreground px-3 py-3 text-xs">
+								loading findings…
+							</div>
+						}
+					>
+						<FindingsPanel />
+					</Suspense>
+				) : tab === "hex" ? (
+					<Suspense
+						fallback={
+							<div className="text-muted-foreground px-3 py-3 text-xs">
+								loading hex view…
+							</div>
+						}
+					>
+						<HexPanel />
+					</Suspense>
 				) : tab === "disasm" && viewMode === "graph" && selected ? (
 					<Suspense
 						fallback={
@@ -490,7 +686,7 @@ export function CenterPanel() {
 																selectFn(source)
 															}
 															className={cn(
-																"hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs disabled:cursor-default",
+																"offscreen-row hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs disabled:cursor-default",
 																source &&
 																	"text-primary",
 															)}
@@ -521,51 +717,31 @@ export function CenterPanel() {
 											</div>
 										)}
 									<div className="font-mono text-xs">
-										{asmLoading && (
-											<div className="text-muted-foreground px-3 py-3">
-												disassembling…
-											</div>
-										)}
-										{!selected && !asmLoading && (
-											<div className="text-muted-foreground px-3 py-3">
-												Select a function to disassemble
-												it.
-											</div>
-										)}
-										{selected &&
-											!asmLoading &&
-											(!asm?.ops ||
-												asm.ops.length === 0) && (
-												<div className="text-muted-foreground px-3 py-3">
-													No instructions.
-												</div>
-											)}
-										{selected &&
-											!asmLoading &&
-											(asm?.ops?.length ?? 0) > 0 && (
-												<div className="border-border bg-card text-2xs flex gap-3 border-b px-3 py-1 font-semibold tracking-wider uppercase">
-													<span className="text-asm-addr w-[9ch] shrink-0">
-														Address
-													</span>
-													<span className="text-asm-bytes w-[16ch] shrink-0">
-														Bytes
-													</span>
-													<span className="text-muted-foreground">
-														Instruction
-													</span>
-												</div>
-											)}
-										{asm?.ops?.map((op) => (
-											<OpRow
-												key={op.addr}
-												op={op}
-												target={callTarget(
-													op,
-													funcByAddr,
-												)}
-												onGoTo={selectFn}
-											/>
-										))}
+										<div className="border-border bg-card text-2xs flex gap-3 border-b px-3 py-1 font-semibold tracking-wider uppercase">
+											<span className="text-asm-addr w-[19ch] shrink-0">
+												Address
+											</span>
+											<span className="text-asm-bytes w-[26ch] shrink-0 pr-3">
+												Bytes
+											</span>
+											<span className="text-muted-foreground">
+												Instruction / Data
+											</span>
+										</div>
+										<ListingView
+											scrollRef={scrollRef}
+											binaryPath={binaryPath}
+											selectedAddr={activeInsn}
+											focusAddr={selectedAddr}
+											onGoTo={selectFn}
+											onSelectAddress={(address) =>
+												setInsnSelection({
+													address:
+														selectedAddr ?? address,
+													instruction: address,
+												})
+											}
+										/>
 									</div>
 								</>
 							)}
@@ -609,7 +785,7 @@ export function CenterPanel() {
 											{visibleStrings.rows.map((s, i) => (
 												<tr
 													key={`${s.vaddr}-${i}-${s.string?.slice(0, 16)}`}
-													className="hover:bg-accent"
+													className="hover:bg-accent offscreen-row"
 												>
 													<td className="text-primary px-3 py-px">
 														{fmtAddr(s.vaddr)}
@@ -656,8 +832,11 @@ export function CenterPanel() {
 										/>
 										<span className="text-muted-foreground text-xs">
 											showing{" "}
-											{visibleImports.length.toLocaleString()}{" "}
+											{visibleImports.rows.length.toLocaleString()}{" "}
 											of {imports.length.toLocaleString()}
+											{visibleImports.capped
+												? " (capped at 2,000 — refine the filter)"
+												: ""}
 										</span>
 									</div>
 									<table className="w-full font-mono text-xs">
@@ -669,18 +848,21 @@ export function CenterPanel() {
 											</tr>
 										</thead>
 										<tbody>
-											{visibleImports.map((imp, i) => (
-												<tr
-													key={i}
-													className="hover:bg-accent"
-												>
-													<td className="px-3 py-px">
-														{imp.name ??
-															"(unnamed)"}
-													</td>
-												</tr>
-											))}
-											{visibleImports.length === 0 && (
+											{visibleImports.rows.map(
+												(imp, i) => (
+													<tr
+														key={i}
+														className="hover:bg-accent offscreen-row"
+													>
+														<td className="px-3 py-px">
+															{imp.name ??
+																"(unnamed)"}
+														</td>
+													</tr>
+												),
+											)}
+											{visibleImports.rows.length ===
+												0 && (
 												<tr>
 													<td className="text-muted-foreground px-3 py-3 text-center">
 														{importQuery.trim()
@@ -698,10 +880,7 @@ export function CenterPanel() {
 						{tab === "disasm" && decompiled && (
 							<div className="border-border bg-card relative shrink-0 border-t">
 								<pre className="scroll-host text-primary h-64 overflow-auto px-3 py-2 font-mono text-xs">
-									{highlight(
-										decompiled,
-										decompiledAnnotations,
-									)}
+									{highlighted}
 								</pre>
 								<Button
 									variant="toolbar"

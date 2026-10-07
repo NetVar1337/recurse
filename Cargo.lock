@@ -3566,8 +3566,10 @@ dependencies = [
  "glob",
  "libc",
  "md-5",
+ "object",
  "recurse-agent",
  "recurse-debug",
+ "recurse-static",
  "regex",
  "rusqlite",
  "serde",
@@ -3585,6 +3587,7 @@ dependencies = [
  "wait-timeout",
  "walkdir",
  "webkit2gtk",
+ "zip",
 ]
 
 [[package]]

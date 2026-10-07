@@ -19,7 +19,7 @@ engine never touches the agent loop, the storefront, or the eval harness.
   `FunctionGraph`, `StringRef`, `Import`, `Xref`, `Decompilation`). Their JSON
   field names are exactly what the UI renders, so the frontend is
   backend-agnostic too.
-- `BackendKind` (`native` | `r2`), selected from `RECURSE_BACKEND` or the
+- `BackendKind` (`native` | `r2` | `ida`), selected from `RECURSE_BACKEND` or the
   stored config. The default is `native`: the in-process, permissive,
   multi-architecture engine.
 - The backend-neutral agent tool (`analyze`) and its dispatcher,
@@ -86,6 +86,13 @@ a separate program, is never linked or bundled, and is never required by the
 build. When selected, the `decompile` and `raw` ops become available and its
 capabilities are advertised to the agent and UI.
 
+### `ida` — IDA Pro (opt-in)
+
+**IDA Pro** (`ida`) is supported as an opt-in analysis engine driving headless IDA
+(`idat`) over a local IPC socket. It provides Hex-Rays decompilation, CFG, xrefs,
+and raw IDAPython execution. Select it via settings or `RECURSE_BACKEND=ida`.
+Auto-detected from standard system paths, or configured via `RECURSE_IDA_PATH`.
+
 ## Crates and why
 
 | Crate | License | Used for |
@@ -124,3 +131,10 @@ Because the engine is a trait:
   separate program (mere aggregation), never linked. Its code is isolated in
   its own modules and only runs when it is selected — so a distribution can
   omit it without touching the rest of the tree.
+- IDA is an optional proprietary external process. Recurse contains no IDA SDK,
+  headers, libraries, or source; the project-owned bridge uses local IPC and is
+  only used when the user has separately installed and licensed IDA.
+- The opt-in large-binary consistency test also invokes `r2`/`objdump` as
+  separate oracle processes. It contains no r2pipe, radare2, or binutils code
+  and does not bundle those tools. The downloaded Youki fixture is not stored
+  in the repository.

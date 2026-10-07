@@ -8,8 +8,8 @@ installed builds keep themselves current without reinstalling.
 - On launch, the app silently checks
   `https://github.com/Recurse-Labs/recurse/releases/latest/download/latest.json`
   for a newer version than the one currently running.
-- If a newer version is available, the ⚙ (settings) icon in the header shows
-  a small dot, and the menu item changes to **"Update to vX.Y.Z — restart to
+- If a newer version is available, the **Settings** menu in the top bar shows
+  a small dot, and its item changes to **"Update to vX.Y.Z — restart to
   install"**.
 - Clicking it downloads the signed bundle for your platform, verifies its
   Ed25519 signature against the public key baked into the app

@@ -1,7 +1,8 @@
 //! End-to-end test of the Linux backend: compile a fixture, launch it under
 //! the debugger, break on a symbol, inspect registers, step, and detach.
 //!
-//! Skips (never fails) when there is no C compiler or no ptrace support.
+//! Skips (never fails) off Linux, and when this host cannot produce the
+//! fixture (no C compiler, one that cannot link it, or no ptrace support).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -52,9 +53,20 @@ impl Symbols for ElfSymbols {
     }
 }
 
-/// Compile the fixture into a temp dir and return its path, or `None` when no
-/// compiler is available.
+/// Compile the fixture into a temp dir and return its path, or `None` when this
+/// host cannot produce one.
+///
+/// Gated on the host platform first: `-no-pie` is a GNU/Linux linker option, and
+/// the debugger exercised here is the ptrace backend, so a compiler on another
+/// host would build a binary this test cannot launch. Skipping before the
+/// compiler runs also keeps a wrong-host build from looking like a test failure.
+/// "no compiler" and "could not link" are reported apart, since the first is a
+/// missing toolchain and the second is a broken one.
 fn build_fixture() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipping: Linux backend, not the host platform");
+        return None;
+    }
     let dir = std::env::temp_dir().join(format!("recurse-debug-it-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let src = dir.join("target.c");
@@ -66,7 +78,11 @@ fn build_fixture() -> Option<PathBuf> {
         .arg(&src)
         .status()
         .ok()?;
-    status.success().then_some(bin)
+    if !status.success() {
+        eprintln!("skipping: `cc` could not build the fixture");
+        return None;
+    }
+    Some(bin)
 }
 
 /// Parse the fixture's symbols for the debugger.
@@ -92,7 +108,7 @@ fn elf_symbols(path: &Path) -> Option<ElfSymbols> {
 #[test]
 fn launch_break_step_detach() {
     let Some(bin) = build_fixture() else {
-        eprintln!("skipping: no `cc` available");
+        eprintln!("skipping: no Linux fixture available");
         return;
     };
     let symbols = match elf_symbols(&bin) {
@@ -158,4 +174,115 @@ fn launch_break_step_detach() {
     );
 
     dbg.detach().expect("detach");
+}
+
+#[test]
+fn subscribers_see_stops_and_output_without_polling() {
+    let Some(bin) = build_fixture() else {
+        eprintln!("skipping: no Linux fixture available");
+        return;
+    };
+    let symbols = match elf_symbols(&bin) {
+        Some(s) => Arc::new(s),
+        None => {
+            eprintln!("skipping: could not parse fixture symbols");
+            return;
+        }
+    };
+    let dbg = Debugger::with_symbols(symbols).expect("debugger");
+    let mut events = dbg.subscribe();
+    if let Err(e) = dbg.launch(&LaunchOptions {
+        path: bin.to_string_lossy().to_string(),
+        ..Default::default()
+    }) {
+        eprintln!("skipping: launch failed ({e})");
+        return;
+    }
+
+    // The launch stop is pushed, not waited for, and it is counted.
+    let first = next_stop(&mut events, 1, 2_000);
+    assert!(first.stop.is_some(), "a stop carries its registers");
+    assert!(!first.frames.is_empty(), "and the frames that go with it");
+
+    // A step is the next stop, and it counts as one even though a view is
+    // published more than once for it.
+    dbg.step(StepKind::Into).expect("step");
+    let second = next_stop(&mut events, 2, 2_000);
+    assert_eq!(second.stop_seq, 2, "a step is a stop of its own");
+
+    // Installing a breakpoint is not a stop, and says so: a consumer can tell
+    // "the program moved" from "this is the same stop arriving again".
+    let bp = dbg
+        .add_breakpoint(&BreakAt::Symbol {
+            name: "check".to_string(),
+        })
+        .expect("break on check");
+    let armed = next_with(&mut events, |s| s.breakpoints.len() == 1, 2_000);
+    assert_eq!(armed.stop_seq, 2, "installing a breakpoint is not a stop");
+    dbg.remove_breakpoint(bp.id).expect("remove");
+
+    // And the debuggee's output is pushed too, with nothing polling for it: the
+    // fixture prints its total on the way out.
+    dbg.resume().expect("run to exit");
+    let printed = next_output(&mut events, 2_000);
+    // `check(i) = i * 2 + 1` for i in 0..3, so the loop prints 1 + 3 + 5.
+    assert!(
+        printed.contains('9'),
+        "expected the fixture's total, got {printed:?}"
+    );
+    dbg.detach().expect("detach");
+}
+
+/// The next published view of the session.
+///
+/// # Panics
+/// If the timeout passes, or an `Output` event turns up: output arrives between
+/// stops, and a caller that wanted a stop has to say so.
+fn next_stop(
+    events: &mut recurse_debug::SessionEvents,
+    seq: u64,
+    timeout_ms: u64,
+) -> recurse_debug::Snapshot {
+    next_with(events, move |s| s.stop_seq >= seq, timeout_ms)
+}
+
+/// The next published view that satisfies `want`.
+///
+/// # Panics
+/// If the timeout passes first.
+fn next_with(
+    events: &mut recurse_debug::SessionEvents,
+    want: impl Fn(&recurse_debug::Snapshot) -> bool,
+    timeout_ms: u64,
+) -> recurse_debug::Snapshot {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match events.recv_timeout(left) {
+            Ok(recurse_debug::SessionEvent::Snapshot { snapshot }) if want(&snapshot) => {
+                return snapshot;
+            }
+            Ok(recurse_debug::SessionEvent::Snapshot { .. }) => continue,
+            Ok(other) => panic!("expected a snapshot, got {other:?}"),
+            Err(e) => panic!("nothing matched within {timeout_ms}ms: {e}"),
+        }
+    }
+}
+
+/// Everything the debuggee printed, up to the next snapshot.
+///
+/// # Panics
+/// If the timeout passes before a snapshot ends the run of output.
+fn next_output(events: &mut recurse_debug::SessionEvents, timeout_ms: u64) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let mut text = String::new();
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match events.recv_timeout(left) {
+            Ok(recurse_debug::SessionEvent::Output { text: more }) => text.push_str(&more),
+            Ok(recurse_debug::SessionEvent::Snapshot { .. }) if !text.is_empty() => return text,
+            Ok(recurse_debug::SessionEvent::Snapshot { .. }) => continue,
+            Err(e) => panic!("no output within {timeout_ms}ms: {e}"),
+        }
+    }
 }

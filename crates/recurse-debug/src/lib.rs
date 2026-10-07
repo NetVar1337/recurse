@@ -30,6 +30,7 @@
 pub mod advanced;
 pub mod arch;
 pub mod error;
+pub mod gdb_remote;
 pub mod model;
 pub mod session;
 pub mod symbols;
@@ -37,5 +38,5 @@ pub mod target;
 pub mod tool;
 
 pub use error::{Error, Result};
-pub use session::Debugger;
+pub use session::{Debugger, SessionEvent, SessionEvents, Snapshot};
 pub use symbols::Symbols;

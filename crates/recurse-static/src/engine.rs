@@ -43,6 +43,8 @@ pub enum BackendKind {
     R2,
     /// Pure-Rust ELF/PE/Mach-O parsing and disassembly.
     Native,
+    /// IDA Pro (Hex-Rays), driven over headless IPC.
+    Ida,
 }
 
 impl Default for BackendKind {
@@ -60,19 +62,21 @@ impl Default for BackendKind {
 }
 
 impl BackendKind {
-    /// Parse a backend name. Accepts `native` and r2's names.
+    /// Parse a backend name. Accepts `native`, `r2`, and `ida` names.
     ///
     /// ```
     /// use recurse_static::engine::BackendKind;
     /// assert_eq!(BackendKind::parse("r2"), Some(BackendKind::R2));
     /// assert_eq!(BackendKind::parse("radare2"), Some(BackendKind::R2));
     /// assert_eq!(BackendKind::parse("Native"), Some(BackendKind::Native));
+    /// assert_eq!(BackendKind::parse("ida"), Some(BackendKind::Ida));
     /// assert_eq!(BackendKind::parse("ghidra"), None);
     /// ```
     pub fn parse(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "r2" | "radare2" => Some(Self::R2),
             "native" | "rust" => Some(Self::Native),
+            "ida" | "idapro" | "hexrays" => Some(Self::Ida),
             _ => None,
         }
     }
@@ -87,6 +91,8 @@ impl BackendKind {
     /// assert_eq!(BackendKind::from_env(), BackendKind::default());
     /// std::env::set_var("RECURSE_BACKEND", "r2");
     /// assert_eq!(BackendKind::from_env(), BackendKind::R2);
+    /// std::env::set_var("RECURSE_BACKEND", "ida");
+    /// assert_eq!(BackendKind::from_env(), BackendKind::Ida);
     /// std::env::remove_var("RECURSE_BACKEND");
     /// ```
     pub fn from_env() -> Self {
@@ -102,11 +108,13 @@ impl BackendKind {
     /// use recurse_static::engine::BackendKind;
     /// assert_eq!(BackendKind::R2.as_str(), "r2");
     /// assert_eq!(BackendKind::Native.as_str(), "native");
+    /// assert_eq!(BackendKind::Ida.as_str(), "ida");
     /// ```
     pub fn as_str(self) -> &'static str {
         match self {
             Self::R2 => "r2",
             Self::Native => "native",
+            Self::Ida => "ida",
         }
     }
 }
@@ -246,6 +254,107 @@ pub struct FunctionInfo {
     pub signature: Option<String>,
 }
 
+/// A non-executable region of the image: a data section.
+///
+/// Reported separately from functions because none of it is code. The debugger
+/// cannot single-step it, and a linear sweep over the text deliberately skips
+/// it, so without this it is invisible in the UI — the one part of the image an
+/// analyst has no other view of.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DataSection {
+    /// Section name as the object file spells it (`.rodata`, `.data`, `.bss`).
+    pub name: String,
+    /// Virtual address.
+    pub addr: u64,
+    /// Size in bytes.
+    pub size: u64,
+    /// Coarse description of the contents: `read-only data`,
+    /// `writable data`, `zero-initialized data`, `tls`, or `metadata`.
+    pub kind: String,
+    /// Whether the region can be read / written / executed.
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+    /// True when the section occupies no file bytes (`.bss` and friends).
+    pub uninitialized: bool,
+    /// Where the section's bytes start in the file, as opposed to in memory.
+    ///
+    /// The two diverge the moment a segment is page-aligned to a size the
+    /// section is not, which is the normal case: the difference is what tells an
+    /// analyst that a file offset and a virtual address cannot be interchanged.
+    pub file_offset: u64,
+    /// Bytes the section's contents must be aligned to, as the header says.
+    pub align: u64,
+    /// The section type as the object file spells it (`PROGBITS`, `NOBITS`,
+    /// `NOTE`, `RELA`, `DYNAMIC`, …).
+    pub section_type: String,
+    /// Raw header flags, kept so a view can show bits the coarse access flags
+    /// above do not cover (`MERGE`, `STRINGS`, `TLS`, `COMPRESSED`).
+    pub flags: u32,
+}
+
+/// One loadable segment of the image: an entry in the program header table.
+///
+/// The two views of an image disagree, and both are worth having. Sections are
+/// the linker's: one per purpose, with names an analyst reasons about. Segments
+/// are the kernel's: what it is actually willing to map, and a `PT_LOAD` with
+/// write and execute both set is the fact behind a writable-code finding that no
+/// section list can show. A segment also draws the line between bytes that come
+/// from the file and bytes the kernel zero-fills, which is how `.bss` is
+/// accounted for.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DataSegment {
+    /// Segment type as the object file spells it (`LOAD`, `DYNAMIC`, `NOTE`,
+    /// `GNU_STACK`, `GNU_RELRO`, …).
+    pub kind: String,
+    /// Virtual address the segment is mapped at.
+    pub addr: u64,
+    /// Bytes the segment occupies in memory.
+    pub mem_size: u64,
+    /// Bytes the segment takes from the file. Less than `mem_size` for a
+    /// segment whose tail is zero-filled.
+    pub file_size: u64,
+    /// Offset of the segment's bytes in the file.
+    pub file_offset: u64,
+    /// Required alignment.
+    pub align: u64,
+    /// Whether the segment can be read / written / executed.
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+}
+
+/// A linker-provided marker for a region boundary, such as `_end`,
+/// `_edata`, `__bss_start` or `_etext`.
+///
+/// These are addresses, not code, and they are the only record of where one
+/// region stops and the next begins — in a stripped binary they can be the sole
+/// thing describing the image's memory layout. `gdb`'s `info functions` lists
+/// them under "Non-debugging symbols"; they are reported here for the same
+/// reason and to the same end.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BoundarySymbol {
+    /// Symbol name as spelled (leading underscores included).
+    pub name: String,
+    /// Address the marker points at.
+    pub addr: u64,
+    /// What the marker means: `end of image`, `end of initialised data`,
+    /// `start of zero-initialised data`, `end of text`.
+    pub kind: String,
+}
+
+/// Everything in the image that is not executable code: its data sections and
+/// the linker's boundary markers.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DataRegions {
+    /// Non-executable sections, ordered by address.
+    pub sections: Vec<DataSection>,
+    /// Linker boundary markers, ordered by address.
+    pub boundaries: Vec<BoundarySymbol>,
+    /// Loadable segments, ordered by address — the kernel's view of the image.
+    pub segments: Vec<DataSegment>,
+}
+
 /// One disassembled instruction.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Instruction {
@@ -279,6 +388,45 @@ pub struct Disassembly {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     pub ops: Vec<Instruction>,
+}
+
+/// One row of the whole-image listing: a section header, an instruction, or a
+/// run of data bytes. This is the linear "Listing" view — every mapped byte of
+/// the image in address order, code and data alike — as opposed to
+/// [`Disassembly`], which is one function.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ListingRow {
+    /// Address the row starts at. Zero for a section header.
+    pub addr: u64,
+    /// `code`, `data`, or `header`.
+    pub kind: String,
+    /// Bytes the row covers: an instruction's length, a data row's width, or 0
+    /// for a section header.
+    pub size: u64,
+    /// Raw bytes as hex, for code and data rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<String>,
+    /// Instruction text (code), or the printable rendering of the bytes (data).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A name or title to show on the row: a section name, a symbol, or a
+    /// referenced string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Direct branch/call destination, for code rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jump: Option<u64>,
+    /// Instruction category (`call`, `jmp`, `ret`, `cjmp`, …), for code rows.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub op: Option<String>,
+}
+
+/// A window of the whole-image listing plus the total row count, so the UI can
+/// virtualize over a length it does not have to materialize.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ListingWindow {
+    pub total: u64,
+    pub rows: Vec<ListingRow>,
 }
 
 /// One basic block inside a control-flow graph.
@@ -390,6 +538,57 @@ pub trait Engine: Send + Sync {
     /// The function containing `addr`, if any.
     fn function_at(&self, addr: u64) -> Result<Option<FunctionInfo>, String>;
 
+    /// Collect direct call edges, plus a recovered startup entry-to-`main`
+    /// relationship, from at most `max_functions` discovered functions,
+    /// returning at most `max_edges` unique edges. The default is
+    /// deliberately bounded by the caller because whole-binary UI requests
+    /// must not decode an unbounded function list. Backends with an
+    /// already-built reference index should override it.
+    ///
+    /// ```
+    /// use recurse_static::engine::Engine;
+    /// // The implementation is supplied by the selected backend at runtime.
+    /// let _ = std::marker::PhantomData::<&dyn Engine>;
+    /// ```
+    fn call_edges(
+        &self,
+        max_functions: usize,
+        max_edges: usize,
+    ) -> Result<Vec<(u64, u64)>, String> {
+        if max_functions == 0 || max_edges == 0 {
+            return Ok(Vec::new());
+        }
+        let funcs = self.functions()?;
+        let known: std::collections::HashSet<u64> = funcs.iter().map(|f| f.addr).collect();
+        let mut edges = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for f in funcs.into_iter().take(max_functions) {
+            if edges.len() >= max_edges {
+                break;
+            }
+            let Ok(dis) = self.function_disasm(f.addr) else {
+                continue;
+            };
+            for op in dis.ops {
+                if !matches!(op.kind.as_deref(), Some("call") | Some("icall")) {
+                    continue;
+                }
+                let Some(target) = op.jump else { continue };
+                if target != f.addr
+                    && known.contains(&target)
+                    && edges.len() < max_edges
+                    && seen.insert((f.addr, target))
+                {
+                    edges.push((f.addr, target));
+                    if edges.len() >= max_edges {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(edges)
+    }
+
     /// Disassemble `count` instructions starting at `target` (following the
     /// function when `count` is `None`).
     fn disassemble(&self, target: &Target, count: Option<usize>) -> Result<Disassembly, String>;
@@ -402,6 +601,38 @@ pub trait Engine: Send + Sync {
 
     /// Recover strings referenced by the binary.
     fn strings(&self) -> Result<Vec<StringRef>, String>;
+
+    /// The image's non-executable regions: data sections and linker boundary
+    /// markers. Reported separately from [`Engine::functions`] because none of
+    /// it is code, so it can never be listed there.
+    ///
+    /// Defaults to an error so a backend that does not read the object file's
+    /// section and symbol tables says so plainly, rather than reporting an
+    /// image with no data at all.
+    fn data_regions(&self) -> Result<DataRegions, String> {
+        Err("this backend does not report data regions".to_string())
+    }
+
+    /// Total rows in the whole-image listing (see [`ListingRow`]). Backends
+    /// that do not build one return an error, and the UI keeps its
+    /// per-function view instead.
+    fn listing_len(&self) -> Result<u64, String> {
+        Err("this backend does not provide a whole-image listing".to_string())
+    }
+
+    /// A window of `count` listing rows starting at `offset`, with the total
+    /// row count. Windows are small so a multi-megabyte image never crosses the
+    /// IPC boundary in one payload.
+    fn listing_window(&self, _offset: u64, _count: u64) -> Result<ListingWindow, String> {
+        Err("this backend does not provide a whole-image listing".to_string())
+    }
+
+    /// Row index in the whole-image listing that covers `addr` (or the nearest
+    /// preceding row), so a view can scroll to an address without downloading
+    /// the listing. Backends without a listing return an error.
+    fn listing_locate(&self, _addr: u64) -> Result<u64, String> {
+        Err("this backend does not provide a whole-image listing".to_string())
+    }
 
     /// List imported symbols.
     fn imports(&self) -> Result<Vec<Import>, String>;
@@ -439,6 +670,22 @@ pub trait Engine: Send + Sync {
 
     /// Resolve a symbol name to an address, if the backend knows it.
     fn resolve(&self, name: &str) -> Result<Option<u64>, String>;
+
+    /// Read `len` raw bytes at virtual address `addr` — the backing for the
+    /// hex view. Default: unsupported (a backend opts in by overriding).
+    fn read_bytes(&self, _addr: u64, _len: usize) -> Result<Vec<u8>, String> {
+        Err("read_bytes: not supported by this backend".to_string())
+    }
+
+    /// Patch `bytes` directly into the file on disk at virtual address
+    /// `addr` — the backing for in-place patching. Writes go straight to the
+    /// file; the running session's cached analysis (disassembly, functions,
+    /// decompile) is **not** re-derived from the patch, so a caller that
+    /// wants the patched bytes reflected in disassembly must reopen the
+    /// binary. Default: unsupported.
+    fn write_bytes(&self, _addr: u64, _bytes: &[u8]) -> Result<(), String> {
+        Err("write_bytes: not supported by this backend".to_string())
+    }
 
     /// Install analyst name overrides (`address -> name`), replacing any
     /// previous set. Backends apply them to `functions`, `function_at`,
@@ -1050,8 +1297,10 @@ mod tests {
         assert_eq!(BackendKind::parse("r2"), Some(BackendKind::R2));
         assert_eq!(BackendKind::parse("RADARE2"), Some(BackendKind::R2));
         assert_eq!(BackendKind::parse("native"), Some(BackendKind::Native));
-        assert_eq!(BackendKind::parse("ida"), None);
+        assert_eq!(BackendKind::parse("ida"), Some(BackendKind::Ida));
+        assert_eq!(BackendKind::parse("unknown_engine"), None);
         assert_eq!(BackendKind::R2.as_str(), "r2");
+        assert_eq!(BackendKind::Ida.as_str(), "ida");
     }
 
     #[test]

@@ -44,9 +44,11 @@ use object::{
 };
 use serde_json::json;
 
+use crate::arch;
 use crate::engine::{
-    BackendKind, BasicBlock, Capabilities, Decompilation, Disassembly, Engine, FunctionGraph,
-    FunctionInfo, Import, Instruction, StringRef, Target, Xref, XrefDirection,
+    BackendKind, BasicBlock, BoundarySymbol, Capabilities, DataRegions, DataSection, DataSegment,
+    Decompilation, Disassembly, Engine, FunctionGraph, FunctionInfo, Import, Instruction,
+    ListingRow, ListingWindow, StringRef, Target, Xref, XrefDirection,
 };
 
 /// Maximum functions discovered per binary; guards recursive descent and caps
@@ -112,8 +114,56 @@ struct NativeState {
     /// Referenced address -> indexes into [`NativeState::xrefs`], so a
     /// `xrefs to X` is a hash lookup instead of a full decode.
     xrefs_by_target: HashMap<u64, Vec<u32>>,
+    /// Startup entry and the `main` pointer it passes to the C runtime, when
+    /// the pointer was recovered from the entry stub.
+    entry_main: Option<(u64, u64)>,
     /// True while the background indexer is still expanding the function set.
     indexing: bool,
+    /// Whole-image listing index, built lazily on the first listing request.
+    listing: Option<ListingIndex>,
+}
+
+/// The whole-image listing, built once on first request. [`ListingEntry`] is
+/// compact (no text) and one per row; a row's text is materialized only for the
+/// window a caller asks for, so a multi-megabyte image never holds its rendered
+/// listing in memory.
+struct ListingIndex {
+    entries: Vec<ListingEntry>,
+    sections: Vec<ListingSection>,
+}
+
+/// One row's identity: where it is, how long it is, and what it is. `kind` is
+/// `0` code, `1` data, `2` section header.
+struct ListingEntry {
+    addr: u64,
+    len: u32,
+    kind: u8,
+    section: u32,
+}
+
+/// A section as the listing sees it: enough to render its header row and to
+/// slice its bytes back out of the image during materialization.
+#[derive(Clone)]
+struct ListingSection {
+    /// Header title, e.g. `.rodata  r--  read-only data`.
+    title: String,
+    addr: u64,
+    file_offset: u64,
+    file_len: u64,
+}
+
+/// Bytes a listing row covers. `len` is added as zero bytes for a section with
+/// no file backing (`.bss`), which is what the image actually maps there.
+fn listing_slice(data: &[u8], section: &ListingSection, addr: u64, len: u32) -> Vec<u8> {
+    if section.file_len == 0 {
+        return vec![0u8; len as usize];
+    }
+    let file_off = section.file_offset + (addr - section.addr);
+    let end = file_off.saturating_add(len as u64);
+    match data.get(file_off as usize..end as usize) {
+        Some(slice) if slice.len() as u64 == len as u64 => slice.to_vec(),
+        _ => vec![0u8; len as usize],
+    }
 }
 
 /// Address indexes used to annotate disassembly with names.
@@ -137,7 +187,9 @@ impl NativeState {
             renames: HashMap::new(),
             xrefs: Vec::new(),
             xrefs_by_target: HashMap::new(),
+            entry_main: None,
             indexing: false,
+            listing: None,
         }
     }
 }
@@ -310,13 +362,37 @@ impl NativeEngine {
         }
         let file = self.parse()?;
         let cs = build_capstone(&file)?;
-        let blocks = decode_blocks(&file, &cs, func_addr)?;
+        let mut blocks = decode_blocks(&file, &cs, func_addr)?;
+        self.trim_function_blocks(func_addr, &mut blocks);
         let mut state = self
             .state
             .lock()
             .map_err(|e| format!("native state poisoned: {e}"))?;
         state.blocks.insert(func_addr, blocks.clone());
         Ok(blocks)
+    }
+
+    /// Remove decoded blocks that belong to a neighbouring function when a
+    /// tail jump crosses a discovered function boundary.
+    fn trim_function_blocks(&self, entry: u64, blocks: &mut Vec<BasicBlock>) {
+        let Ok(state) = self.state.lock() else {
+            return;
+        };
+        let Some(size) = state.functions.get(&entry).and_then(|f| f.size) else {
+            return;
+        };
+        let end = entry.saturating_add(size);
+        for block in blocks.iter_mut() {
+            block.ops.retain(|op| {
+                op.len > 0
+                    && op.addr >= entry
+                    && op
+                        .addr
+                        .checked_add(op.len as u64)
+                        .is_some_and(|next| next <= end)
+            });
+        }
+        blocks.retain(|block| !block.ops.is_empty());
     }
 
     /// Run discovery: seed from symbols + entry, then follow direct call
@@ -340,21 +416,44 @@ impl NativeEngine {
 
         let mut functions: BTreeMap<u64, FunctionInfo> = BTreeMap::new();
         // Named seeds first: they carry the real symbol names.
-        for sym in file.symbols().chain(file.dynamic_symbols()) {
-            if sym.kind() != SymbolKind::Text || sym.address() == 0 || !sym.is_definition() {
-                continue;
-            }
-            if let Ok(name) = sym.name() {
-                add_function(&mut functions, &file, sym.address(), shorten_name(name));
+        let mut untyped: Vec<(u64, String)> = Vec::new();
+        for (addr, kind, name) in symbol_seeds(&file) {
+            match kind {
+                SymbolSeedKind::Func => add_function(&mut functions, &file, addr, name),
+                SymbolSeedKind::Untyped => untyped.push((addr, name)),
             }
         }
+        // An assembly label can point into the middle of a function, so an
+        // untyped seed only becomes a function where no exact boundary already
+        // claims the address. Every function that can unwind has an exact
+        // `.eh_frame` / `.pdata` range, so an address strictly inside one of
+        // those is a label inside a known function, not a function we missed.
+        let exact_ranges: Vec<(u64, u64)> = if untyped.is_empty() {
+            Vec::new()
+        } else {
+            eh_frame_functions(&file)
+                .into_iter()
+                .chain(pdata_functions(&file))
+                .collect()
+        };
+        for (addr, name) in untyped {
+            if exact_ranges
+                .iter()
+                .any(|(start, len)| addr > *start && addr < start.saturating_add(*len))
+            {
+                continue;
+            }
+            add_function(&mut functions, &file, addr, name);
+        }
         let entry = code_addr(&file, file.entry());
+        let mut entry_main = None;
         if entry != 0 && NativeEngine::in_text(&file, entry) {
             add_function(&mut functions, &file, entry, "entry0".to_string());
             // Stripped binaries often expose only the entry, which passes `main`
             // to libc as a pointer rather than calling it directly.
             if let Some(main) = entry_main_seed(&file, &cs, entry) {
                 add_function(&mut functions, &file, main, "main".to_string());
+                entry_main = Some((entry, main));
             }
         }
         // A linear sweep adds every direct call target, CET landing pad, and
@@ -418,6 +517,7 @@ impl NativeEngine {
             state.functions = functions;
             state.xrefs = refs;
             state.xrefs_by_target = xrefs_by_target;
+            state.entry_main = entry_main;
             state.fde_sized = fde_sized;
             state.analyzed = true;
             state.indexing = true;
@@ -581,37 +681,80 @@ impl NativeEngine {
         Ok(())
     }
 
+    /// Build the whole-image listing index once, on first use, then reuse it.
+    fn ensure_listing(&self) -> Result<(), String> {
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            if state.listing.is_some() {
+                return Ok(());
+            }
+        }
+        let file = self.parse()?;
+        let listing = build_listing(&file);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        state.listing = Some(listing);
+        Ok(())
+    }
+
     /// Append `; name` / `; "string"` comments to `ops`, so the model does not
     /// have to cross-reference addresses by hand.
+    ///
+    /// Shared by the linear view, `function_disasm` and `function_graph`, so all
+    /// three annotate identically. Two independent sources feed it: text spelled
+    /// by an immediate, which is derived from the instruction itself and is
+    /// therefore available even before the name index is built, and the name of
+    /// a symbol or string the operand points at. An instruction that offers both
+    /// is annotated once, with the immediate text, since that is the value the
+    /// instruction actually carries.
     fn annotate_ops(&self, ops: &mut [Instruction]) {
-        if self.ensure_labels().is_err() {
-            return;
-        }
-        let Ok(state) = self.state.lock() else {
-            return;
-        };
-        let Some(labels) = state.labels.as_ref() else {
-            return;
-        };
-        for op in ops.iter_mut() {
-            let mut comment: Option<String> = op.jump.and_then(|t| labels.names.get(&t).cloned());
-            if comment.is_none() {
-                for ea in memory_references(op) {
-                    if let Some(name) = labels.names.get(&ea) {
-                        comment = Some(name.clone());
-                        break;
-                    }
-                    if let Some(text) = labels.strings.get(&ea) {
-                        comment = Some(format!("\"{}\"", truncate_str(text, 48)));
-                        break;
+        let little_endian = self.parse().map(|f| f.is_little_endian()).unwrap_or(true);
+        let mut comments: Vec<Option<String>> = ops
+            .iter()
+            .map(|op| {
+                arch::inline_text(&op.disasm, little_endian).map(|spelled| format!("'{spelled}'"))
+            })
+            .collect();
+
+        if self.ensure_labels().is_ok() {
+            if let Ok(state) = self.state.lock() {
+                if let Some(labels) = state.labels.as_ref() {
+                    for (op, slot) in ops.iter().zip(comments.iter_mut()) {
+                        if slot.is_none() {
+                            *slot = referenced_comment(op, labels);
+                        }
                     }
                 }
             }
+        }
+
+        for (op, comment) in ops.iter_mut().zip(comments) {
             if let Some(c) = comment {
                 op.disasm = format!("{} ; {}", op.disasm, c);
             }
         }
     }
+}
+
+/// The name of the symbol or string an operand's address resolves to, if any.
+fn referenced_comment(op: &Instruction, labels: &Labels) -> Option<String> {
+    if let Some(name) = op.jump.and_then(|t| labels.names.get(&t).cloned()) {
+        return Some(name);
+    }
+    for ea in memory_references(op) {
+        if let Some(name) = labels.names.get(&ea) {
+            return Some(name.clone());
+        }
+        if let Some(text) = labels.strings.get(&ea) {
+            return Some(format!("\"{}\"", truncate_str(text, 48)));
+        }
+    }
+    None
 }
 
 /// Decode up to `max` instructions from a byte slice that begins at `ip`.
@@ -720,10 +863,413 @@ fn in_data_ranges(ranges: &[(u64, u64)], addr: u64) -> bool {
     ranges.iter().any(|(lo, hi)| addr >= *lo && addr < *hi)
 }
 
+/// What a linker boundary marker means, from the name it is given.
+///
+/// A linker's own vocabulary, spelled several ways across toolchains, so each
+/// entry lists the spellings that mean the same thing. Matching is on the
+/// trimmed name: the surrounding underscores are decoration, and `__bss_start`
+/// and `bss_start` are the same marker.
+fn boundary_kind(name: &str) -> Option<&'static str> {
+    let n = name.trim_matches('_');
+    match n {
+        "end" | "end__" | "__end" | "end_" => Some("end of image"),
+        "edata" | "data_end" | "end_data" => Some("end of initialised data"),
+        "bss_start" | "bssstart" => Some("start of zero-initialised data"),
+        "bss_end" | "bssend" => Some("end of zero-initialised data"),
+        "etext" | "text_end" | "end_text" => Some("end of text"),
+        _ => None,
+    }
+}
+
+/// Coarse description of what a non-executable section holds.
+///
+/// `object` folds several unrelated ELF section types into one kind — relocations
+/// (`SHT_RELA`), the dynamic table (`SHT_DYNAMIC`) and notes (`SHT_NOTE`) all
+/// arrive as `Metadata` — so the well-known section names are labelled from the
+/// name and the kind is only the fallback. Best-effort: an unrecognised name
+/// gets its kind's description, which is right and coarse.
+fn section_kind_label(name: &str, kind: SectionKind) -> &'static str {
+    match name {
+        ".dynamic" => return "dynamic linking table",
+        ".got" | ".got.plt" => return "global offset table",
+        ".init_array" | ".fini_array" => return "initialisation arrays",
+        ".eh_frame" | ".eh_frame_hdr" | ".sframe" => return "unwind tables",
+        ".tdata" | ".tbss" => return "thread-local data",
+        _ => {}
+    }
+    if name.starts_with(".rela") || name.starts_with(".rel") {
+        return "relocations";
+    }
+    if name.starts_with(".note") {
+        return "build notes";
+    }
+    match kind {
+        SectionKind::ReadOnlyData => "read-only data",
+        SectionKind::Data => "writable data",
+        SectionKind::UninitializedData => "zero-initialised data",
+        SectionKind::Tls | SectionKind::UninitializedTls => "thread-local data",
+        SectionKind::Metadata | SectionKind::Note | SectionKind::Debug => "metadata",
+        SectionKind::Linker | SectionKind::Other | SectionKind::Common => "other",
+        // Executable sections are never reported here; this arm only keeps the
+        // match total.
+        _ => "other",
+    }
+}
+
+/// ELF `sh_flags` bits, for the formats that carry access in the section header.
+const SHF_WRITE: u64 = 0x1;
+const SHF_ALLOC: u64 = 0x2;
+const SHF_EXECINSTR: u64 = 0x4;
+/// COFF `IMAGE_SCN_MEM_*` bits.
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+const IMAGE_SCN_MEM_READ: u32 = 0x4000_0000;
+const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+/// Whether a section is readable, writable and executable.
+///
+/// ELF and COFF carry the access bits in the section header, so they are used
+/// directly; `SHF_ALLOC`/`IMAGE_SCN_MEM_READ` is what "readable" means here,
+/// since a section without it is not mapped into the image at all. Mach-O keeps
+/// those bits on the *segment*, so its section header cannot answer, and the
+/// kind is used instead — a read-only-data section is readable and not writable,
+/// a data or zero-initialised one is both. That inference is weaker than a
+/// header bit, so it is confined to the formats that give nothing better.
+fn section_access(kind: SectionKind, flags: object::SectionFlags) -> (bool, bool, bool) {
+    match flags {
+        object::SectionFlags::Elf { sh_flags } => (
+            sh_flags & SHF_ALLOC != 0,
+            sh_flags & SHF_WRITE != 0,
+            sh_flags & SHF_EXECINSTR != 0,
+        ),
+        object::SectionFlags::Coff { characteristics } => (
+            characteristics & IMAGE_SCN_MEM_READ != 0,
+            characteristics & IMAGE_SCN_MEM_WRITE != 0,
+            characteristics & IMAGE_SCN_MEM_EXECUTE != 0,
+        ),
+        _ => match kind {
+            SectionKind::ReadOnlyData => (true, false, false),
+            SectionKind::Data | SectionKind::UninitializedData => (true, true, false),
+            _ => (true, false, false),
+        },
+    }
+}
+
+/// Collect the image's non-executable regions: every section that is not code,
+/// plus the linker's boundary markers.
+///
+/// Sections are the whole non-executable *address space*, so TLS is included
+/// alongside `.rodata`/`.data`/`.bss`. Sections the loader never maps are not:
+/// `.symtab`, `.strtab`, `.shstrtab` and `.comment` live in the file at address
+/// zero and occupy no memory, so listing them would report three "regions" of
+/// the image that do not exist in it. Allocation is what separates the two, and
+/// for ELF that is the `SHF_ALLOC` bit [`section_access`] reads.
+///
+/// A marker is reported whether or not it lands inside a section. In a normal
+/// image it does (that is where `.bss` begins); in a hand-written one it can sit
+/// past the last section entirely, which is exactly the case where it is the
+/// only description of where the image stops.
+/// Build the whole-image listing: every allocated section in address order,
+/// a header row for each, then one row per instruction for code and one row per
+/// 16 bytes for data. `.bss` and other uninitialized sections have no file
+/// bytes but still occupy address space, so they are listed as zero bytes.
+///
+/// Only the row identities are kept; text is rendered per window by
+/// [`Engine::listing_window`].
+fn build_listing(file: &object::File<'_>) -> ListingIndex {
+    /// Bytes per data row, matching the hex columns the UI shows.
+    const DATA_ROW: u64 = 16;
+
+    let cs = build_capstone(file).ok();
+    let mut sections: Vec<ListingSection> = Vec::new();
+    let mut entries: Vec<ListingEntry> = Vec::new();
+
+    let mut secs: Vec<_> = file
+        .sections()
+        .filter(|s| s.size() > 0 && s.address() != 0)
+        .collect();
+    secs.sort_by_key(|s| s.address());
+
+    for s in secs {
+        let (readable, writable, executable) = section_access(s.kind(), s.flags());
+        // Allocated sections only; the symbol/string tables and other
+        // file-only bookkeeping are not part of the image's address space.
+        if !readable {
+            continue;
+        }
+        let (file_offset, file_len) = s.file_range().unwrap_or((0, 0));
+        let name = s.name().unwrap_or("<unnamed>");
+        let access = if executable {
+            "r-x"
+        } else if writable {
+            "rw-"
+        } else {
+            "r--"
+        };
+        let kind_label = if executable {
+            "code"
+        } else {
+            section_kind_label(name, s.kind())
+        };
+        let index = sections.len() as u32;
+        sections.push(ListingSection {
+            title: format!("{name}  {access}  {kind_label}"),
+            addr: s.address(),
+            file_offset,
+            file_len,
+        });
+        entries.push(ListingEntry {
+            addr: s.address(),
+            len: 0,
+            kind: 2,
+            section: index,
+        });
+
+        if executable {
+            if let (Some(cs), Ok(bytes)) = (cs.as_ref(), s.data()) {
+                for op in decode_with(cs, bytes, s.address(), usize::MAX, false, true) {
+                    entries.push(ListingEntry {
+                        addr: op.addr,
+                        len: op.len,
+                        kind: 0,
+                        section: index,
+                    });
+                }
+            }
+        } else {
+            let mut addr = s.address();
+            let end = s.address().saturating_add(s.size());
+            while addr < end {
+                let len = DATA_ROW.min(end - addr) as u32;
+                entries.push(ListingEntry {
+                    addr,
+                    len,
+                    kind: 1,
+                    section: index,
+                });
+                addr += len as u64;
+            }
+        }
+    }
+
+    ListingIndex { entries, sections }
+}
+
+fn data_regions(file: &object::File<'_>, data: &[u8]) -> DataRegions {
+    // Read from the headers rather than inferred from the format-agnostic
+    // `SectionKind`, which folds `.dynsym`, `.dynstr` and `.note.*` into one
+    // `metadata` bucket: an analyst needs to tell a table of relocations from a
+    // table of strings, and `RELA` against `DYNSYM` says which.
+    let section_types = elf_section_types(data);
+    let mut sections: Vec<DataSection> = file
+        .sections()
+        .filter(|s| s.kind() != SectionKind::Text && s.size() > 0)
+        .filter_map(|s| {
+            let (readable, writable, executable) = section_access(s.kind(), s.flags());
+            // Unmapped bookkeeping: not part of the image's memory.
+            if !readable {
+                return None;
+            }
+            // A section that occupies no file bytes (`.bss`) is still part of
+            // the image; `file_range` is what distinguishes the two.
+            let (file_offset, file_len) = s.file_range().unwrap_or((0, 0));
+            let name = s.name().unwrap_or("<unnamed>").to_string();
+            Some(DataSection {
+                kind: section_kind_label(&name, s.kind()).to_string(),
+                section_type: section_types
+                    .get(&s.address())
+                    .map(|t| (*t).to_string())
+                    .unwrap_or_else(|| section_kind_name(s.kind()).to_string()),
+                name,
+                addr: s.address(),
+                size: s.size(),
+                readable,
+                writable,
+                executable,
+                uninitialized: file_len == 0,
+                file_offset,
+                align: s.align(),
+                flags: section_flags(s.flags()),
+            })
+        })
+        .collect();
+    sections.sort_by_key(|s| s.addr);
+
+    let mut boundaries: Vec<BoundarySymbol> = file
+        .symbols()
+        .chain(file.dynamic_symbols())
+        .filter_map(|sym| {
+            let name = sym.name().ok()?;
+            let kind = boundary_kind(name)?;
+            (sym.address() != 0).then(|| BoundarySymbol {
+                name: name.to_string(),
+                addr: sym.address(),
+                kind: kind.to_string(),
+            })
+        })
+        .collect();
+    // Two markers can share an address (`_edata` and `__bss_start` both point
+    // at the start of `.bss`); keep both, ordered by address then name so the
+    // list is stable between calls.
+    boundaries.sort_by_key(|b| (b.addr, b.name.clone()));
+    boundaries.dedup_by(|a, b| a.addr == b.addr && a.name == b.name);
+
+    let mut segments: Vec<DataSegment> = elf_segments(data);
+    segments.sort_by_key(|s| s.addr);
+
+    DataRegions {
+        sections,
+        boundaries,
+        segments,
+    }
+}
+
+/// Raw `sh_flags` bits, so a view can show what the coarse access flags do not.
+fn section_flags(flags: object::SectionFlags) -> u32 {
+    match flags {
+        object::SectionFlags::Elf { sh_flags } => sh_flags as u32,
+        object::SectionFlags::Coff { characteristics } => characteristics,
+        _ => 0,
+    }
+}
+
+/// Each section's raw `sh_type`, keyed by its address, read from the ELF
+/// section headers.
+fn elf_section_types(data: &[u8]) -> std::collections::HashMap<u64, &'static str> {
+    use object::read::elf::SectionHeader;
+    macro_rules! collect {
+        ($elf:expr) => {{
+            let elf = $elf;
+            let endian = elf.endian();
+            elf.elf_section_table()
+                .iter()
+                .map(|sh| {
+                    (
+                        sh.sh_addr(endian) as u64,
+                        elf_section_type_name(sh.sh_type(endian)),
+                    )
+                })
+                .collect()
+        }};
+    }
+    if let Ok(elf) = object::read::elf::ElfFile64::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    if let Ok(elf) = object::read::elf::ElfFile32::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    std::collections::HashMap::new()
+}
+
+/// A section's type by its raw value, as the header spells it.
+fn elf_section_type_name(sh_type: u32) -> &'static str {
+    match sh_type {
+        object::elf::SHT_NULL => "NULL",
+        object::elf::SHT_PROGBITS => "PROGBITS",
+        object::elf::SHT_SYMTAB => "SYMTAB",
+        object::elf::SHT_STRTAB => "STRTAB",
+        object::elf::SHT_RELA => "RELA",
+        object::elf::SHT_HASH => "HASH",
+        object::elf::SHT_DYNAMIC => "DYNAMIC",
+        object::elf::SHT_NOTE => "NOTE",
+        object::elf::SHT_NOBITS => "NOBITS",
+        object::elf::SHT_REL => "REL",
+        object::elf::SHT_SHLIB => "SHLIB",
+        object::elf::SHT_DYNSYM => "DYNSYM",
+        object::elf::SHT_INIT_ARRAY => "INIT_ARRAY",
+        object::elf::SHT_FINI_ARRAY => "FINI_ARRAY",
+        object::elf::SHT_PREINIT_ARRAY => "PREINIT_ARRAY",
+        object::elf::SHT_GROUP => "GROUP",
+        object::elf::SHT_SYMTAB_SHNDX => "SYMTAB_SHNDX",
+        // The GNU extensions a modern toolchain emits into almost every binary.
+        0x6ffffff6 => "GNU_HASH",
+        0x6ffffffd => "GNU_VERDEF",
+        0x6ffffffe => "GNU_VERNEED",
+        0x6fffffff => "GNU_VERSYM",
+        _ => "OTHER",
+    }
+}
+
+/// The section type inferred from the format-agnostic kind, for an image whose
+/// headers are not ELF.
+fn section_kind_name(kind: SectionKind) -> &'static str {
+    match kind {
+        SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => "PROGBITS",
+        SectionKind::ReadOnlyString => "PROGBITS",
+        SectionKind::Tls => "TLS",
+        SectionKind::UninitializedData | SectionKind::UninitializedTls => "NOBITS",
+        SectionKind::Metadata | SectionKind::Note => "METADATA",
+        SectionKind::Debug => "DEBUG",
+        SectionKind::TlsVariables => "TLS",
+        // A kind this version of `object` does not name is still a type, and
+        // `OTHER` is the honest answer for it.
+        _ => "OTHER",
+    }
+}
+
+/// The image's loadable segments, from the ELF program header table.
+///
+/// Read from the header rather than through the format-agnostic accessor because
+/// the segment *type* is the point of the list — `LOAD` against `GNU_RELRO` is
+/// the difference between the ordinary and the notable — and only the header
+/// carries it. An image that is not ELF has no segments to report.
+fn elf_segments(data: &[u8]) -> Vec<DataSegment> {
+    use object::read::elf::ProgramHeader;
+    macro_rules! collect {
+        ($elf:expr) => {{
+            let elf = $elf;
+            let endian = elf.endian();
+            elf.elf_program_headers()
+                .iter()
+                .map(|ph| DataSegment {
+                    kind: segment_kind_name(ph.p_type(endian)).to_string(),
+                    addr: ph.p_vaddr(endian).into(),
+                    mem_size: ph.p_memsz(endian).into(),
+                    file_size: ph.p_filesz(endian).into(),
+                    file_offset: ph.p_offset(endian).into(),
+                    align: ph.p_align(endian).into(),
+                    readable: ph.p_flags(endian) & object::elf::PF_R != 0,
+                    writable: ph.p_flags(endian) & object::elf::PF_W != 0,
+                    executable: ph.p_flags(endian) & object::elf::PF_X != 0,
+                })
+                .collect()
+        }};
+    }
+    if let Ok(elf) = object::read::elf::ElfFile64::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    if let Ok(elf) = object::read::elf::ElfFile32::<object::Endianness>::parse(data) {
+        return collect!(elf);
+    }
+    Vec::new()
+}
+
+/// A segment's type by its numeric value, as the header spells it.
+fn segment_kind_name(p_type: u32) -> &'static str {
+    match p_type {
+        object::elf::PT_NULL => "NULL",
+        object::elf::PT_LOAD => "LOAD",
+        object::elf::PT_DYNAMIC => "DYNAMIC",
+        object::elf::PT_INTERP => "INTERP",
+        object::elf::PT_NOTE => "NOTE",
+        object::elf::PT_SHLIB => "SHLIB",
+        object::elf::PT_PHDR => "PHDR",
+        object::elf::PT_TLS => "TLS",
+        0x6474e550 => "GNU_EH_FRAME",
+        0x6474e551 => "GNU_STACK",
+        0x6474e552 => "GNU_RELRO",
+        0x6474e553 => "GNU_PROPERTY",
+        0x6474e554 => "GNU_SFRAME",
+        _ => "OTHER",
+    }
+}
+
 /// Name of the function containing `addr`, from the current state. Used by
 /// cross-reference queries, which already hold the state lock.
 fn fcn_name_at(state: &NativeState, addr: u64) -> Option<String> {
-    let (_, f) = state.functions.range(..=addr).next_back()?;
+    let f = state
+        .functions
+        .get(&addr)
+        .or_else(|| state.functions.range(..=addr).next_back().map(|(_, f)| f))?;
     let contains = f
         .size
         .map_or(addr == f.addr, |s| addr < f.addr.saturating_add(s));
@@ -1062,6 +1608,114 @@ fn plt_name_at(
     }
     let ops = decode_with(cs, &data[off..], addr, 1, false, false);
     plt_import_name(&ops, got)
+}
+
+/// How much a symbol's type can be trusted to start a function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SymbolSeedKind {
+    /// `STT_FUNC`: the symbol is a function and its address starts one.
+    Func,
+    /// `STT_NOTYPE` in executable code: an assembly or linker label. Usually a
+    /// function, but it can be a local label inside one, so the caller checks it
+    /// against the exact function boundaries before placing it.
+    Untyped,
+}
+
+/// Classify one symbol as a function seed, or reject it.
+///
+/// `object` reports `STT_FUNC` as [`SymbolKind::Text`] and `STT_NOTYPE` as
+/// [`SymbolKind::Unknown`], and it defines `is_definition()` for `STT_NOTYPE` as
+/// `st_size != 0` — a test no assembler- or linker-defined label passes, because
+/// such labels carry no size. Requiring both a [`SymbolKind::Text`] symbol and a
+/// definition therefore drops `_start` and `_exit` from a hand-written
+/// `.symtab` binary that omits `.type name, @function`, leaving a single merged
+/// `entry0` function where `gdb`, `objdump` and `nm` all report two. Requiring
+/// `is_definition()` alone would additionally drop `STT_NOTYPE` labels that do
+/// carry a size.
+///
+/// So an untyped symbol is admitted too, but only when it lands in an executable
+/// section. That is what keeps the `_edata` / `__bss_start` / `_end` boundary
+/// labels a linker emits past the end of the text out: they are not code, which
+/// is correct, since they are data boundaries. Data and TLS symbols are never
+/// code and are never admitted.
+///
+/// ```
+/// use recurse_static::native::{symbol_seed_kind, SymbolSeedKind};
+/// use object::SymbolKind;
+///
+/// // STT_FUNC: authoritative, and `object` already validated the definition.
+/// assert_eq!(
+///     symbol_seed_kind(SymbolKind::Text, true, true),
+///     Some(SymbolSeedKind::Func),
+/// );
+/// // STT_FUNC that `object` does not call a definition (a forward reference).
+/// assert_eq!(symbol_seed_kind(SymbolKind::Text, true, false), None);
+/// // STT_NOTYPE in .text with no size: a hand-written assembly label.
+/// assert_eq!(
+///     symbol_seed_kind(SymbolKind::Unknown, true, false),
+///     Some(SymbolSeedKind::Untyped),
+/// );
+/// // STT_NOTYPE outside .text: a linker boundary label such as `_end`.
+/// assert_eq!(symbol_seed_kind(SymbolKind::Unknown, false, false), None);
+/// // Data, TLS, section and file symbols are never code.
+/// assert_eq!(symbol_seed_kind(SymbolKind::Data, true, true), None);
+/// assert_eq!(symbol_seed_kind(SymbolKind::Tls, true, true), None);
+/// ```
+pub fn symbol_seed_kind(
+    kind: SymbolKind,
+    in_executable_section: bool,
+    is_definition: bool,
+) -> Option<SymbolSeedKind> {
+    match kind {
+        SymbolKind::Text if is_definition => Some(SymbolSeedKind::Func),
+        SymbolKind::Unknown if in_executable_section => Some(SymbolSeedKind::Untyped),
+        _ => None,
+    }
+}
+
+/// Every symbol that may start a function, classified and named, in the order
+/// the symbol table yields them. A label with no name contributes no function.
+///
+/// Hand-written assembly is the case that matters: it omits
+/// `.type name, @function`, so every label arrives as `STT_NOTYPE` with no size,
+/// which `object` reports as [`SymbolKind::Unknown`] and not a definition. Both
+/// labels are recovered here, while the `_edata` / `__bss_start` / `_end`
+/// boundary labels the linker places past the text are not, because they are not
+/// in an executable section.
+///
+/// ```
+/// use recurse_static::native::{symbol_seeds, SymbolSeedKind};
+///
+/// // `as --32` + `ld -m elf_i386` on two `.globl` labels with no `.type`.
+/// let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+/// let file = object::File::parse(bytes).unwrap();
+/// let seeds = symbol_seeds(&file);
+///
+/// let named: Vec<_> = seeds
+///     .iter()
+///     .map(|(addr, kind, name)| (*addr, *kind, name.as_str()))
+///     .collect();
+/// assert_eq!(named, vec![
+///     (0x0804_9000, SymbolSeedKind::Untyped, "_start"),
+///     (0x0804_9018, SymbolSeedKind::Untyped, "_exit"),
+/// ]);
+/// ```
+pub fn symbol_seeds(file: &object::File<'_>) -> Vec<(u64, SymbolSeedKind, String)> {
+    file.symbols()
+        .chain(file.dynamic_symbols())
+        .filter_map(|sym| {
+            if sym.address() == 0 {
+                return None;
+            }
+            let kind = symbol_seed_kind(
+                sym.kind(),
+                NativeEngine::in_text(file, sym.address()),
+                sym.is_definition(),
+            )?;
+            let name = shorten_name(sym.name().ok()?);
+            (!name.is_empty()).then(|| (code_addr(file, sym.address()), kind, name))
+        })
+        .collect()
 }
 
 /// Add `addr` (mapping a name) to the function map, skipping non-code.
@@ -2363,6 +3017,81 @@ impl Engine for NativeEngine {
             .collect())
     }
 
+    /// Collect call edges from the sweep's sorted reference index instead of
+    /// disassembling every function again. This keeps a whole-binary request
+    /// proportional to the number of indexed references rather than to the
+    /// number of functions times their instruction counts.
+    fn call_edges(
+        &self,
+        max_functions: usize,
+        max_edges: usize,
+    ) -> Result<Vec<(u64, u64)>, String> {
+        self.discover()?;
+        if max_functions == 0 || max_edges == 0 {
+            return Ok(Vec::new());
+        }
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        let known: HashSet<u64> = state.functions.keys().copied().collect();
+        let functions: Vec<(&u64, Option<u64>)> = state
+            .functions
+            .iter()
+            .take(max_functions)
+            .map(|(addr, f)| (addr, f.size))
+            .collect();
+        let mut edges = Vec::new();
+        let mut function_index = 0usize;
+        let mut seen = HashSet::new();
+        if let Some((entry, main)) = state.entry_main {
+            if known.contains(&entry)
+                && known.contains(&main)
+                && seen.insert((entry, main))
+                && edges.len() < max_edges
+            {
+                edges.push((entry, main));
+            }
+        }
+        let last_selected_end = functions.last().and_then(|(addr, size)| {
+            size.filter(|length| *length > 0)
+                .map(|length| addr.saturating_add(length))
+        });
+        for reference in &state.xrefs {
+            if reference.kind != "CALL" {
+                continue;
+            }
+            if edges.len() >= max_edges
+                || last_selected_end.is_some_and(|end| reference.from >= end)
+            {
+                break;
+            }
+            while function_index + 1 < functions.len()
+                && functions[function_index].1.is_some_and(|size| {
+                    reference.from >= functions[function_index].0.saturating_add(size)
+                })
+            {
+                function_index += 1;
+            }
+            let Some((source, size)) = functions.get(function_index) else {
+                break;
+            };
+            let contains = reference.from >= **source
+                && size.map_or(reference.from == **source, |length| {
+                    reference.from < source.saturating_add(length)
+                });
+            if contains
+                && reference.to != **source
+                && known.contains(&reference.to)
+                && edges.len() < max_edges
+                && seen.insert((**source, reference.to))
+            {
+                edges.push((**source, reference.to));
+            }
+        }
+        Ok(edges)
+    }
+
     fn set_renames(&self, renames: std::collections::HashMap<u64, String>) {
         if let Ok(mut state) = self.state.lock() {
             state.renames = renames;
@@ -2377,7 +3106,13 @@ impl Engine for NativeEngine {
             .state
             .lock()
             .map_err(|e| format!("native state poisoned: {e}"))?;
-        // The containing function is the greatest entry <= addr.
+        // Prefer an exact discovered entry. Function boundaries can overlap
+        // briefly while discovery grows the index; the exact entry is the
+        // function the analyst selected, not its predecessor.
+        if let Some(function) = state.functions.get(&addr) {
+            return Ok(Some(apply_rename(&state, function)));
+        }
+        // Otherwise, use the greatest entry <= addr that contains it.
         Ok(state
             .functions
             .range(..=addr)
@@ -2420,7 +3155,8 @@ impl Engine for NativeEngine {
         self.discover()?;
         let func = self.function_at(addr)?;
         let entry = func.as_ref().map(|f| f.addr).unwrap_or(addr);
-        let blocks = self.blocks_for(entry)?;
+        let mut blocks = self.blocks_for(entry)?;
+        self.trim_function_blocks(entry, &mut blocks);
         let mut ops: Vec<Instruction> = blocks.into_iter().flat_map(|b| b.ops).collect();
         ops.sort_by_key(|o| o.addr);
         ops.dedup_by_key(|o| o.addr);
@@ -2441,6 +3177,7 @@ impl Engine for NativeEngine {
         let func = self.function_at(addr)?;
         let entry = func.as_ref().map(|f| f.addr).unwrap_or(addr);
         let mut blocks = self.blocks_for(entry)?;
+        self.trim_function_blocks(entry, &mut blocks);
         for block in &mut blocks {
             self.annotate_ops(&mut block.ops);
         }
@@ -2451,6 +3188,144 @@ impl Engine for NativeEngine {
                 .unwrap_or_else(|| format!("fcn_{entry:x}")),
             blocks,
         })
+    }
+
+    fn data_regions(&self) -> Result<DataRegions, String> {
+        let file = self.parse()?;
+        Ok(data_regions(&file, &self.data[..]))
+    }
+
+    fn listing_len(&self) -> Result<u64, String> {
+        self.ensure_listing()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        Ok(state
+            .listing
+            .as_ref()
+            .map(|l| l.entries.len() as u64)
+            .unwrap_or(0))
+    }
+
+    fn listing_locate(&self, addr: u64) -> Result<u64, String> {
+        self.ensure_listing()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| format!("native state poisoned: {e}"))?;
+        let listing = state
+            .listing
+            .as_ref()
+            .ok_or_else(|| "listing was not built".to_string())?;
+        // `entries` is in ascending address order, so the first row strictly
+        // past `addr` sits at the partition point; the row before it covers
+        // `addr` (an instruction or the 16-byte data row containing it).
+        let after = listing.entries.partition_point(|e| e.addr <= addr);
+        Ok(after.saturating_sub(1) as u64)
+    }
+
+    fn listing_window(&self, offset: u64, count: u64) -> Result<ListingWindow, String> {
+        self.ensure_listing()?;
+        // Taken out of the lock before materializing: `annotate_ops` takes the
+        // state lock again, so holding it here would deadlock.
+        let (entries, sections, total) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|e| format!("native state poisoned: {e}"))?;
+            let listing = state
+                .listing
+                .as_ref()
+                .ok_or_else(|| "listing was not built".to_string())?;
+            let total = listing.entries.len() as u64;
+            let start = offset.min(total) as usize;
+            let end = offset.saturating_add(count).min(total) as usize;
+            let entries: Vec<ListingEntry> = listing.entries[start..end]
+                .iter()
+                .map(|e| ListingEntry {
+                    addr: e.addr,
+                    len: e.len,
+                    kind: e.kind,
+                    section: e.section,
+                })
+                .collect();
+            (entries, listing.sections.clone(), total)
+        };
+
+        let file = self.parse()?;
+        let cs = build_capstone(&file).ok();
+        let data = &self.data[..];
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let section = &sections[entry.section as usize];
+            match entry.kind {
+                2 => rows.push(ListingRow {
+                    addr: entry.addr,
+                    kind: "header".to_string(),
+                    size: 0,
+                    bytes: None,
+                    text: None,
+                    label: Some(section.title.clone()),
+                    jump: None,
+                    op: None,
+                }),
+                0 => {
+                    let slice = listing_slice(data, section, entry.addr, entry.len);
+                    let mut ops = match cs.as_ref() {
+                        Some(cs) => decode_with(cs, &slice, entry.addr, 1, false, true),
+                        None => Vec::new(),
+                    };
+                    self.annotate_ops(&mut ops);
+                    match ops.into_iter().next() {
+                        Some(op) => rows.push(ListingRow {
+                            addr: op.addr,
+                            kind: "code".to_string(),
+                            size: op.len as u64,
+                            bytes: op.bytes,
+                            text: Some(op.disasm),
+                            label: None,
+                            jump: op.jump,
+                            op: op.kind,
+                        }),
+                        None => rows.push(ListingRow {
+                            addr: entry.addr,
+                            kind: "code".to_string(),
+                            size: entry.len as u64,
+                            bytes: Some(hex_bytes(&slice)),
+                            text: Some("(invalid instruction)".to_string()),
+                            label: None,
+                            jump: None,
+                            op: None,
+                        }),
+                    }
+                }
+                _ => {
+                    let slice = listing_slice(data, section, entry.addr, entry.len);
+                    let ascii: String = slice
+                        .iter()
+                        .map(|&b| {
+                            if (0x20..0x7f).contains(&b) {
+                                b as char
+                            } else {
+                                '.'
+                            }
+                        })
+                        .collect();
+                    rows.push(ListingRow {
+                        addr: entry.addr,
+                        kind: "data".to_string(),
+                        size: entry.len as u64,
+                        bytes: Some(hex_bytes(&slice)),
+                        text: Some(ascii),
+                        label: None,
+                        jump: None,
+                        op: None,
+                    });
+                }
+            }
+        }
+        Ok(ListingWindow { total, rows })
     }
 
     fn strings(&self) -> Result<Vec<StringRef>, String> {
@@ -2668,6 +3543,75 @@ impl Engine for NativeEngine {
         }
         Ok(suffix)
     }
+
+    fn read_bytes(&self, addr: u64, len: usize) -> Result<Vec<u8>, String> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let file = self.parse()?;
+        for section in file.sections() {
+            let start = section.address();
+            let end = start.saturating_add(section.size());
+            if addr < start || addr.saturating_add(len as u64) > end {
+                continue;
+            }
+            let data = section
+                .data()
+                .map_err(|e| format!("read section data: {e}"))?;
+            let off = (addr - start) as usize;
+            let off_end = off.saturating_add(len);
+            if off_end > data.len() {
+                // Past the section's file-backed bytes (e.g. tail of .bss) —
+                // keep looking; another section may cover it exactly.
+                continue;
+            }
+            return Ok(data[off..off_end].to_vec());
+        }
+        Err(format!(
+            "0x{addr:x}: no section covers {len} byte(s) at this address"
+        ))
+    }
+
+    fn write_bytes(&self, addr: u64, bytes: &[u8]) -> Result<(), String> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let len = bytes.len() as u64;
+        let file = self.parse()?;
+        let mut file_offset = None;
+        for section in file.sections() {
+            let start = section.address();
+            let end = start.saturating_add(section.size());
+            if addr < start || addr.saturating_add(len) > end {
+                continue;
+            }
+            let (sec_file_off, sec_file_len) = section.file_range().ok_or_else(|| {
+                format!(
+                    "0x{addr:x}: section '{}' has no file-backed bytes (e.g. .bss) — cannot patch",
+                    section.name().unwrap_or("?")
+                )
+            })?;
+            let rel = addr - start;
+            if rel.saturating_add(len) > sec_file_len {
+                continue;
+            }
+            file_offset = Some(sec_file_off + rel);
+            break;
+        }
+        let file_offset = file_offset.ok_or_else(|| {
+            format!("0x{addr:x}: no section covers {len} byte(s) at this address")
+        })?;
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .map_err(|e| format!("open {} for writing: {e}", self.path.display()))?;
+        f.seek(SeekFrom::Start(file_offset))
+            .map_err(|e| format!("seek to 0x{file_offset:x}: {e}"))?;
+        f.write_all(bytes)
+            .map_err(|e| format!("write {} byte(s) at 0x{file_offset:x}: {e}", bytes.len()))?;
+        Ok(())
+    }
 }
 
 /// The reference kind a branch instruction carries, for xref labels.
@@ -2831,6 +3775,121 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
+    /// Copy the running test binary to a temp path so `write_bytes` has a
+    /// real, disposable ELF/PE/Mach-O to patch (never patches the test
+    /// harness's own on-disk binary).
+    fn temp_copy_of_self() -> PathBuf {
+        let src = std::env::current_exe().expect("current test executable path");
+        let mut dst = std::env::temp_dir();
+        dst.push(format!(
+            "recurse-native-engine-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::copy(&src, &dst).expect("copy test binary to a scratch path");
+        dst
+    }
+
+    #[test]
+    fn call_edges_are_bounded_deduplicated_and_index_backed() {
+        let path = temp_copy_of_self();
+        let engine = NativeEngine::open(&path).expect("open native engine");
+        let functions = engine.functions().expect("functions");
+        let edges = engine.call_edges(2, 16).expect("call edges");
+        assert!(edges.len() <= 16);
+        let known: HashSet<u64> = functions.iter().map(|f| f.addr).collect();
+        assert!(edges
+            .iter()
+            .all(|(from, to)| { *from != *to && known.contains(from) && known.contains(to) }));
+        let unique: HashSet<(u64, u64)> = edges.iter().copied().collect();
+        assert_eq!(unique.len(), edges.len());
+        assert!(engine.call_edges(0, 16).expect("empty cap").is_empty());
+        assert!(engine.call_edges(2, 0).expect("empty edge cap").is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_bytes_matches_the_file_on_disk() {
+        let path = temp_copy_of_self();
+        let engine = NativeEngine::open(&path).expect("open native engine");
+        let funcs = engine.functions().expect("functions");
+        let entry = funcs
+            .first()
+            .expect("at least one discovered function")
+            .addr;
+        let want = engine
+            .disassemble(&Target::Addr(entry), Some(1))
+            .expect("disasm");
+        let first_op = &want.ops[0];
+        let want_len = first_op.len as usize;
+        assert!(want_len > 0, "first instruction must report a byte length");
+
+        let got = engine
+            .read_bytes(entry, want_len)
+            .expect("read_bytes at the function entry");
+        assert_eq!(got.len(), want_len);
+        let want_bytes = first_op
+            .bytes
+            .as_deref()
+            .expect("disasm carries the instruction's own hex bytes");
+        let want_bytes = (0..want_bytes.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&want_bytes[i..i + 2], 16).unwrap())
+            .collect::<Vec<u8>>();
+        assert_eq!(
+            got, want_bytes,
+            "read_bytes must match the disassembled instruction's own bytes"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_bytes_patches_the_file_on_disk_only() {
+        let path = temp_copy_of_self();
+        let engine = NativeEngine::open(&path).expect("open native engine");
+        let funcs = engine.functions().expect("functions");
+        let entry = funcs
+            .first()
+            .expect("at least one discovered function")
+            .addr;
+        let original = engine.read_bytes(entry, 4).expect("read original bytes");
+
+        // A patch that is provably different from whatever was there,
+        // regardless of architecture or original content.
+        let patch: Vec<u8> = original.iter().map(|b| b.wrapping_add(1)).collect();
+        engine
+            .write_bytes(entry, &patch)
+            .expect("write_bytes at the function entry");
+
+        // The in-memory session (`self.data`) is documented as not
+        // reflecting the patch — read_bytes still returns the pre-patch
+        // bytes from the cached buffer.
+        let cached = engine.read_bytes(entry, 4).expect("read cached bytes");
+        assert_eq!(
+            cached, original,
+            "write_bytes must not mutate the cached in-memory analysis"
+        );
+
+        // The file on disk, opened fresh, must carry the patch.
+        let reopened = NativeEngine::open(&path).expect("reopen native engine");
+        let on_disk = reopened.read_bytes(entry, 4).expect("read patched bytes");
+        assert_eq!(on_disk, patch, "write_bytes must patch the file on disk");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_bytes_rejects_an_address_with_no_covering_section() {
+        let path = temp_copy_of_self();
+        let engine = NativeEngine::open(&path).expect("open native engine");
+        assert!(engine.read_bytes(0xffff_ffff_0000_0000, 4).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn scan_finds_ascii_and_utf16() {
         let mut data = b"hello world\0".to_vec();
@@ -2989,5 +4048,470 @@ mod tests {
     #[test]
     fn demangle_falls_back_to_input() {
         assert_eq!(demangle("plain_name"), "plain_name");
+    }
+
+    /// Copy a fixture next to this test binary so each run gets its own, and
+    /// remove it afterwards.
+    fn temp_fixture(name: &str) -> PathBuf {
+        let mut dst = std::env::temp_dir();
+        dst.push(format!(
+            "recurse-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+            &dst,
+        )
+        .expect("copy fixture");
+        dst
+    }
+
+    /// The name of a symbol an operand points at is still annotated, and still
+    /// takes the instruction when the immediate spells nothing. Guards the half
+    /// of `annotate_ops` that the immediate-text pass runs alongside.
+    #[test]
+    fn symbol_names_are_still_annotated() {
+        let path = temp_fixture("notype_labels_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+        let text: String = engine
+            .function_disasm(entry)
+            .expect("function_disasm")
+            .ops
+            .iter()
+            .map(|op| op.disasm.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // `push $0x8049018` names the `_exit` label at that address.
+        assert!(
+            text.contains("; _exit"),
+            "symbol name annotation was lost:\n{text}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An immediate that spells text and one that names a symbol are
+    /// independent: text wins for its own instruction, the name for the other.
+    #[test]
+    fn text_and_symbol_annotations_coexist() {
+        let path = temp_fixture("inline_text_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+        let text: String = engine
+            .function_disasm(entry)
+            .expect("function_disasm")
+            .ops
+            .iter()
+            .map(|op| op.disasm.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("; 'CTF:'"),
+            "lost the text annotation:\n{text}"
+        );
+        // No instruction may end up carrying two comments.
+        for line in text.lines() {
+            assert!(
+                line.matches(" ; ").count() <= 1,
+                "instruction annotated twice: {line}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A string constant compiled into the instruction stream is carried as an
+    /// immediate and must be spelled out in the disassembly.
+    ///
+    /// The fixture pushes the four chunks of "Let's start the CTF:" one
+    /// instruction each, so each operand is worth one comment. The three
+    /// trailing `mov`s are the negative cases: all-blank padding, a single
+    /// character, and a value that is not text at all.
+    #[test]
+    fn immediate_text_is_spelled_in_both_views() {
+        let path = temp_fixture("inline_text_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+
+        // The function view and the graph share one annotation pass, so both
+        // must carry the same comments.
+        let linear: Vec<String> = engine
+            .function_disasm(entry)
+            .expect("function_disasm")
+            .ops
+            .iter()
+            .map(|op| op.disasm.clone())
+            .collect();
+        let graph: Vec<String> = engine
+            .function_graph(entry)
+            .expect("function_graph")
+            .blocks
+            .iter()
+            .flat_map(|b| b.ops.iter())
+            .map(|op| op.disasm.clone())
+            .collect();
+
+        for (view, ops) in [("linear", &linear), ("graph", &graph)] {
+            let text = ops.join("\n");
+            // Each push carries four bytes of the message, least significant
+            // first, so `mov $0x4b454c4f` spells OLEK rather than KOLE.
+            for spelled in ["'CTF:'", "'the '", "'art '", "'OLEK'"] {
+                assert!(
+                    text.contains(spelled),
+                    "{view} view is missing the spelled immediate {spelled}:\n{text}"
+                );
+            }
+            // Negative cases stay unannotated: all-blank padding, and a value
+            // too short to be a word.
+            for noise in ["0x20202020 ;", "0x48 ;"] {
+                assert!(
+                    !text.contains(noise),
+                    "{view} view wrongly annotated {noise}:\n{text}"
+                );
+            }
+        }
+
+        assert_eq!(
+            linear, graph,
+            "the linear and graph views must annotate identically"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The count-anchored linear view, which is a different entry point from
+    /// `function_disasm`, annotates the same way.
+    #[test]
+    fn immediate_text_is_spelled_in_a_count_anchored_window() {
+        let path = temp_fixture("inline_text_i386.elf");
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let entry = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .expect("a discovered function")
+            .addr;
+        let ops = engine
+            .disassemble(&Target::Addr(entry), Some(16))
+            .expect("disassemble")
+            .ops;
+        let text: String = ops.iter().map(|op| op.disasm.clone()).collect();
+        assert!(
+            text.contains("'CTF:'"),
+            "window view lost the comment: {text}"
+        );
+        assert!(
+            text.contains("'Let'"),
+            "window view lost the comment: {text}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The boundary markers a linker emits are reported as data regions, which
+    /// is where an analyst can see them: they are addresses, never functions.
+    /// The two lists are the image seen two ways, and both have to be there: the
+    /// linker's sections and the kernel's segments answer different questions
+    /// and a hardening finding is a fact about the second.
+    #[test]
+    fn data_regions_report_segments_alongside_sections() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file, bytes);
+
+        assert!(
+            !regions.segments.is_empty(),
+            "an ELF image has program headers"
+        );
+        // `LOAD` is the one that is actually mapped, and it is what an analyst
+        // reads a memory layout off.
+        let load: Vec<&DataSegment> = regions
+            .segments
+            .iter()
+            .filter(|s| s.kind == "LOAD")
+            .collect();
+        assert!(!load.is_empty(), "no LOAD segment reported");
+        for seg in &load {
+            assert!(seg.readable, "a loaded segment is readable");
+            // A segment's tail is zero-filled rather than read from the file, so
+            // its memory size is the one that can exceed the file's.
+            assert!(seg.mem_size >= seg.file_size);
+            assert_eq!(seg.mem_size, seg.file_size + (seg.mem_size - seg.file_size));
+        }
+    }
+
+    /// The section type is read from the header, not guessed from a coarse kind:
+    /// the format-agnostic `SectionKind` folds `.dynsym`, `.dynstr` and
+    /// `.note.*` into one bucket, which is the difference an analyst needs.
+    #[test]
+    fn section_types_come_from_the_header() {
+        assert_eq!(elf_section_type_name(object::elf::SHT_PROGBITS), "PROGBITS");
+        assert_eq!(elf_section_type_name(object::elf::SHT_NOBITS), "NOBITS");
+        assert_eq!(elf_section_type_name(object::elf::SHT_RELA), "RELA");
+        assert_eq!(elf_section_type_name(object::elf::SHT_DYNSYM), "DYNSYM");
+        assert_eq!(elf_section_type_name(object::elf::SHT_STRTAB), "STRTAB");
+        assert_eq!(elf_section_type_name(object::elf::SHT_NOTE), "NOTE");
+        assert_eq!(elf_section_type_name(object::elf::SHT_DYNAMIC), "DYNAMIC");
+    }
+
+    #[test]
+    fn segment_types_come_from_the_header() {
+        assert_eq!(segment_kind_name(object::elf::PT_LOAD), "LOAD");
+        assert_eq!(segment_kind_name(object::elf::PT_DYNAMIC), "DYNAMIC");
+        assert_eq!(segment_kind_name(object::elf::PT_INTERP), "INTERP");
+        assert_eq!(segment_kind_name(object::elf::PT_TLS), "TLS");
+        assert_eq!(segment_kind_name(0x6474e551), "GNU_STACK");
+        assert_eq!(segment_kind_name(0x6474e552), "GNU_RELRO");
+        // An unknown type is named as such rather than dropped: a segment nobody
+        // can account for is worth seeing.
+        assert_eq!(segment_kind_name(0x1234), "OTHER");
+    }
+
+    #[test]
+    fn data_regions_report_the_linker_boundary_markers() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file, bytes);
+
+        let names: Vec<&str> = regions.boundaries.iter().map(|b| b.name.as_str()).collect();
+        for expected in ["_end", "_edata", "__bss_start"] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
+        // Each marker says what it marks, not just where it points.
+        let end = regions
+            .boundaries
+            .iter()
+            .find(|b| b.name == "_end")
+            .expect("_end");
+        assert_eq!(end.kind, "end of image");
+        assert!(end.addr > 0);
+    }
+
+    /// A code-only image reports no sections, and never its own `.text`.
+    #[test]
+    fn data_regions_exclude_code_and_unmapped_bookkeeping() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file, bytes);
+
+        for s in &regions.sections {
+            assert_ne!(s.name, ".text", "code must never be reported as data");
+            assert!(
+                s.addr != 0,
+                "{} is unmapped bookkeeping, not part of the image",
+                s.name
+            );
+            assert!(!s.executable, "{} is not executable", s.name);
+        }
+    }
+
+    /// A real compiler-built image: `.rodata`, `.data` and `.bss` are reported
+    /// with their sizes and permissions, and `.bss` is flagged as occupying no
+    /// file bytes. The test binary is a genuine ELF with all three.
+    #[test]
+    fn listing_covers_headers_and_code_and_clamps() {
+        let exe = std::env::current_exe().expect("current test binary");
+        let engine = NativeEngine::open(&exe).expect("open test binary");
+        let total = engine.listing_len().expect("listing len");
+        assert!(total > 100, "the image should list into many rows, got {total}");
+
+        let first = engine.listing_window(0, 64).expect("listing window");
+        assert_eq!(first.total, total);
+        assert_eq!(first.rows.len(), 64);
+        assert!(
+            first.rows.iter().any(|r| r.kind == "header"),
+            "the listing must carry section headers"
+        );
+
+        // Code does not start at the lowest address (the dynamic tables are
+        // small data sections below it), so scan forward for the first code row.
+        let mut found_code = false;
+        let mut offset = 0u64;
+        while offset < total {
+            let window = engine.listing_window(offset, 512).expect("listing window");
+            if window.rows.is_empty() {
+                break;
+            }
+            if window.rows.iter().any(|r| r.kind == "code") {
+                found_code = true;
+                break;
+            }
+            offset += window.rows.len() as u64;
+        }
+        assert!(found_code, "the listing must contain disassembled code");
+
+        // A window past the last row clamps to what exists rather than erroring.
+        let tail = engine.listing_window(total - 1, 10).expect("tail window");
+        assert_eq!(tail.rows.len(), 1);
+
+        // Locating a real instruction always yields a row inside the listing,
+        // and that row is at or before the address.
+        let func_addr = engine
+            .functions()
+            .expect("functions")
+            .first()
+            .map(|f| f.addr)
+            .expect("a discovered function");
+        let located = engine.listing_locate(func_addr).expect("locate");
+        assert!(located < total);
+        let row = engine
+            .listing_window(located, 1)
+            .expect("located row")
+            .rows
+            .into_iter()
+            .next()
+            .expect("a row");
+        assert!(row.addr <= func_addr);
+    }
+
+    fn data_regions_report_real_data_sections() {
+        let exe = std::env::current_exe().expect("current test binary");
+        let engine = NativeEngine::open(&exe).expect("open test binary");
+        let regions = engine.data_regions().expect("data regions");
+        assert!(
+            !regions.sections.is_empty(),
+            "a compiler-built image must have data sections"
+        );
+
+        let find = |name: &str| {
+            regions
+                .sections
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+
+        let rodata = find(".rodata");
+        assert!(rodata.addr > 0);
+        assert!(rodata.size > 0);
+        assert!(rodata.readable, ".rodata is readable");
+        assert!(!rodata.writable, ".rodata is not writable");
+
+        let data = find(".data");
+        assert!(data.writable, ".data is writable");
+
+        let bss = find(".bss");
+        assert!(bss.uninitialized, ".bss occupies no file bytes");
+
+        // Permissions follow the header, so a read-only region and a writable
+        // one must not be reported the same way.
+        assert_ne!(rodata.writable, data.writable);
+    }
+
+    /// The address spaces must not overlap: a section cannot start inside
+    /// another, which is what makes the two lists readable as one map.
+    #[test]
+    fn data_region_sections_do_not_overlap() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let regions = data_regions(&file, bytes);
+        let mut prev_end: Option<u64> = None;
+        for s in &regions.sections {
+            if let Some(end) = prev_end {
+                assert!(
+                    s.addr >= end,
+                    "{} starts at {:#x}, inside the previous section",
+                    s.name,
+                    s.addr
+                );
+            }
+            prev_end = Some(s.addr + s.size);
+        }
+    }
+
+    /// `STT_NOTYPE` assembly labels are real function starts, so a binary whose
+    /// `.symtab` omits `.type name, @function` must report one function per
+    /// label, at the label's own address and size — matching what `gdb`,
+    /// `objdump` and `nm` report. Gating discovery on `SymbolKind::Text` merged
+    /// them into a single `entry0` spanning both.
+    #[test]
+    fn notype_assembly_labels_become_separate_functions() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "recurse-notype-labels-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            include_bytes!("../tests/fixtures/notype_labels_i386.elf").as_slice(),
+        )
+        .expect("write fixture");
+
+        let engine = NativeEngine::open(&path).expect("open fixture");
+        let functions = engine.functions().expect("functions");
+        let found: Vec<(u64, String, Option<u64>)> = functions
+            .iter()
+            .map(|f| (f.addr, f.name.clone(), f.size))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (0x0804_9000, "_start".to_string(), Some(24)),
+                (0x0804_9018, "_exit".to_string(), Some(6)),
+            ],
+            "each STT_NOTYPE label must be its own function, sized to the next label"
+        );
+
+        // `_exit` is reachable only through `push $_exit`, never a `call`, so the
+        // linear sweep cannot find it — the symbol is the only source.
+        let exit = engine
+            .function_disasm(0x0804_9018)
+            .expect("disassemble _exit");
+        assert_eq!(exit.name, "_exit");
+        assert_eq!(
+            exit.ops.iter().map(|op| op.addr).collect::<Vec<_>>(),
+            vec![0x0804_9018, 0x0804_9019, 0x0804_901b, 0x0804_901c],
+            "_exit must disassemble to its own four instructions"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The linker boundary labels a `.symtab` carries past the end of the text
+    /// (`_end`, `_edata`, `__bss_start`) are data boundaries, not code, so they
+    /// must not become functions even though they are `STT_NOTYPE`.
+    #[test]
+    fn linker_boundary_labels_are_not_functions() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/notype_labels_i386.elf");
+        let file = object::File::parse(bytes).expect("parse fixture");
+        let boundary = [0x0804_b028u64];
+        for addr in boundary {
+            let is_text = NativeEngine::in_text(&file, addr);
+            let sym = file
+                .symbols()
+                .find(|s| s.address() == addr)
+                .expect("fixture carries a boundary label at this address");
+            assert!(
+                !is_text,
+                "fixture precondition: the boundary label is outside every text section"
+            );
+            assert_eq!(
+                symbol_seed_kind(sym.kind(), is_text, sym.is_definition()),
+                None,
+                "a boundary label outside .text must not be admitted as a function seed"
+            );
+        }
     }
 }

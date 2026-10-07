@@ -1,13 +1,23 @@
 import { Loader2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ReactNode,
+} from "react";
 
 import { api, pickBinary } from "@/api";
 import { DebugCpu } from "@/components/DebugCpu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { X86_FLAG_BITS } from "@/lib/branches";
+import { DebuggerVariableList } from "@/components/VariableList";
+import { chrome } from "@/lib/chrome";
 import { cn } from "@/lib/utils";
 import { useAnalysisStore } from "@/store/analysisStore";
-import { useDebugStore } from "@/store/debugStore";
+import { isLastStopView, isLiveState, useDebugStore } from "@/store/debugStore";
 import type { DebugStopReason } from "@/types";
 
 function fmtAddr(a?: number | null): string {
@@ -16,22 +26,19 @@ function fmtAddr(a?: number | null): string {
 
 /** x86-64 RFLAGS, as the set flag names. */
 function flagsOf(eflags: number): string {
-	const bits: [string, number][] = [
-		["CF", 0],
-		["PF", 2],
-		["AF", 4],
-		["ZF", 6],
-		["SF", 7],
-		["TF", 8],
-		["IF", 9],
-		["DF", 10],
-		["OF", 11],
-	];
-	return bits
-		.filter(([, bit]) => (eflags >> bit) & 1)
+	return X86_FLAG_BITS.filter(([, bit]) => (eflags >> bit) & 1)
 		.map(([name]) => name)
 		.join(" ");
 }
+
+/**
+ * How close to the bottom counts as "at the bottom", in pixels.
+ *
+ * Not zero: a scrollbar cannot always land exactly on the last pixel, and a
+ * transcript that has just gained a wrapped line can be a pixel or two off
+ * without the analyst having scrolled at all.
+ */
+const TAIL_SLOP = 4;
 
 /** Human label for a stop reason. */
 function reasonLabel(r?: DebugStopReason): string {
@@ -77,15 +84,23 @@ function PaneHeader({ children }: { children: ReactNode }) {
 	);
 }
 
-/** One editable register: click the value to write a new one. */
+/**
+ * One editable register: click the value to write a new one.
+ *
+ * `changed` marks a register whose value moved at the last stop. It is the one
+ * affordance that makes this pane worth scanning: the eye goes to the amber
+ * value and the other eighteen can be ignored.
+ */
 function RegisterRow({
 	name,
 	value,
 	emphasis,
+	changed,
 }: {
 	name: string;
 	value: number;
 	emphasis?: boolean;
+	changed?: boolean;
 }) {
 	const run = useDebugStore((s) => s.run);
 	const [editing, setEditing] = useState(false);
@@ -115,10 +130,15 @@ function RegisterRow({
 			) : (
 				<button
 					className={cn(
-						"min-w-0 truncate hover:underline",
-						emphasis && "text-primary",
+						"nums min-w-0 truncate text-right hover:underline",
+						emphasis && !changed && "text-primary",
+						changed && chrome.changed,
 					)}
-					title="Click to edit"
+					title={
+						changed
+							? "changed at this stop — click to edit"
+							: "Click to edit"
+					}
 					onClick={() => {
 						setDraft(fmtAddr(value));
 						setEditing(true);
@@ -131,27 +151,76 @@ function RegisterRow({
 	);
 }
 
-/** Right column, top: general registers and flags. */
+/** The registers with a row of their own above the grid. */
+const SPECIALS = ["rip", "rsp", "rbp"];
+
+/** Right column, top: general registers and flags, marked with what moved. */
 function RegistersPane() {
 	const regs = useDebugStore((s) => s.registers);
-	const skip = new Set(["rip", "eflags", "orig_rax", "pc", "sp"]);
+	const changed = useDebugStore((s) => s.changedRegisters);
+	const stale = isLastStopView(useDebugStore((s) => s.state));
+	// Reported by the backend under their own names as well as through
+	// `pc`/`sp`/`fp`, and rendered above from those — so the grid skips them, or
+	// each would be printed twice. `eflags` is decoded into the flags line and
+	// `orig_rax` is noise; neither gets a row, so neither is counted as changed
+	// either — a count that names a register with nowhere to show it is worse
+	// than no count. Both spellings are listed, since the aarch64 backend calls
+	// the first two `pc` and `sp`.
+	const skip = new Set([
+		"rip",
+		"rsp",
+		"rbp",
+		"pc",
+		"sp",
+		"eflags",
+		"orig_rax",
+	]);
 	const gp = (regs ? Object.entries(regs.values) : []).filter(
 		([k]) => !skip.has(k),
 	);
+	const changedShown = [...SPECIALS, ...gp.map(([k]) => k)].filter((name) =>
+		changed.has(name),
+	).length;
+	const row = (name: string, value: number, emphasis?: boolean) => (
+		<RegisterRow
+			name={name}
+			value={value}
+			emphasis={emphasis}
+			changed={changed.has(name)}
+		/>
+	);
 	return (
 		<div className="flex min-h-0 flex-col">
-			<PaneHeader>Registers</PaneHeader>
+			<PaneHeader>
+				Registers
+				{stale && (
+					<span
+						className="ml-2 font-normal normal-case opacity-70"
+						title="The target is running: these are its registers at the last stop, not a live reading"
+					>
+						last stop
+					</span>
+				)}
+				{changedShown > 0 && (
+					<span
+						className={cn(
+							"ml-2 font-normal normal-case",
+							chrome.changed,
+						)}
+					>
+						{changedShown} changed
+					</span>
+				)}
+			</PaneHeader>
 			{!regs ? (
 				<Empty label="no registers" />
 			) : (
 				<div className="scroll-host max-h-72 overflow-auto p-2 font-mono text-xs">
-					<RegisterRow name="rip" value={regs.pc} emphasis />
-					<RegisterRow name="rsp" value={regs.sp} />
-					<RegisterRow name="rbp" value={regs.fp} />
+					{row("rip", regs.pc, true)}
+					{row("rsp", regs.sp)}
+					{row("rbp", regs.fp)}
 					<div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
-						{gp.map(([k, v]) => (
-							<RegisterRow key={k} name={k} value={v} />
-						))}
+						{gp.map(([k, v]) => row(k, v))}
 					</div>
 					<div className="text-muted-foreground mt-1.5">
 						flags{" "}
@@ -166,9 +235,45 @@ function RegistersPane() {
 }
 
 /** Right column, bottom: the words at the stack pointer, with value hints. */
-function StackPane() {
+/**
+ * The right column's lower pane: the stack, or the current function's variables.
+ *
+ * Two views of the same function, so they share a header and a switch rather
+ * than both asking for space: the stack says where the program is, the
+ * variables say what it is working on, and an analyst flipping between them is
+ * following one question.
+ */
+function LowerPane() {
+	const [tab, setTab] = useState<"stack" | "vars">("stack");
+	const button = (id: "stack" | "vars", label: string) => (
+		<button
+			className={cn(
+				"px-2 py-1 text-xs",
+				tab === id
+					? "text-foreground border-primary border-b-2"
+					: "text-muted-foreground hover:text-foreground",
+			)}
+			onClick={() => setTab(id)}
+		>
+			{label}
+		</button>
+	);
+	return (
+		<div className="flex min-h-0 flex-1 flex-col">
+			<div className="label border-border flex h-[var(--chrome-h)] shrink-0 items-center border-b px-1">
+				{button("stack", "Stack")}
+				{button("vars", "Vars")}
+			</div>
+			{tab === "stack" ? <StackBody /> : <DebuggerVariableList />}
+		</div>
+	);
+}
+
+function StackBody() {
 	const sp = useDebugStore((s) => s.registers?.sp ?? null);
-	const active = useDebugStore((s) => s.active);
+	// Reading the debuggee's memory needs a live process; a finished session has
+	// no stack left to read.
+	const live = isLiveState(useDebugStore((s) => s.state));
 	const bias = useDebugStore((s) => s.bias);
 	const funcs = useAnalysisStore((s) => s.funcs);
 	const strings = useAnalysisStore((s) => s.strings);
@@ -177,7 +282,7 @@ function StackPane() {
 	);
 
 	useEffect(() => {
-		if (sp == null || !active) return;
+		if (sp == null || !live) return;
 		let cancelled = false;
 		api.debugCommand("read", { addr: sp, len: 256, format: "u64" })
 			.then((r) => {
@@ -192,7 +297,7 @@ function StackPane() {
 		return () => {
 			cancelled = true;
 		};
-	}, [sp, active]);
+	}, [sp, live]);
 
 	// Static address -> function name, for code pointers on the stack.
 	const codeMap = useMemo(() => {
@@ -230,8 +335,7 @@ function StackPane() {
 
 	const words = sp != null && data && data.sp === sp ? data.words : [];
 	return (
-		<div className="flex min-h-0 flex-1 flex-col">
-			<PaneHeader>Stack</PaneHeader>
+		<>
 			{sp == null ? (
 				<Empty label="no stack" />
 			) : (
@@ -262,7 +366,7 @@ function StackPane() {
 					{words.length === 0 && <Empty label="unreadable" />}
 				</div>
 			)}
-		</div>
+		</>
 	);
 }
 
@@ -271,18 +375,19 @@ function BottomTabs() {
 	const frames = useDebugStore((s) => s.frames);
 	const breakpoints = useDebugStore((s) => s.breakpoints);
 	const run = useDebugStore((s) => s.run);
-	const active = useDebugStore((s) => s.active);
+	const live = isLiveState(useDebugStore((s) => s.state));
 	const pid = useDebugStore((s) => s.pid);
-	const [tab, setTab] = useState<"stack" | "breakpoints" | "threads">(
-		"stack",
-	);
+	const [tab, setTab] = useState<
+		"stack" | "breakpoints" | "threads" | "trace"
+	>("stack");
 	const [threads, setThreads] = useState<{
 		pid: number | null;
 		ids: number[];
 	}>({ pid: null, ids: [] });
+	const trace = useDebugStore((s) => s.trace);
 
 	useEffect(() => {
-		if (tab !== "threads" || !active) return;
+		if (tab !== "threads" || !live) return;
 		let cancelled = false;
 		api.debugCommand("threads")
 			.then((t) => {
@@ -292,7 +397,7 @@ function BottomTabs() {
 		return () => {
 			cancelled = true;
 		};
-	}, [tab, active, pid]);
+	}, [tab, live, pid]);
 
 	const threadIds = threads.pid === pid ? threads.ids : [];
 
@@ -312,11 +417,15 @@ function BottomTabs() {
 	);
 
 	return (
-		<div className="flex min-h-0 flex-col">
+		// `h-full` so the scroll host below has a definite height to fill: a
+		// flex-1 child of an auto-height parent is sized by its content, and a
+		// long call stack would then spill past the pane into the one below.
+		<div className="flex h-full min-h-0 flex-col">
 			<div className="border-border flex items-center border-b px-1">
 				{tabButton("stack", "Call stack", frames.length)}
 				{tabButton("breakpoints", "Breakpoints", breakpoints.length)}
 				{tabButton("threads", "Threads")}
+				{tabButton("trace", "Trace", trace.length)}
 			</div>
 			<div className="scroll-host min-h-0 flex-1 overflow-auto">
 				{tab === "stack" &&
@@ -366,6 +475,41 @@ function BottomTabs() {
 							{fmtAddr(t)}
 						</div>
 					))}
+				{tab === "trace" && (
+					<>
+						<div className="border-border text-muted-foreground flex items-center justify-between border-b px-2 py-1 text-[10px]">
+							<span>
+								Every launch/attach/continue/step stop, in
+								order.
+							</span>
+							<button
+								className="hover:text-foreground"
+								onClick={() => void api.debugTraceClear()}
+							>
+								Clear
+							</button>
+						</div>
+						{trace.length === 0 && (
+							<Empty label="no stops recorded yet" />
+						)}
+						{trace.map((t, i) => (
+							<div
+								key={i}
+								className="hover:bg-accent flex items-center gap-2 px-2 py-0.5 font-mono text-[11px]"
+							>
+								<span className="text-muted-foreground w-6">
+									{i}
+								</span>
+								<span className="text-primary">
+									{fmtAddr(t.registers.pc)}
+								</span>
+								<span className="truncate">
+									{reasonLabel(t.reason)}
+								</span>
+							</div>
+						))}
+					</>
+				)}
 			</div>
 		</div>
 	);
@@ -377,9 +521,10 @@ function BottomTabs() {
  * call-stack / breakpoint / thread tabs. All state is shared with the agent.
  */
 export function DebugPanel() {
-	const active = useDebugStore((s) => s.active);
 	const pid = useDebugStore((s) => s.pid);
 	const state = useDebugStore((s) => s.state);
+	// Run/Step/Break need a live debuggee; a session can outlive its process.
+	const live = isLiveState(state);
 	const stop = useDebugStore((s) => s.stop);
 	const output = useDebugStore((s) => s.output);
 	const busy = useDebugStore((s) => s.busy);
@@ -387,32 +532,58 @@ export function DebugPanel() {
 	const follow = useDebugStore((s) => s.follow);
 	const run = useDebugStore((s) => s.run);
 	const sendStdin = useDebugStore((s) => s.sendStdin);
-	const pollOutput = useDebugStore((s) => s.pollOutput);
-	const pollSnapshot = useDebugStore((s) => s.pollSnapshot);
+	const connect = useDebugStore((s) => s.connect);
+	const disconnect = useDebugStore((s) => s.disconnect);
 	const setFollow = useDebugStore((s) => s.setFollow);
 	const [attachPid, setAttachPid] = useState("");
 	const [breakAt, setBreakAt] = useState("");
 	const [stdin, setStdin] = useState("");
 	const outputRef = useRef<HTMLDivElement>(null);
+	const outputTailRef = useRef<HTMLPreElement>(null);
+	/** Whether the analyst is at the bottom, and so wants new output followed. */
+	const atTail = useRef(true);
 
+	// One channel for the life of the view: the session pushes a view of itself
+	// at every stop and the debuggee's output as it is printed, so there is no
+	// interval here to tune and nothing to keep running while a `continue` is
+	// blocked.
 	useEffect(() => {
-		if (!active && !follow) return;
-		const id = setInterval(() => void pollOutput(), 400);
-		return () => clearInterval(id);
-	}, [active, follow, pollOutput]);
+		void connect();
+		return () => {
+			void disconnect();
+		};
+	}, [connect, disconnect]);
 
-	useEffect(() => {
-		if (!follow) return;
-		void pollSnapshot();
-		const id = setInterval(() => void pollSnapshot(), 500);
-		return () => clearInterval(id);
-	}, [follow, pollSnapshot]);
+	// Whether the analyst is reading back through the transcript. A pane that
+	// always jumps to the newest line makes scrolling up to re-read something
+	// impossible, which is the one thing a program that printed a lot makes you
+	// want to do.
+	const onOutputScroll = useCallback(() => {
+		const el = outputRef.current;
+		if (!el) return;
+		atTail.current =
+			el.scrollHeight - el.scrollTop - el.clientHeight < TAIL_SLOP;
+	}, []);
 
+	// Follow the tail as the transcript grows. A ResizeObserver on the content
+	// rather than an effect that reads `scrollHeight`: an observer is called
+	// after layout has already been done, so the read is free, where reading it
+	// during a commit forces the browser to lay the whole pane out again — once
+	// per chunk printed, which is what made a chatty debuggee stutter.
 	useEffect(() => {
-		if (outputRef.current) {
-			outputRef.current.scrollTop = outputRef.current.scrollHeight;
-		}
-	}, [output]);
+		const scroller = outputRef.current;
+		const tail = outputTailRef.current;
+		if (!scroller || !tail) return;
+		scroller.addEventListener("scroll", onOutputScroll, { passive: true });
+		const observer = new ResizeObserver(() => {
+			if (atTail.current) scroller.scrollTop = scroller.scrollHeight;
+		});
+		observer.observe(tail);
+		return () => {
+			scroller.removeEventListener("scroll", onOutputScroll);
+			observer.disconnect();
+		};
+	}, [onOutputScroll]);
 
 	const onLaunch = async () => {
 		const path = await pickBinary();
@@ -469,9 +640,9 @@ export function DebugPanel() {
 				<Button
 					variant="toolbar"
 					size="sm"
-					className={active && !busy ? "ui-selected" : undefined}
+					className={live && !busy ? "ui-selected" : undefined}
 					onClick={() => void run("continue")}
-					disabled={busy || !active}
+					disabled={busy || !live}
 					title="Run (continue)"
 				>
 					Run
@@ -480,7 +651,7 @@ export function DebugPanel() {
 					variant="toolbar"
 					size="sm"
 					onClick={() => void run("interrupt")}
-					disabled={!active}
+					disabled={!live}
 					title="Pause the running target"
 				>
 					Pause
@@ -489,7 +660,7 @@ export function DebugPanel() {
 					variant="toolbar"
 					size="sm"
 					onClick={() => void run("step", { kind: "into" })}
-					disabled={busy || !active}
+					disabled={busy || !live}
 					title="Step into"
 				>
 					Into
@@ -498,7 +669,7 @@ export function DebugPanel() {
 					variant="toolbar"
 					size="sm"
 					onClick={() => void run("step", { kind: "over" })}
-					disabled={busy || !active}
+					disabled={busy || !live}
 					title="Step over"
 				>
 					Over
@@ -507,7 +678,7 @@ export function DebugPanel() {
 					variant="toolbar"
 					size="sm"
 					onClick={() => void run("step", { kind: "out" })}
-					disabled={busy || !active}
+					disabled={busy || !live}
 					title="Step out"
 				>
 					Out
@@ -526,7 +697,7 @@ export function DebugPanel() {
 					variant="toolbar"
 					size="sm"
 					onClick={onBreak}
-					disabled={busy || !active || !breakAt.trim()}
+					disabled={busy || !live || !breakAt.trim()}
 				>
 					Break
 				</Button>
@@ -535,7 +706,7 @@ export function DebugPanel() {
 					variant="toolbar"
 					size="sm"
 					onClick={() => void run("detach")}
-					disabled={busy || !active}
+					disabled={busy || !live}
 				>
 					Detach
 				</Button>
@@ -544,7 +715,7 @@ export function DebugPanel() {
 					size="sm"
 					className="text-destructive hover:bg-destructive/10 hover:text-destructive"
 					onClick={() => void run("kill")}
-					disabled={busy || !active}
+					disabled={busy || !live}
 				>
 					Kill
 				</Button>
@@ -588,10 +759,10 @@ export function DebugPanel() {
 				</div>
 			)}
 
-			<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px]">
+			<div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] grid-rows-[minmax(0,1fr)]">
 				<div className="flex min-h-0 flex-col border-r">
 					<DebugCpu />
-					<div className="border-border h-44 border-t">
+					<div className="border-border h-44 shrink-0 overflow-hidden border-t">
 						<BottomTabs />
 					</div>
 				</div>
@@ -599,7 +770,7 @@ export function DebugPanel() {
 					<div className="border-border border-b">
 						<RegistersPane />
 					</div>
-					<StackPane />
+					<LowerPane />
 				</div>
 			</div>
 
@@ -607,11 +778,31 @@ export function DebugPanel() {
 				<div className="text-muted-foreground px-3 py-1 text-xs font-semibold tracking-wider uppercase">
 					Program output
 				</div>
-				<div ref={outputRef} className="scroll-host h-24 overflow-auto">
-					<pre className="text-2xs p-2 font-mono whitespace-pre-wrap">
-						{output.replace(/\r/g, "")}
+				<div
+					ref={outputRef}
+					className="scroll-host h-24 overflow-auto"
+					data-testid="debug-output"
+				>
+					<pre
+						ref={outputTailRef}
+						className="text-2xs p-2 font-mono whitespace-pre-wrap"
+					>
+						{/* Chunks, so the analyst's own input reads differently from what
+					    the debuggee printed. Index keys: the transcript only appends
+					    and trims from the front, and the children are plain text. */}
+						{output.map((chunk, i) => (
+							<span
+								key={i}
+								className={
+									chunk.echo ? "text-brand" : undefined
+								}
+							>
+								{chunk.text}
+							</span>
+						))}
 					</pre>
 				</div>
+
 				<div className="flex items-center gap-1.5 border-t px-2 py-1.5">
 					<Input
 						value={stdin}
@@ -621,13 +812,13 @@ export function DebugPanel() {
 						}}
 						placeholder="type input for the target — Enter sends"
 						className="h-7 flex-1 text-xs"
-						disabled={!active}
+						disabled={!live}
 					/>
 					<Button
 						variant="toolbar"
 						size="sm"
 						onClick={onSendStdin}
-						disabled={!active || !stdin.trim()}
+						disabled={!live || !stdin.trim()}
 					>
 						Send
 					</Button>

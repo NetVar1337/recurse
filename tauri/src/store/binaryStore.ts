@@ -40,7 +40,9 @@ async function pollIndexing(token: number) {
 		useBinaryStore.setState({ indexing: progress.indexing });
 		if (
 			progress.function_count > 0 &&
-			progress.function_count !== useAnalysisStore.getState().funcs.length
+			(progress.function_count !==
+				useAnalysisStore.getState().funcs.length ||
+				!progress.indexing)
 		) {
 			try {
 				const funcs = await api.functions();
@@ -76,10 +78,52 @@ export const useBinaryStore = create<BinaryState>((set) => ({
 				api.strings(),
 				api.imports(),
 			]);
+			// Fetched apart from the rest on purpose: a backend that does not
+			// report data regions must not fail the whole open, and the panel
+			// degrades to empty instead.
+			const dataRegions = await api.dataRegions().catch(() => ({
+				sections: [],
+				boundaries: [],
+			}));
+			// Variable names are the analyst's, like function renames: fetched with
+			// the rest and never required, so a backend that cannot report them
+			// still opens. Said out loud, though — an analyst who has named things
+			// and is shown none of them cannot tell that from a target that has
+			// nothing named yet.
+			let variableNames: Record<string, string> = {};
+			try {
+				variableNames = await api.variableNames();
+			} catch (e) {
+				useUiStore
+					.getState()
+					.setErr(
+						`variable names could not be read: ${
+							e instanceof Error ? e.message : String(e)
+						}`,
+					);
+			}
+			// Types the analyst has given a return value, an argument or a local
+			// travel with the names: same key, same scope, same reasoning about
+			// degrading loudly rather than looking like a target with none.
+			let variableTypes: Record<string, string> = {};
+			try {
+				variableTypes = await api.variableTypes();
+			} catch (e) {
+				useUiStore
+					.getState()
+					.setErr(
+						`variable types could not be read: ${
+							e instanceof Error ? e.message : String(e)
+						}`,
+					);
+			}
 			useAnalysisStore.getState().setAll({
 				funcs: f ?? [],
 				strings: s ?? [],
 				imports: i ?? [],
+				variableNames,
+				variableTypes,
+				dataRegions,
 			});
 			await useSessionStore.getState().ensure();
 			void pollIndexing(indexPollToken);

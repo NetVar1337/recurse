@@ -5,7 +5,8 @@
 //! proves `advanced::run_until_condition`/`run_until_watchpoint_change`
 //! against this same real, live process.
 //!
-//! Skips (never fails) when there is no C compiler available.
+//! Skips (never fails) off Windows, and when this host cannot produce the
+//! fixture (no C compiler, or one that cannot link it).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -57,9 +58,23 @@ impl Symbols for PdbSymbols {
 }
 
 /// Compile the fixture into a temp dir with a fixed (non-ASLR) load
-/// address and real PDB debug info, or `None` when no compiler is
-/// available.
+/// address and real PDB debug info, or `None` when this host cannot
+/// produce one.
+///
+/// Gated on the host platform first. `/DYNAMICBASE:NO` is an MSVC/`lld-link`
+/// option, so a Unix `clang` accepts the flag, fails to link with it, and
+/// reports a wall of linker errors before the test quietly skips — which
+/// reads like a broken build. Nothing in this file is meaningful away from
+/// Windows, so the compiler is never invoked there.
+///
+/// The two failure modes are reported separately, because "no compiler" is a
+/// missing toolchain and "could not link" is a broken one; collapsing them
+/// hides a real regression on a Windows host.
 fn build_fixture() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        eprintln!("skipping: Windows backend, not the host platform");
+        return None;
+    }
     let dir = std::env::temp_dir().join(format!("recurse-debug-win-it-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let src = dir.join("target.c");
@@ -71,7 +86,11 @@ fn build_fixture() -> Option<PathBuf> {
         .arg(&src)
         .status()
         .ok()?;
-    status.success().then_some(bin)
+    if !status.success() {
+        eprintln!("skipping: `clang` could not link the fixture");
+        return None;
+    }
+    Some(bin)
 }
 
 /// Resolve `add`'s and `main`'s runtime addresses from the fixture's own
@@ -97,7 +116,7 @@ fn pdb_symbols(exe: &std::path::Path) -> Option<PdbSymbols> {
 #[test]
 fn launch_break_step_detach() {
     let Some(bin) = build_fixture() else {
-        eprintln!("skipping: no `clang` available");
+        eprintln!("skipping: no Windows fixture available");
         return;
     };
     let Some(symbols) = pdb_symbols(&bin) else {
@@ -169,7 +188,7 @@ fn launch_break_step_detach() {
 #[test]
 fn conditional_breakpoint_stops_only_when_the_condition_is_true() {
     let Some(bin) = build_fixture() else {
-        eprintln!("skipping: no `clang` available");
+        eprintln!("skipping: no Windows fixture available");
         return;
     };
     let Some(symbols) = pdb_symbols(&bin) else {
@@ -213,7 +232,7 @@ fn conditional_breakpoint_stops_only_when_the_condition_is_true() {
 #[test]
 fn conditional_breakpoint_transparently_runs_past_a_false_condition_to_exit() {
     let Some(bin) = build_fixture() else {
-        eprintln!("skipping: no `clang` available");
+        eprintln!("skipping: no Windows fixture available");
         return;
     };
     let Some(symbols) = pdb_symbols(&bin) else {
@@ -264,7 +283,7 @@ fn conditional_breakpoint_transparently_runs_past_a_false_condition_to_exit() {
 #[test]
 fn software_watchpoint_detects_a_real_stack_write_while_single_stepping() {
     let Some(bin) = build_fixture() else {
-        eprintln!("skipping: no `clang` available");
+        eprintln!("skipping: no Windows fixture available");
         return;
     };
     let Some(symbols) = pdb_symbols(&bin) else {

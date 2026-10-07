@@ -10,7 +10,7 @@ use crate::sessions::{self, Session};
 use crate::AppState;
 use recurse_agent::agent::{self, AgentEvent, ModelInfo, ToolCall};
 
-fn session_of(
+pub(crate) fn session_of(
     state: &AppState,
 ) -> Result<std::sync::MutexGuard<'_, Option<Box<dyn Engine>>>, String> {
     state
@@ -28,7 +28,7 @@ fn session<'a>(
         .map_err(|e| format!("session lock poisoned: {e}"))
 }
 
-fn with_sess<'a>(
+pub(crate) fn with_sess<'a>(
     guard: &'a std::sync::MutexGuard<'a, Option<Box<dyn Engine>>>,
 ) -> Result<&'a dyn Engine, String> {
     guard
@@ -90,8 +90,14 @@ pub fn open_binary_impl(path: String, state: &AppState) -> Result<Value, String>
     );
     let mut guard = session_of(state)?;
     let sess = crate::engine::build(std::path::Path::new(&path))?;
-    // Restore any analyst renames recorded for this target.
-    sess.set_renames(crate::renames::load(&sess.path().to_string_lossy()));
+    // Restore any analyst renames recorded for this target. A binary whose
+    // renames cannot be read still opens — but the renames are the analyst's
+    // work, so losing them silently would show them a target that has forgotten
+    // every name they gave it.
+    match crate::renames::load(&sess.path().to_string_lossy()) {
+        Ok(renames) => sess.set_renames(renames),
+        Err(e) => eprintln!("[recurse] could not read renames for {path}: {e}"),
+    }
     let mut summary = sess.summary()?;
     // Host metadata the UI uses to hide affordances the backend cannot serve
     // (decompile / raw console on the native backend).
@@ -110,12 +116,12 @@ pub fn open_binary_impl(path: String, state: &AppState) -> Result<Value, String>
     Ok(summary)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_binary(path: String, state: State<'_, AppState>) -> Result<Value, String> {
     open_binary_impl(path, &state)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn analyze(state: State<'_, AppState>) -> Result<(), String> {
     analyze_impl(&state)
 }
@@ -146,12 +152,12 @@ pub fn close_binary_impl(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn close_binary(state: State<'_, AppState>) -> Result<(), String> {
     close_binary_impl(&state)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn binary_info(state: State<'_, AppState>) -> Result<Value, String> {
     binary_info_impl(&state)
 }
@@ -162,11 +168,10 @@ pub fn binary_info_impl(state: &AppState) -> Result<Value, String> {
     with_sess(&guard)?.info()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn functions(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let funcs = with_sess(&guard)?.functions()?;
-    eprintln!("[recurse] functions: {}", funcs.len());
     serde_json::to_value(funcs).map_err(|e| e.to_string())
 }
 
@@ -179,20 +184,55 @@ pub fn rename_function_impl(state: &AppState, addr: u64, name: &str) -> Result<(
     let engine = with_sess(&guard)?;
     let path = engine.path().to_string_lossy().to_string();
     crate::renames::set(&path, addr, Some(name))?;
-    engine.set_renames(crate::renames::load(&path));
+    // Read back rather than patched in place, so a name the database will not
+    // give back is not shown in the view as though it stuck.
+    engine.set_renames(crate::renames::load(&path)?);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_function(addr: u64, name: String, state: State<'_, AppState>) -> Result<(), String> {
     rename_function_impl(&state, addr, &name)
+}
+
+/// Name a local variable, or clear the name when `name` is blank.
+///
+/// A stack local has no address to key a rename on — it is a frame offset
+/// inside a function — so this is its own record, scoped to the function, and
+/// it survives closing and reopening the binary the way a function rename does.
+/// The engine has no view of stack slots, so the name lives here: the
+/// debugger's variable view and its disassembly annotations are what read it.
+#[tauri::command(async)]
+pub fn rename_variable(
+    func: u64,
+    key: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let guard = session_of(&state)?;
+    let engine = with_sess(&guard)?;
+    let path = engine.path().to_string_lossy().to_string();
+    crate::renames::set_variable(&path, func, &key, Some(&name))
+}
+
+/// The variable names recorded for the open binary, as `(func, slot) -> name`.
+#[tauri::command(async)]
+pub fn variable_names(state: State<'_, AppState>) -> Result<Value, String> {
+    let guard = session_of(&state)?;
+    let engine = with_sess(&guard)?;
+    let path = engine.path().to_string_lossy().to_string();
+    let names: std::collections::HashMap<String, String> = crate::renames::load_variables(&path)?
+        .into_iter()
+        .map(|((func, key), name)| (format!("{func}:{key}"), name))
+        .collect();
+    serde_json::to_value(names).map_err(|e| e.to_string())
 }
 
 /// Current function count plus whether the backend is still discovering
 /// functions in the background. The UI polls this to grow the function list
 /// without blocking the initial open; synchronous backends always report
 /// `indexing: false`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn analysis_progress(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let engine = with_sess(&guard)?;
@@ -276,7 +316,7 @@ pub async fn recon_impl(state: &AppState) -> Result<Value, String> {
     }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn recon(state: State<'_, AppState>) -> Result<Value, String> {
     recon_impl(&state).await
 }
@@ -288,7 +328,7 @@ pub async fn recon(state: State<'_, AppState>) -> Result<Value, String> {
 /// One command covers the whole vocabulary: `launch`/`attach` create the
 /// session, `detach`/`kill` clear it. The debugger blocks in `waitpid` while
 /// running, so the work runs on a blocking thread and never stalls the UI.
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn debug_command(
     op: String,
     args: Option<Value>,
@@ -302,7 +342,28 @@ pub async fn debug_command(
     })
     .await
     .map_err(|e| format!("debug task failed: {e}"))??;
-    serde_json::from_str(&out).map_err(|e| e.to_string())
+    let value: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+    crate::debug_trace::record_if_stop(&state, &value);
+    state.debug_events.ensure_forwarding(&state);
+    Ok(value)
+}
+
+/// The files mapped into the debuggee, with the ranges they occupy.
+///
+/// The kernel's own answer, so a runtime address can be attributed to the file
+/// it came from — which is the first half of naming a call that goes into libc.
+#[tauri::command(async)]
+pub fn debug_modules(pid: u32) -> Result<Value, String> {
+    serde_json::to_value(crate::debug_modules::modules(pid)?).map_err(|e| e.to_string())
+}
+
+/// The functions a mapped file defines, sorted by address.
+///
+/// A symbol table, not an analysis pass: a call target is a function entry, and
+/// reading the table takes milliseconds where analysing libc takes seconds.
+#[tauri::command(async)]
+pub fn debug_module_symbols(path: String) -> Result<Value, String> {
+    serde_json::to_value(crate::debug_modules::symbols(&path)?).map_err(|e| e.to_string())
 }
 
 /// Live snapshot of the debug session (pid, state, last stop, breakpoints,
@@ -311,7 +372,7 @@ pub async fn debug_command(
 /// Read directly, without going through the debugger's worker thread, so the
 /// UI can follow an agent-driven session in real time — even while a
 /// `continue` is blocked waiting for a stop.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn debug_snapshot(state: State<'_, AppState>) -> Result<Value, String> {
     let dbg = state
         .debug
@@ -391,68 +452,109 @@ fn file_mode(_path: &std::path::Path) -> String {
     String::new()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disassemble(addr: u64, count: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let dis = with_sess(&guard)?.disassemble(&Target::Addr(addr), Some(count as usize))?;
     serde_json::to_value(dis).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn function_at(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let f = with_sess(&guard)?.function_at(addr)?;
     serde_json::to_value(f).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn function_disasm(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let dis = with_sess(&guard)?.function_disasm(addr)?;
     serde_json::to_value(dis).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn function_graph(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let graph = with_sess(&guard)?.function_graph(addr)?;
     serde_json::to_value(graph).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn strings(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let strings = with_sess(&guard)?.strings()?;
-    eprintln!("[recurse] strings: {}", strings.len());
     serde_json::to_value(strings).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+/// The image's non-executable regions: data sections and linker boundary
+/// markers. None of it is code, so it is never part of `functions`.
+#[tauri::command(async)]
+pub fn data_regions(state: State<'_, AppState>) -> Result<Value, String> {
+    let guard = session(&state)?;
+    let regions = with_sess(&guard)?.data_regions()?;
+    serde_json::to_value(regions).map_err(|e| e.to_string())
+}
+
+/// A window of the whole-image listing: `count` rows from `offset`, plus the
+/// total row count. The linear view fetches these as it scrolls, so the whole
+/// image never crosses IPC in one payload.
+#[tauri::command(async)]
+pub fn listing(offset: u64, count: u64, state: State<'_, AppState>) -> Result<Value, String> {
+    let guard = session(&state)?;
+    let window = with_sess(&guard)?.listing_window(offset, count)?;
+    serde_json::to_value(window).map_err(|e| e.to_string())
+}
+
+/// The listing row index that covers `addr`, so the view can scroll to a
+/// function without fetching the rows in between.
+#[tauri::command(async)]
+pub fn listing_locate(addr: u64, state: State<'_, AppState>) -> Result<u64, String> {
+    let guard = session(&state)?;
+    with_sess(&guard)?.listing_locate(addr)
+}
+
+#[tauri::command(async)]
 pub fn imports(state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let imports = with_sess(&guard)?.imports()?;
-    eprintln!("[recurse] imports: {}", imports.len());
     serde_json::to_value(imports).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn xrefs_to(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let refs = with_sess(&guard)?.xrefs(&Target::Addr(addr), XrefDirection::To)?;
     serde_json::to_value(refs).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn decompile(addr: u64, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     let dec = with_sess(&guard)?.decompile(addr)?;
     serde_json::to_value(dec).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn raw(cmd: String, state: State<'_, AppState>) -> Result<Value, String> {
     let guard = session(&state)?;
     with_sess(&guard)?.raw(&cmd)
+}
+
+/// Read raw bytes at a virtual address — the hex view's data source.
+#[tauri::command(async)]
+pub fn read_bytes(addr: u64, len: usize, state: State<'_, AppState>) -> Result<Vec<u8>, String> {
+    let guard = session(&state)?;
+    with_sess(&guard)?.read_bytes(addr, len)
+}
+
+/// Patch raw bytes at a virtual address directly into the file on disk.
+/// The active session's cached analysis does not reflect the patch until
+/// the binary is reopened (see [`recurse_agent::engine::Engine::write_bytes`]).
+#[tauri::command(async)]
+pub fn write_bytes(addr: u64, bytes: Vec<u8>, state: State<'_, AppState>) -> Result<(), String> {
+    let guard = session(&state)?;
+    with_sess(&guard)?.write_bytes(addr, &bytes)
 }
 
 #[derive(Serialize)]
@@ -461,24 +563,29 @@ pub struct BackendStatus {
 }
 
 /// The active analysis backend, for the UI selector.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_backend() -> BackendStatus {
     BackendStatus {
         backend: crate::engine::active_label().to_string(),
     }
 }
 
-/// Persist the selected analysis backend (`native` or r2). Takes
-/// the next binary open.
-#[tauri::command]
+/// Persist the selected analysis backend (`native`, `r2`, or `ida`).
+/// Returns an error if the requested backend is not available on the system.
+#[tauri::command(async)]
 pub fn set_backend(backend: String) -> Result<(), String> {
     let parsed = recurse_agent::engine::BackendKind::parse(&backend)
         .ok_or_else(|| format!("unknown backend: {backend}"))?;
+    if parsed == recurse_agent::engine::BackendKind::Ida
+        && recurse_agent::ida_backend::find_ida_executable().is_none()
+    {
+        return Err("IDA Pro executable not found. Please install IDA in standard paths or set RECURSE_IDA_PATH.".to_string());
+    }
     config::set_backend(Some(parsed.as_str().to_string()))
 }
 
 /// Zoom the whole window (native webview zoom, like VS Code's Ctrl +/-).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_zoom(scale: f64, window: tauri::WebviewWindow) -> Result<(), String> {
     window
         .set_zoom(scale)
@@ -492,7 +599,7 @@ pub fn set_zoom(scale: f64, window: tauri::WebviewWindow) -> Result<(), String> 
 /// Start an agent turn in the given session. Returns immediately; progress
 /// streams over the `agent-event` channel. The async turn loop (LLM
 /// streaming + tool calls) runs on the Tauri async runtime.
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn agent_chat(
     message: String,
     session_id: String,
@@ -675,13 +782,13 @@ async fn ensure_session_name(
 /// Ask the in-flight agent run to stop. Cooperative: lands between tool
 /// iterations; the run then emits an Error("run cancelled") event like any
 /// other failure so the frontend resets uniformly.
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn agent_cancel_run(state: State<'_, AppState>) -> Result<(), String> {
     state.agent.lock().await.request_cancel();
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn agent_reset(state: State<'_, AppState>) -> Result<(), String> {
     {
         state.agent.lock().await.reset();
@@ -695,7 +802,7 @@ pub async fn agent_reset(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Restore the active session's persisted conversation into the agent and
 /// return the messages (used by the frontend to render on load / reload).
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn agent_history(state: State<'_, AppState>) -> Result<Vec<agent::ChatMessage>, String> {
     let project = current_project(&state)?;
     let sid = current_session_id(&state)?;
@@ -716,7 +823,7 @@ pub async fn agent_history(state: State<'_, AppState>) -> Result<Vec<agent::Chat
 // Sessions
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sessions_list(project: String) -> Result<Vec<Session>, String> {
     sessions::list(Some(&project))
 }
@@ -740,7 +847,7 @@ pub async fn sessions_create_impl(state: &AppState) -> Result<Session, String> {
     Ok(s)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn sessions_create(state: State<'_, AppState>) -> Result<Session, String> {
     sessions_create_impl(&state).await
 }
@@ -776,7 +883,7 @@ pub async fn sessions_select_impl(state: &AppState, session_id: &str) -> Result<
     Ok(s)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn sessions_select(
     session_id: String,
     state: State<'_, AppState>,
@@ -784,12 +891,12 @@ pub async fn sessions_select(
     sessions_select_impl(&state, &session_id).await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sessions_delete(project: String, session_id: String) -> Result<(), String> {
     sessions::remove(Some(&project), &session_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sessions_rename(project: String, session_id: String, name: String) -> Result<(), String> {
     sessions::set_name(Some(&project), &session_id, &name)
 }
@@ -836,7 +943,7 @@ pub fn llm_status_impl(state: &AppState) -> Result<LlmStatus, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn llm_status(state: State<'_, AppState>) -> Result<LlmStatus, String> {
     llm_status_impl(&state)
 }
@@ -852,7 +959,7 @@ pub fn set_model_impl(state: &AppState, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_model(id: String, state: State<'_, AppState>) -> Result<(), String> {
     set_model_impl(&state, &id)
 }
@@ -874,7 +981,7 @@ pub fn save_api_key_impl(state: &AppState, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_api_key(key: String, state: State<'_, AppState>) -> Result<(), String> {
     save_api_key_impl(&state, &key)
 }
@@ -896,7 +1003,7 @@ pub fn set_endpoint_impl(state: &AppState, endpoint: &str) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_endpoint(endpoint: String, state: State<'_, AppState>) -> Result<(), String> {
     set_endpoint_impl(&state, &endpoint)
 }
@@ -1154,7 +1261,7 @@ fn fetch_anthropic_models(api_key: &str) -> Result<Vec<ModelInfo>, String> {
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn list_models(
     refresh: bool,
     state: State<'_, AppState>,
@@ -1208,22 +1315,22 @@ pub async fn list_models(
 // Multi-provider auth: `crate::providers`/`recurse_agent::oauth` glue.
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn providers_list() -> Vec<crate::providers::ProviderStatus> {
     crate::providers::list_status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_save_api_key(id: String, key: String) -> Result<(), String> {
     crate::providers::save_api_key(&id, Some(key))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_clear_credential(id: String) -> Result<(), String> {
     crate::providers::clear_credential(&id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_set_active(id: String) -> Result<(), String> {
     if recurse_agent::providers::find(&id).is_none() {
         return Err(format!("unknown provider: {id}"));
@@ -1241,7 +1348,7 @@ pub struct AnthropicLoginStart {
     pub verifier: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn anthropic_oauth_start() -> AnthropicLoginStart {
     let login = recurse_agent::oauth::anthropic::start_login();
     AnthropicLoginStart {
@@ -1252,7 +1359,7 @@ pub fn anthropic_oauth_start() -> AnthropicLoginStart {
 
 /// Complete a Claude Pro/Max login: exchange the user-pasted `code#state`
 /// string for a real token, store it, and make this provider active.
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn anthropic_oauth_finish(pasted_code: String, verifier: String) -> Result<(), String> {
     let token = recurse_agent::oauth::anthropic::exchange_code(&pasted_code, &verifier).await?;
     crate::providers::save_oauth_token("anthropic-oauth", &token)?;
@@ -1268,7 +1375,7 @@ pub struct DeviceLoginInfo {
     pub expires_in_secs: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn github_copilot_device_start() -> Result<DeviceLoginInfo, String> {
     let start = recurse_agent::oauth::github_copilot::start_device_flow().await?;
     Ok(DeviceLoginInfo {
@@ -1286,7 +1393,7 @@ pub async fn github_copilot_device_start() -> Result<DeviceLoginInfo, String> {
 /// async command rather than frontend-side polling — the frontend just
 /// awaits this after showing the user/verification code from
 /// [`github_copilot_device_start`].
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn github_copilot_device_finish(
     device_code: String,
     interval_secs: u64,
@@ -1319,22 +1426,22 @@ fn mem_project(project: Option<&str>) -> String {
     project.unwrap_or("default").to_string()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn memories_list(project: String) -> Result<Vec<String>, String> {
     crate::db::memory_store()?.list(&mem_project(Some(&project)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn memory_get(project: String, key: String) -> Result<String, String> {
     crate::db::memory_store()?.load(&mem_project(Some(&project)), &key)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn memory_save(project: String, key: String, content: String) -> Result<(), String> {
     crate::db::memory_store()?.save(&mem_project(Some(&project)), &key, &content)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn memory_remove(project: String, key: String) -> Result<(), String> {
     crate::db::memory_store()?.remove(&mem_project(Some(&project)), &key)
 }
@@ -1345,7 +1452,7 @@ pub struct MemoryHit {
     pub snippet: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn memory_search(
     project: String,
     query: String,
@@ -1365,7 +1472,7 @@ pub fn memory_search(
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_projects() -> Result<Vec<Project>, String> {
     project::list()
 }
@@ -1384,7 +1491,7 @@ pub fn create_project_impl(
     Ok(p)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_project(
     name: String,
     binary_path: String,
@@ -1404,27 +1511,27 @@ pub fn open_project_impl(state: &AppState, name: &str) -> Result<Project, String
     Ok(p)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_project(name: String, state: State<'_, AppState>) -> Result<Project, String> {
     open_project_impl(&state, &name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_project(name: String) -> Result<(), String> {
     project::remove(&name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn project_read_file(name: String, path: String) -> Result<String, String> {
     project::read_file(&name, &path)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn project_write_file(name: String, path: String, content: String) -> Result<(), String> {
     project::write_file(&name, &path, &content)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn project_list_files(name: String) -> Result<Vec<String>, String> {
     project::list_files(&name)
 }

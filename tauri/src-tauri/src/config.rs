@@ -33,13 +33,33 @@ pub(crate) fn get_key(key: &str) -> Option<String> {
 
 /// Load the config; returns an empty config when nothing is stored
 /// (never errors — config is best-effort).
+///
+/// One connection and one `SELECT` for every key. [`db::connect`] opens SQLite
+/// and re-runs its schema/journal setup, so calling [`get_key`] per field cost
+/// four times that work on a path the startup and `get_backend` both take.
 pub fn load() -> ConfigFile {
-    ConfigFile {
-        openrouter_api_key: get_key("openrouter_api_key"),
-        model: get_key("model"),
-        endpoint: get_key("endpoint"),
-        backend: get_key("backend"),
+    let mut cfg = ConfigFile::default();
+    let Ok(conn) = db::connect() else {
+        return cfg;
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT key, value FROM config") else {
+        return cfg;
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return cfg;
+    };
+    for (key, value) in rows.flatten() {
+        match key.as_str() {
+            "openrouter_api_key" => cfg.openrouter_api_key = Some(value),
+            "model" => cfg.model = Some(value),
+            "endpoint" => cfg.endpoint = Some(value),
+            "backend" => cfg.backend = Some(value),
+            _ => {}
+        }
     }
+    cfg
 }
 
 pub(crate) fn set_key(key: &str, value: Option<String>) -> Result<(), String> {

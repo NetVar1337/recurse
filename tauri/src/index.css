@@ -1,51 +1,23 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 @import "./chrome.css";
+/* Every palette, one `[data-theme]` block each. */
+@import "./themes.css";
+/* Bundled locally so the Tauri build renders identically offline. The Inter
+   `opsz` cut carries the optical-size axis, which the app needs: its dense
+   10–11px labels look muddy without it. */
+@import "@fontsource-variable/inter/opsz.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Geometry, and only geometry. Every colour lives in themes.css, one block per
+ * palette, so a theme is a single self-contained place and the default has to be
+ * named twice if it is ever changed.
+ *
+ * `--radius` sits here rather than with the colours because it is not a colour.
+ */
 :root {
-	--background: #fbfcfe;
-	--foreground: #0b0d12;
-	--card: #ffffff;
-	--card-foreground: #0b0d12;
-	--popover: #ffffff;
-	--popover-foreground: #0b0d12;
-	--primary: #0b0d12;
-	--primary-foreground: #ffffff;
-	--secondary: #eef1f6;
-	--secondary-foreground: #0b0d12;
-	--muted: #eef1f6;
-	--muted-foreground: #5b6472;
-	--accent: #eef1f6;
-	--accent-foreground: #0b0d12;
-	--destructive: #d4432a;
-	--destructive-foreground: #ffffff;
-	--border: rgba(0, 0, 0, 0.1);
-	--input: rgba(0, 0, 0, 0.16);
-	--ring: #1f7fd0;
 	--radius: 0.25rem;
-}
-
-.dark {
-	--background: #06070a;
-	--foreground: #e9edf3;
-	--card: #0a0c11;
-	--card-foreground: #e9edf3;
-	--popover: #0e1117;
-	--popover-foreground: #e9edf3;
-	--primary: #e9edf3;
-	--primary-foreground: #06070a;
-	--secondary: #14171d;
-	--secondary-foreground: #e9edf3;
-	--muted: #0e1117;
-	--muted-foreground: #9aa4b2;
-	--accent: #14171d;
-	--accent-foreground: #e9edf3;
-	--destructive: #ff7a5c;
-	--destructive-foreground: #06070a;
-	--border: rgba(255, 255, 255, 0.09);
-	--input: rgba(255, 255, 255, 0.16);
-	--ring: #7ec8ff;
 }
 
 @theme inline {
@@ -102,16 +74,42 @@ body,
 
 body {
 	@apply bg-background text-foreground antialiased;
+	/* Inter (variable) for prose/controls, JetBrains Mono for code and data —
+	   the same pairing VS Code and Cursor ship, so the app reads as native
+	   developer tooling instead of a web page. System fonts stay as the last
+	   resort so a missing bundle degrades quietly. */
 	font-family:
-		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+		"Inter Variable",
+		"Inter",
+		-apple-system,
+		BlinkMacSystemFont,
+		"Segoe UI",
+		Roboto,
+		Helvetica,
+		Arial,
 		sans-serif;
 	font-size: 13px;
+	font-feature-settings:
+		"cv02" 1,
+		"cv03" 1,
+		"cv04" 1,
+		"cv11" 1;
+	/* Drive Inter's optical-size axis off the rendered size so small text gets
+	   the tighter, higher-contrast cut instead of a shrunken display cut. */
+	font-optical-sizing: auto;
 	overflow: hidden;
 }
 
 .font-mono {
 	font-family:
-		ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+		"JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+		SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+	/* Deliberately no `zero`/dotted-zero or stylistic-set features: these
+	   columns are addresses, offsets and hex bytes, where a slashed or dotted
+	   0 is actively ambiguous. */
+	/* Slight negative tracking; the app's `ch`-sized columns (asm addresses,
+	   byte dumps) self-compensate because `ch` excludes letter-spacing. */
+	letter-spacing: -0.01em;
 }
 
 /* compact scrollbars (WebKit) */
@@ -158,12 +156,30 @@ body {
 	scrollbar-gutter: stable;
 }
 
+.chat-message {
+	content-visibility: auto;
+	contain-intrinsic-size: auto 12rem;
+}
+
+.project-screen-scroll {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.project-screen-scroll::-webkit-scrollbar {
+	display: none;
+}
+
 /* CFG graph nodes render their own card — strip React Flow's default box. */
 .react-flow__node-cfgnode {
 	background: transparent;
 	border: none;
 	box-shadow: none;
 	padding: 0;
+}
+.react-flow__node-cfgnode > div,
+.react-flow__node-fnnode > div {
+	box-shadow: none;
 }
 /* Let React Flow handle all touch gestures (incl. pinch-zoom) on the graph. */
 .react-flow {
@@ -203,4 +219,63 @@ div.react-flow__controls {
 }
 .react-flow__controls .react-flow__controls-button.disabled svg {
 	fill: var(--muted-foreground);
+}
+
+/* The chat's own motion. Two things and no more: a turn arriving, and a caret
+ * while a reply is being written.
+ *
+ * Only `opacity` and `transform` are animated, never a layout property, so a new
+ * turn cannot push the rest of the transcript sideways while it fades in — the
+ * one animation a streaming chat must not have, because the transcript is being
+ * read while it happens. `will-change` is deliberately not set: a hundred
+ * settled turns would each hold a compositor layer for a one-off fade. */
+@keyframes chat-turn-in {
+	from {
+		opacity: 0;
+		transform: translateY(3px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.chat-turn {
+	animation: chat-turn-in 180ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* The streaming caret. A soft blink with a held-off phase rather than a hard
+ * one: 1Hz is a flash, and this is on screen for as long as the model takes. */
+@keyframes chat-caret-blink {
+	0%,
+	45% {
+		opacity: 1;
+	}
+	55%,
+	100% {
+		opacity: 0.15;
+	}
+}
+
+.chat-caret {
+	animation: chat-caret-blink 1.1s ease-in-out infinite;
+}
+
+/* Motion, for the analyst who has asked for less of it.
+ *
+ * The loaders, the chat's turn fade and its streaming caret are the only things
+ * here that move on their own, and they are exactly the kind of repeated motion
+ * that a motion-sensitive reader needs to be able to switch off. Durations are
+ * flattened rather than removed so that a transition still *ends* where it
+ * would have: an element that finishes at a different state than it started in
+ * would otherwise snap. */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
 }

@@ -7,12 +7,23 @@ import type {
 	AsmResult,
 	Backend,
 	BinaryInfo,
+	CallGraph,
 	ChatMessage,
+	DataRegions,
+	DebugEvent,
+	DebugModule,
+	DebugModuleSymbol,
 	DebugSnapshot,
+	DebugTraceEntry,
 	DecompileResult,
 	DeviceLoginInfo,
+	DiffResult,
+	Findings,
 	Function,
+	GeneratedReport,
+	GeneratedSignature,
 	Import,
+	ListingWindow,
 	LlmStatus,
 	ModelInfo,
 	Project,
@@ -20,6 +31,8 @@ import type {
 	R2String,
 	Recon,
 	FunctionGraph,
+	SemanticIndexResult,
+	SemanticSimilarResult,
 	Session,
 	Xref,
 } from "./types";
@@ -39,9 +52,29 @@ export const api = {
 	functions: () => invoke<Function[]>("functions"),
 	renameFunction: (addr: number, name: string) =>
 		invoke<void>("rename_function", { addr, name }),
+	renameVariable: (func: number, key: string, name: string) =>
+		invoke<void>("rename_variable", { func, key, name }),
+	variableNames: () => invoke<Record<string, string>>("variable_names"),
+	setVariableType: (func: number, key: string, typeName: string) =>
+		invoke<void>("set_variable_type", { func, key, typeName }),
+	variableTypes: () => invoke<Record<string, string>>("variable_types"),
 	debugCommand: (op: string, args?: Record<string, unknown>) =>
 		invoke<unknown>("debug_command", { op, args: args ?? null }),
 	debugSnapshot: () => invoke<DebugSnapshot | null>("debug_snapshot"),
+	/**
+	 * Listen to the debugger instead of asking it. One channel, registered for
+	 * the life of the view: the session pushes a view of itself at every stop
+	 * and the debuggee's output as it is printed.
+	 */
+	// A `Channel`, not a bare callback: the host side is typed
+	// `tauri::ipc::Channel<Envelope>`, and a plain function does not deserialize
+	// into one. The call rejects, so nothing is ever pushed.
+	debugSubscribe: (onEvent: Channel<DebugEvent>) =>
+		invoke<void>("debug_subscribe", { onEvent }),
+	debugModules: (pid: number) =>
+		invoke<DebugModule[]>("debug_modules", { pid }),
+	debugModuleSymbols: (path: string) =>
+		invoke<DebugModuleSymbol[]>("debug_module_symbols", { path }),
 	recon: () => invoke<Recon>("recon"),
 	analysisProgress: () =>
 		invoke<{ function_count: number; indexing: boolean }>(
@@ -55,6 +88,10 @@ export const api = {
 	disassemble: (addr: number, count: number) =>
 		invoke<AsmInsn[]>("disassemble", { addr, count }),
 	strings: () => invoke<R2String[]>("strings"),
+	dataRegions: () => invoke<DataRegions>("data_regions"),
+	listing: (offset: number, count: number) =>
+		invoke<ListingWindow>("listing", { offset, count }),
+	listingLocate: (addr: number) => invoke<number>("listing_locate", { addr }),
 	imports: () => invoke<Import[]>("imports"),
 	xrefsTo: (addr: number) => invoke<Xref[]>("xrefs_to", { addr }),
 	decompile: (addr: number) => invoke<DecompileResult>("decompile", { addr }),
@@ -134,4 +171,30 @@ export const api = {
 			intervalSecs,
 			expiresInSecs,
 		}),
+
+	readBytes: (addr: number, len: number) =>
+		invoke<number[]>("read_bytes", { addr, len }),
+	writeBytes: (addr: number, bytes: number[]) =>
+		invoke<void>("write_bytes", { addr, bytes }),
+	findings: () => invoke<Findings>("findings"),
+	diffWith: (otherPath: string) =>
+		invoke<DiffResult>("diff_with", { otherPath }),
+	generateSignature: (addr: number) =>
+		invoke<GeneratedSignature>("generate_signature", { addr }),
+	semanticIndex: () => invoke<SemanticIndexResult>("semantic_index"),
+	semanticSimilar: (addr: number) =>
+		invoke<SemanticSimilarResult>("semantic_similar", { addr }),
+	callGraph: () => invoke<CallGraph>("call_graph"),
+	generateReport: () => invoke<GeneratedReport>("generate_report"),
+	exportProject: (name: string) => invoke<string>("export_project", { name }),
+	importProject: (zipPath: string) =>
+		invoke<Project>("import_project", { zipPath }),
+	pickZip: (title: string) =>
+		open({
+			multiple: false,
+			title,
+			filters: [{ name: "Zip", extensions: ["zip"] }],
+		}),
+	debugTrace: () => invoke<DebugTraceEntry[]>("debug_trace"),
+	debugTraceClear: () => invoke<void>("debug_trace_clear"),
 };

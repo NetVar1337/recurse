@@ -4,8 +4,9 @@ import type { ReactNode } from "react";
  * Split a disassembly line into its instruction and its `; comment` suffix.
  *
  * Both backends append annotations to `disasm` as `"<instr> ; <comment>"`
- * (the comment is a string literal, a symbol, or a GOT/PLT name), so the UI
- * splits on that separator to colour the two parts independently.
+ * (the comment is a string literal, text spelled by an immediate, a symbol, or
+ * a GOT/PLT name), so the UI splits on that separator to colour the two parts
+ * independently.
  *
  * ```
  * splitComment('mov edi, 0x4007d4 ; "Hello ! "')
@@ -19,6 +20,22 @@ export function splitComment(text: string): {
 	const i = text.indexOf(" ; ");
 	if (i < 0) return { instr: text, comment: "" };
 	return { instr: text.slice(0, i), comment: text.slice(i + 3) };
+}
+
+/**
+ * Format a compact instruction byte string as separated hexadecimal pairs.
+ *
+ * ```
+ * formatInstructionBytes("48b801000000")
+ * // => "48 b8 01 00 00 00"
+ * ```
+ */
+export function formatInstructionBytes(
+	bytes: string | null | undefined,
+): string {
+	const compact = (bytes ?? "").replace(/\s+/g, "");
+	if (!compact) return "";
+	return (compact.match(/.{1,2}/g) ?? []).join(" ");
 }
 
 /** Token kinds the highlighter distinguishes. */
@@ -116,10 +133,40 @@ export function tokenizeAsm(instr: string): Token[] {
  * immediates), IDA-style. Comments are handled separately by
  * [`DisasmComment`].
  */
+/**
+ * Render one instruction with per-token colour: the mnemonic, its registers and
+ * its immediates each read differently, so the shape of the line is legible
+ * without reading it. The `; …` suffix is a separate fact about the line and is
+ * rendered by [`DisasmComment`].
+ *
+ * @param props.text - The instruction, without its comment.
+ * @returns One span per token, coloured by kind.
+ *
+ * @example
+ * <DisasmInstr text="mov eax, 0x3" />
+ */
 export function DisasmInstr({ text }: { text: string }): ReactNode {
+	return <AsmTokens tokens={tokenizeAsm(text)} />;
+}
+
+/**
+ * Render instructions that have already been tokenized.
+ *
+ * Taking the tokens rather than the text is what lets a caller tokenize once and
+ * reuse the result. A control-flow graph shows the same instructions in many
+ * places — once per block that contains them — and re-splitting them per render
+ * was a per-character pass over every instruction in view.
+ *
+ * @param props.tokens - The instruction's tokens.
+ * @returns One span per token, coloured by kind.
+ *
+ * @example
+ * <AsmTokens tokens={tokenizeAsm("mov eax, 0x3")} />
+ */
+export function AsmTokens({ tokens }: { tokens: Token[] }): ReactNode {
 	return (
 		<>
-			{tokenizeAsm(text).map((t, i) => {
+			{tokens.map((t, i) => {
 				const cls = TOKEN_CLASS[t.kind];
 				return cls ? (
 					<span key={i} className={cls}>
@@ -132,19 +179,21 @@ export function DisasmInstr({ text }: { text: string }): ReactNode {
 		</>
 	);
 }
-
 /**
- * Render the `; comment` suffix of a disassembly line. Quoted string literals
- * get the string accent; symbol / GOT / PLT comments are muted italic, so a
- * `; "Give me your flag"` reads clearly as a string rather than more assembly.
+ * Render the `; comment` suffix of a disassembly line.
+ *
+ * Every comment shares one style. The suffix is always the same kind of thing —
+ * a note about the operand, never more assembly — whatever produced it: a
+ * symbol or GOT/PLT name, a string read from the binary (`"Give me your
+ * flag"`), or characters spelled by an immediate (`'CTF:'`). Colouring those
+ * differently implied they differed in kind rather than only in origin, and
+ * the mixed palette made a run of annotated instructions harder to scan, not
+ * easier.
  */
 export function DisasmComment({ comment }: { comment: string }): ReactNode {
 	if (!comment) return null;
-	const isString = comment.startsWith('"');
 	return (
-		<span
-			className={isString ? "text-asm-string" : "text-asm-symbol italic"}
-		>
+		<span className="text-asm-symbol italic">
 			{" ; "}
 			{comment}
 		</span>

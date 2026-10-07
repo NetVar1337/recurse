@@ -15,8 +15,13 @@ const DropdownMenuContent = React.forwardRef<
 		<DropdownMenuPrimitive.Content
 			ref={ref}
 			sideOffset={sideOffset}
+			// No open or close animation, deliberately. A menu is opened by a click
+			// and dismissed by a click, so the reader is already looking at the thing
+			// they are dismissing: fading it out over 150ms puts a blink between the
+			// click and the menu's disappearance, which reads as a flicker rather
+			// than as a response. It appears where the pointer is and it is gone.
 			className={cn(
-				"bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-50 min-w-48 overflow-hidden rounded-[var(--radius-control)] border p-1 shadow-none",
+				"bg-popover text-popover-foreground z-50 min-w-48 overflow-hidden rounded-[var(--radius-control)] border p-1 shadow-none",
 				className,
 			)}
 			{...props}
@@ -76,6 +81,30 @@ function DropdownMenuShortcut({
 	return <span className={cn("ui-kbd", className)} {...props} />;
 }
 
+const DropdownMenuCheckboxItem = React.forwardRef<
+	React.ElementRef<typeof DropdownMenuPrimitive.CheckboxItem>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.CheckboxItem>
+>(({ className, children, checked, ...props }, ref) => (
+	<DropdownMenuPrimitive.CheckboxItem
+		ref={ref}
+		checked={checked}
+		className={cn(
+			"focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-[var(--radius-control)] py-1.5 pr-2 pl-7 text-xs transition-colors outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+			className,
+		)}
+		{...props}
+	>
+		<span className="absolute left-2 flex size-3.5 items-center justify-center">
+			<DropdownMenuPrimitive.ItemIndicator>
+				<span className="text-brand text-[11px] leading-none">✓</span>
+			</DropdownMenuPrimitive.ItemIndicator>
+		</span>
+		{children}
+	</DropdownMenuPrimitive.CheckboxItem>
+));
+DropdownMenuCheckboxItem.displayName =
+	DropdownMenuPrimitive.CheckboxItem.displayName;
+
 export {
 	DropdownMenu,
 	DropdownMenuTrigger,
@@ -85,4 +114,5 @@ export {
 	DropdownMenuLabel,
 	DropdownMenuSeparator,
 	DropdownMenuShortcut,
+	DropdownMenuCheckboxItem,
 };

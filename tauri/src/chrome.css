@@ -1,26 +1,17 @@
 /*
- * Chrome tokens. Reuse these instead of one-off radii, control heights, and
- * selection fills. Class names are also exported from src/lib/chrome.ts.
+ * Chrome geometry: control heights, the row rhythm, and the space scale. Every
+ * colour is a theme token and lives in themes.css — this file must not name one,
+ * or a theme other than the default would miss it.
  *
- * --selection          quiet selected/pressed fill (not an inverted slab)
  * --control-h          toolbar control height
  * --chrome-h           bar / tab-strip height
  * --radius-control     shared corner radius
  * --space-1/2/3        4 / 8 / 12px rhythm
- * --kbd                shortcut text
- * --warning            non-destructive notice
  */
 
 :root {
-	--selection: rgba(0, 122, 204, 0.14);
-	--selection-foreground: #0b0d12;
-	--warning: #9a6a00;
-	--warning-foreground: #6b4a00;
-	--kbd: #6b7280;
-	--brand: #1f7fd0;
 	--control-h: 1.75rem;
 	--chrome-h: 2.25rem;
-	--status-h: 1.375rem;
 	--activity-w: 3rem;
 	--radius-control: 0.25rem;
 	--space-1: 0.25rem;
@@ -28,47 +19,28 @@
 	--space-3: 0.75rem;
 	/* One row height for every data list, so columns line up across panes. */
 	--row-h: 1.125rem;
-
-	--activity-bg: #f3f3f3;
-
-	/* Disassembly palette: colour carries meaning, nothing else. */
-	--asm-addr: #6b7280;
-	--asm-bytes: #9ca3af;
-	--asm-mnemonic: #1f7fd0;
-	--asm-register: #0b4a80;
-	--asm-number: #9a6a00;
-	--asm-string: #9a6a00;
-	--asm-symbol: #0f766e;
-	--asm-jump: #7c3aed;
-}
-
-.dark {
-	--selection: rgba(126, 200, 255, 0.14);
-	--selection-foreground: #e9edf3;
-	--warning: #e5c07b;
-	--warning-foreground: #e5c07b;
-	--kbd: #69727f;
-	--brand: #7ec8ff;
-
-	--activity-bg: #0e1117;
-
-	--asm-addr: #7d8794;
-	--asm-bytes: #5c6673;
-	--asm-mnemonic: #7fb4e0;
-	--asm-register: #bfe3ff;
-	--asm-number: #e5c07b;
-	--asm-string: #e5c07b;
-	--asm-symbol: #9ad4c0;
-	--asm-jump: #c9a2e0;
 }
 
 @theme inline {
 	--color-selection: var(--selection);
 	--color-selection-foreground: var(--selection-foreground);
+	--color-past-foreground: var(--past-foreground);
+	--color-changed: var(--changed);
+	--color-taken: var(--taken);
+	--color-fall: var(--fall);
+	--color-peek-foreground: var(--peek-foreground);
 	--color-warning: var(--warning);
 	--color-warning-foreground: var(--warning-foreground);
 	--color-kbd: var(--kbd);
 	--color-brand: var(--brand);
+	--color-graph-edge: var(--graph-edge);
+	--color-graph-taken: var(--graph-taken);
+	--color-graph-fall: var(--graph-fall);
+	--color-minimap-bg: var(--minimap-bg);
+	--color-minimap-mask: var(--minimap-mask);
+	--color-minimap-mask-stroke: var(--minimap-mask-stroke);
+	--color-minimap-node: var(--minimap-node);
+	--color-minimap-node-stroke: var(--minimap-node-stroke);
 	--color-asm-addr: var(--asm-addr);
 	--color-asm-bytes: var(--asm-bytes);
 	--color-asm-mnemonic: var(--asm-mnemonic);
@@ -87,6 +59,107 @@
 	height: var(--row-h);
 	white-space: nowrap;
 	padding-inline: var(--space-2);
+}
+
+/* A row whose name and its metadata cannot share one line. A name, a type, an
+   address, a size and a file offset have no column order that fits a narrow
+   pane, and squeezing the name out is the one thing that must not happen — so
+   the name goes on top and the metadata beneath. Once the sidebar is wide
+   enough for one line, the container query collapses this back to a single
+   line: widening the panel should be rewarded with the denser layout, not
+   leave the analyst reading a two-line row in a column that no longer needs
+   one. */
+/* The parts are *not* given a width of their own. In this column they are
+   stretched by `align-items`, and in the one-line grid each is sized by its
+   column — a part claiming 100% would fight whichever layout it is in, which is
+   how the two of them ended up overprinting each other. */
+.data-row-2 {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 1px;
+	min-height: calc(var(--row-h) * 2 - var(--space-1));
+	padding-block: var(--space-1);
+	padding-inline: var(--space-2);
+}
+
+@container (min-width: 460px) {
+	/* A grid, not a row of flex: the two parts are wrappers sized by the layout
+	   they are in, and as flex items each would claim the whole width and
+	   overprint the other. Two columns — the name and its type, then the
+	   metadata — is what actually puts them on one line. */
+	.data-row-2 {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: var(--space-2);
+		min-height: var(--row-h);
+		padding-block: 0;
+		white-space: nowrap;
+	}
+	.data-row-2 > [data-part="meta"] {
+		justify-content: flex-end;
+	}
+}
+
+/* While a divider is being dragged: the pointer is crossing rows of names and
+   addresses, and a browser would helpfully select all of it. The divider owns
+   the pointer, so the selection is an accident of the path, not a request. The
+   rule is keyed to the class `lib/dragSelect.ts` puts on the body, because the
+   selection happens in the elements the pointer crosses rather than in the
+   divider itself. */
+/* A divider between two panels. The element is a 4px grab area — a divider you
+   have to hit on one pixel is a divider nobody moves — and the *line* is 1px, so
+   highlighting it says "this is the edge" rather than painting a band down the
+   window. Transparent until hovered, focused or dragged, because a permanently
+   visible rule between two panels is a border the layout already has. */
+.ui-col-divider,
+.ui-row-divider {
+	position: relative;
+	background: transparent;
+}
+
+.ui-col-divider::after,
+.ui-row-divider::after {
+	content: "";
+	position: absolute;
+	background: transparent;
+	transition: background 120ms ease;
+}
+
+.ui-col-divider::after {
+	inset-block: 0;
+	inset-inline-start: 50%;
+	width: 1px;
+	transform: translateX(-50%);
+}
+
+.ui-row-divider::after {
+	inset-inline: 0;
+	inset-block-start: 50%;
+	height: 1px;
+	transform: translateY(-50%);
+}
+
+.ui-col-divider:hover::after,
+.ui-col-divider:focus-visible::after,
+.ui-col-divider[data-dragging]::after,
+.ui-row-divider:hover::after,
+.ui-row-divider:focus-visible::after,
+.ui-row-divider[data-dragging]::after {
+	background: var(--brand);
+}
+
+body.dragging-suppress-select {
+	user-select: none;
+	-webkit-user-select: none;
+	cursor: col-resize;
+}
+
+body.dragging-suppress-select-row {
+	user-select: none;
+	-webkit-user-select: none;
+	cursor: row-resize;
 }
 
 /* Numbers in a column must line up: addresses, sizes, offsets, registers. */
@@ -108,6 +181,96 @@
 	align-items: center;
 	gap: var(--space-1);
 	min-height: var(--chrome-h);
+}
+
+/* The menu bar. A row of words rather than a row of buttons, because every one
+   of them opens something and a button per menu is eight affordances to look at
+   before reading a single line. The row is thin: it is a place you go, not a
+   place you stay. */
+/* The window's own controls. Flush with the right edge of the window and the full
+   height of the bar, the way a title bar's controls are: no box around the group,
+   no inset, no gap before the last one. The three buttons are the same width, so
+   the marks they hold are evenly spaced, and the hit area is wider than the mark
+   because a 8px target is a target people miss. */
+.ui-window-controls {
+	display: flex;
+	align-items: stretch;
+	align-self: stretch;
+	margin-inline-start: auto;
+}
+
+.ui-window-button {
+	display: grid;
+	place-items: center;
+	width: 32px;
+	color: var(--muted-foreground);
+	background: transparent;
+	border: 0;
+	transition:
+		color 120ms ease,
+		background 120ms ease;
+}
+
+.ui-window-button:hover {
+	color: var(--foreground);
+	background: color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
+.ui-window-button:focus-visible {
+	outline: 1px solid var(--ring);
+	outline-offset: -2px;
+}
+
+.ui-window-close:hover {
+	color: var(--foreground);
+	background: color-mix(in srgb, var(--destructive) 82%, transparent);
+}
+
+/* The menu bar. A row of words rather than a row of buttons, because every one
+   of them opens something and a button per menu is eight affordances to look at
+   before reading a single line. The row is thin: it is a place you go, not a
+   place you stay. */
+.ui-menu-bar {
+	display: flex;
+	align-items: stretch;
+	gap: 0;
+	height: var(--control-h);
+	padding-inline: var(--space-1);
+	background: var(--card);
+	border-bottom: 1px solid var(--border);
+}
+
+/* The way back, and the rules around it. A rule after it rather than a gap, so
+   the bar reads as "back | the menus" and not as four menus and a stray button. */
+.ui-menu-divider {
+	align-self: center;
+	width: 1px;
+	height: 0.9rem;
+	margin-inline: var(--space-1);
+	flex: none;
+	background: var(--border);
+}
+
+.ui-menu-item {
+	display: flex;
+	align-items: center;
+	gap: var(--space-1);
+	padding-inline: var(--space-2);
+	font-size: var(--text-xs);
+	color: var(--muted-foreground);
+	background: transparent;
+	border: 0;
+	cursor: default;
+}
+
+.ui-menu-item:hover,
+.ui-menu-item[data-state="open"] {
+	color: var(--foreground);
+	background: color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
+.ui-sep {
+	margin-inline: 2px;
 }
 
 .ui-sep {
@@ -160,31 +323,196 @@
 	color: var(--selection-foreground);
 }
 
+/*
+ * Debugger: the instructions leading into the program counter. Context, not
+ * history — a lower address has not necessarily run — so it recedes rather than
+ * filling, and the cursor row stays the only marked line in the listing.
+ */
+.ui-past {
+	color: var(--past-foreground);
+}
+
+/*
+ * A register that moved at the last stop.
+ *
+ * A register pane is scanned, not read: twenty hex values hide the one or two
+ * an instruction actually changed, and the whole job of this mark is to say
+ * where to look. Amber, because it is a note rather than a state — and the
+ * legend in the pane says what it means, because a mark nobody can decode is
+ * just noise.
+ */
+.ui-changed {
+	color: var(--changed);
+	font-weight: 600;
+}
+
+/* The branch the cursor is on, and the way it is about to go. */
+.ui-taken {
+	color: var(--taken);
+	font-weight: 600;
+}
+
+.ui-fall {
+	color: var(--fall);
+	font-weight: 600;
+}
+
+/*
+ * The code a taken branch is about to land in, spliced in under it. Recedes
+ * like the context above: it is somewhere else in memory, not the next address.
+ */
+.ui-peek {
+	color: var(--peek-foreground);
+}
+
+/*
+ * Draggable value input. A native range control, so dragging, arrow keys, Home
+ * and End all work without reimplementing them. `--ui-slider-fill` is the
+ * fraction of the track already travelled, set inline by the caller, which is
+ * what paints the filled part of the groove.
+ */
+.ui-slider {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 100%;
+	height: var(--control-h);
+	background: transparent;
+	cursor: ew-resize;
+}
+
+.ui-slider:focus {
+	outline: none;
+}
+
+.ui-slider::-webkit-slider-runnable-track {
+	height: 0.25rem;
+	border-radius: 999px;
+	background: linear-gradient(
+		to right,
+		var(--brand) 0 var(--ui-slider-fill, 0%),
+		var(--muted) var(--ui-slider-fill, 0%) 100%
+	);
+}
+
+.ui-slider::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 0.75rem;
+	height: 0.75rem;
+	margin-top: -0.25rem;
+	border: 2px solid var(--background);
+	border-radius: 999px;
+	background: var(--brand);
+}
+
+.ui-slider::-moz-range-track {
+	height: 0.25rem;
+	border-radius: 999px;
+	background: linear-gradient(
+		to right,
+		var(--brand) 0 var(--ui-slider-fill, 0%),
+		var(--muted) var(--ui-slider-fill, 0%) 100%
+	);
+}
+
+.ui-slider::-moz-range-thumb {
+	width: 0.75rem;
+	height: 0.75rem;
+	border: 2px solid var(--background);
+	border-radius: 999px;
+	background: var(--brand);
+}
+
+.ui-slider:focus-visible::-webkit-slider-thumb {
+	box-shadow:
+		0 0 0 2px var(--background),
+		0 0 0 4px var(--brand);
+}
+
+.ui-slider:focus-visible::-moz-range-thumb {
+	box-shadow:
+		0 0 0 2px var(--background),
+		0 0 0 4px var(--brand);
+}
+
+.ui-slider:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
 .ui-composer {
 	display: flex;
 	width: 100%;
 	flex-direction: column;
-	gap: var(--space-1);
+	gap: 2px;
 	border: 1px solid var(--border);
 	border-radius: var(--radius-control);
 	background: var(--background);
-	padding: var(--space-1);
+	padding: 4px 6px;
+	transition: border-color 120ms ease-out;
 }
 
+/* The focus ring is the input's own, drawn on the box rather than the field, so
+   the whole composer lights up instead of one line of it. */
+.ui-composer:focus-within {
+	border-color: var(--ring);
+}
+
+/* The composer's text box.
+ *
+ * The height is written by `autoGrow` in AgentChat as the text is typed, up to
+ * a ceiling and no further; `max-height` is that ceiling and `overflow-y: auto`
+ * is what takes over once it is reached. Both are needed: the inline height says
+ * how tall to be, and these two say what happens after.
+ *
+ * The ceiling is COMPOSER_MAX_HEIGHT, and the two must be equal — a CSS ceiling
+ * above the one the arithmetic stops at is a ceiling that never binds, and a
+ * textarea that scrolls from the first line. `composerHeight.test.ts` reads
+ * this value out of the stylesheet and fails if they part company. It is
+ * written in px rather than rem for that reason: 135.6px is not expressible in
+ * rem, and rounding it is a disagreement that clips a line.
+ *
+ * `scrollbar-gutter: stable` for the same reason the transcript has it — a box
+ * that gains a scrollbar as it fills would otherwise shift the send button
+ * sideways on the keystroke that crosses the ceiling. */
 .ui-composer textarea {
-	min-height: var(--control-h);
+	min-height: 1.5rem;
+	max-height: 135.6px;
 	flex: 1 1 auto;
 	resize: none;
+	overflow-y: auto;
+	scrollbar-gutter: stable;
 	border: 0;
 	background: transparent;
 	box-shadow: none;
 	outline: none;
+	line-height: 1.45;
 }
 
 .ui-composer textarea:focus,
 .ui-composer textarea:focus-visible {
 	outline: none;
 	box-shadow: none;
+}
+
+.tool-card {
+	position: relative;
+	overflow: hidden;
+	border-radius: 2px;
+	background: transparent;
+}
+
+.tool-card__header {
+	min-height: 3.25rem;
+}
+
+.tool-card__icon {
+	color: var(--foreground);
+	background: var(--muted);
+}
+
+.tool-card__body {
+	background: transparent;
 }
 
 .ui-menu-label {
@@ -203,7 +531,9 @@
 .ui-kbd {
 	margin-left: auto;
 	padding-left: var(--space-3);
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family:
+		"JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+		SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 10px;
 	font-weight: 400;
 	letter-spacing: 0;
@@ -259,4 +589,21 @@
 	inset-inline-start: 0;
 	width: 2px;
 	background: var(--brand);
+}
+
+/* Rows in a long list.
+ *
+ * A disassembly of a large function, a hex dump, a string table — the lists that
+ * run to thousands of rows are read by scrolling, and the browser lays out and
+ * paints every one of them whether or not it is on screen. Letting the browser
+ * skip the off-screen ones is most of what windowing would buy, without a
+ * dependency or a fixed row height that a variable-height row would break.
+ *
+ * `contain-intrinsic-size` is what makes the scrollbar honest: without it the
+ * browser would have to lay rows out to know how far down the list goes, which
+ * is the work being skipped.
+ */
+.offscreen-row {
+	content-visibility: auto;
+	contain-intrinsic-size: auto var(--row-h);
 }

@@ -52,8 +52,20 @@ impl Symbols for ElfSymbols {
     }
 }
 
-/// Compile the fixture eagerly optimized, or `None` when no compiler exists.
+/// Compile the fixture eagerly optimized, or `None` when this host cannot
+/// produce one.
+///
+/// Gated on the host platform first: `-no-pie` is a GNU/Linux linker option and
+/// the backtrace under test comes from the ptrace backend, so a compiler on
+/// another host would build a binary this test cannot run. Skipping before the
+/// compiler runs keeps a wrong-host build from looking like a test failure.
+/// "no compiler" and "could not link" are reported apart, since the first is a
+/// missing toolchain and the second is a broken one.
 fn build_fixture() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipping: Linux backend, not the host platform");
+        return None;
+    }
     let dir = std::env::temp_dir().join(format!("recurse-cfi-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let src = dir.join("target.c");
@@ -65,7 +77,11 @@ fn build_fixture() -> Option<PathBuf> {
         .arg(&src)
         .status()
         .ok()?;
-    status.success().then_some(bin)
+    if !status.success() {
+        eprintln!("skipping: `cc` could not build the fixture");
+        return None;
+    }
+    Some(bin)
 }
 
 fn elf_symbols(path: &Path) -> Option<ElfSymbols> {
@@ -91,7 +107,7 @@ fn elf_symbols(path: &Path) -> Option<ElfSymbols> {
 #[test]
 fn backtrace_unwinds_optimized_code() {
     let Some(bin) = build_fixture() else {
-        eprintln!("skipping: no `cc` available");
+        eprintln!("skipping: no Linux fixture available");
         return;
     };
     let Some(symbols) = elf_symbols(&bin) else {

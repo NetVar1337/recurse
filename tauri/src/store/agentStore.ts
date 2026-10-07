@@ -2,6 +2,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
 import { api } from "../api";
+import { createFrameBatch } from "../lib/frameBatch";
 import type { AgentEvent, ChatMessage, ContextItem } from "../types";
 import { useSessionStore } from "./sessionStore";
 
@@ -228,6 +229,47 @@ function applyEvent(m: UiMessage, ev: AgentEvent): UiMessage {
 	}
 }
 
+/**
+ * Apply a run's queued events, in the order the host sent them.
+ *
+ * Events are committed a batch at a time rather than one at a time, because
+ * they arrive faster than the screen refreshes. Within a batch the order is
+ * exactly the wire order, which for a stream is the difference between a tool
+ * call and the result that answers it.
+ *
+ * @param events - The events, oldest first.
+ * @param sessionId - The session the run belongs to. An event for another
+ *   session is dropped, which is what keeps a reply from a session the analyst
+ *   has left out of the one they are reading.
+ * @param set - The store's setter.
+ */
+function applyEvents(
+	events: AgentEvent[],
+	sessionId: string | null,
+	set: (fn: (st: AgentState) => Partial<AgentState>) => void,
+): void {
+	if (events.length === 0) return;
+	set((st) => {
+		if (st.activeSessionId !== sessionId) return st;
+		let messages = st.messages;
+		let activeRunId = st.activeRunId;
+		let busy = st.busy;
+		let applied = false;
+		for (const ev of events) {
+			if (activeRunId && activeRunId !== ev.run_id) continue;
+			activeRunId = activeRunId ?? ev.run_id;
+			messages = updateLast(messages, (m) => applyEvent(m, ev));
+			busy = ev.kind !== "done" && ev.kind !== "error";
+			if (!busy) activeRunId = null;
+			applied = true;
+		}
+		// Nothing applied, so the same state: returning it is what keeps a batch
+		// of events for a stale session from re-rendering the transcript.
+		if (!applied) return st;
+		return { messages, busy, activeRunId };
+	});
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
 	messages: [],
 	busy: false,
@@ -267,6 +309,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 			context && context.length > 0
 				? `${composeContext(context)}\n\n${text}`
 				: text;
+		// Read once, here: the run belongs to whichever session was current when
+		// it started, and re-reading it per event would let a mid-stream session
+		// switch change which run an event counts as.
+		const runSession =
+			sessionId || useSessionStore.getState().current?.id || null;
 
 		set((st) => ({
 			messages: [
@@ -286,45 +333,31 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 				},
 			],
 			busy: true,
-			activeSessionId:
-				sessionId || useSessionStore.getState().current?.id || null,
+			activeSessionId: runSession,
 			activeRunId: null,
 		}));
 
 		// Each turn gets its own IPC channel; events stream back per-request so
 		// there is no global listener to leak or double-register.
 		const channel = new Channel<AgentEvent>();
-		channel.onmessage = (ev) => {
-			set((st) => {
-				if (
-					st.activeSessionId !==
-					(sessionId ||
-						useSessionStore.getState().current?.id ||
-						null)
-				) {
-					return st;
-				}
-				if (st.activeRunId && st.activeRunId !== ev.run_id) {
-					return st;
-				}
-				const activeRunId = st.activeRunId ?? ev.run_id;
-				const messages = updateLast(st.messages, (m) =>
-					applyEvent(m, ev),
-				);
-				const busy = ev.kind !== "done" && ev.kind !== "error";
-				return {
-					messages,
-					busy,
-					activeRunId: busy ? activeRunId : null,
-				};
-			});
-		};
+		// A reply arrives faster than the screen refreshes. Committing each event
+		// on its own would re-render the whole transcript per token — every
+		// settled message, every tool card, every markdown block — so events are
+		// queued and committed together, in wire order, once a frame.
+		const batch = createFrameBatch<AgentEvent>((events) => {
+			applyEvents(events, runSession, set);
+		});
+		channel.onmessage = (ev) => batch.push(ev);
 
 		try {
 			const sid =
 				sessionId || useSessionStore.getState().current?.id || "";
 			await api.agentChat(payload, sid, channel);
+			// The host is done sending, so nothing is still in flight: commit what
+			// is queued rather than leaving the last tokens for the next frame.
+			batch.flush();
 		} catch (e) {
+			batch.drop();
 			set((st) => ({
 				messages: updateLast(st.messages, (m) => ({
 					...m,
